@@ -65,7 +65,7 @@ const orderController = {
   async getPendingTakeawayOrders(req, res) {
     try {
       const outletId = parseInt(req.params.outletId);
-      const floorIds = await getUserFloorIds(req.user.userId, outletId);
+      // Note: Takeaway orders don't use floor filtering - they're outlet-wide
       const filters = {
         search: req.query.search,
         sortBy: req.query.sortBy,
@@ -73,7 +73,6 @@ const orderController = {
         page: req.query.page,
         limit: req.query.limit,
         status: req.query.status,
-        floorIds: floorIds.length > 0 ? floorIds : undefined,
         cashierId: req.user.userId,
         userRole: req.user.role
       };

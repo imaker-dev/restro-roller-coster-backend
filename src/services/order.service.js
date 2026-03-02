@@ -544,21 +544,45 @@ const orderService = {
   },
 
   async getOrderWithItems(orderId) {
-    const order = await this.getById(orderId);
-    if (!order) return null;
-
     const pool = getPool();
+    
+    // Get comprehensive order details with all joins
+    const [orderRows] = await pool.query(
+      `SELECT o.*,
+        t.table_number, t.name as table_name, t.capacity as table_capacity,
+        f.id as floor_id, f.name as floor_name,
+        s.name as section_name,
+        uc.id as created_by_id, uc.name as created_by_name, uc.email as created_by_email,
+        cust.id as cust_id, cust.name as customer_name_db, cust.phone as customer_phone_db, 
+        cust.email as customer_email, cust.gstin as customer_gstin,
+        ol.name as outlet_name, ol.gstin as outlet_gstin, ol.fssai_number as outlet_fssai,
+        ol.address_line1 as outlet_address, ol.city as outlet_city, ol.state as outlet_state
+       FROM orders o
+       LEFT JOIN tables t ON o.table_id = t.id
+       LEFT JOIN floors f ON o.floor_id = f.id
+       LEFT JOIN sections s ON o.section_id = s.id
+       LEFT JOIN users uc ON o.created_by = uc.id
+       LEFT JOIN customers cust ON o.customer_id = cust.id
+       LEFT JOIN outlets ol ON o.outlet_id = ol.id
+       WHERE o.id = ?`,
+      [orderId]
+    );
+    
+    if (!orderRows[0]) return null;
+    const order = orderRows[0];
 
-    // Get items
+    // Get items with full details
     const [items] = await pool.query(
       `SELECT oi.*, 
-        i.short_name, i.image_url,
+        i.short_name, i.image_url, i.item_type,
         ks.name as station_name, ks.station_type,
-        c.name as counter_name
+        c.name as counter_name,
+        cat.name as category_name
        FROM order_items oi
        LEFT JOIN items i ON oi.item_id = i.id
        LEFT JOIN kitchen_stations ks ON i.kitchen_station_id = ks.id
        LEFT JOIN counters c ON i.counter_id = c.id
+       LEFT JOIN categories cat ON i.category_id = cat.id
        WHERE oi.order_id = ? 
        ORDER BY oi.created_at`,
       [orderId]
@@ -574,20 +598,352 @@ const orderService = {
       );
       for (const addon of allAddons) {
         if (!addonsMap[addon.order_item_id]) addonsMap[addon.order_item_id] = [];
-        addonsMap[addon.order_item_id].push(addon);
+        addonsMap[addon.order_item_id].push({
+          id: addon.id,
+          addonId: addon.addon_id,
+          addonName: addon.addon_name,
+          quantity: addon.quantity,
+          unitPrice: parseFloat(addon.unit_price) || 0,
+          totalPrice: parseFloat(addon.total_price) || 0
+        });
       }
     }
-    for (const item of items) {
-      item.addons = addonsMap[item.id] || [];
-    }
 
-    // Get applied discounts
+    // Calculate tax breakdown from items
+    let cgstAmount = 0, sgstAmount = 0, igstAmount = 0, vatAmount = 0, cessAmount = 0;
+    const taxBreakup = {};
+    
+    // Format items with parsed tax details and aggregate tax breakdown
+    const formattedItems = items.map(item => {
+      if (item.status === 'cancelled') {
+        return null; // Skip cancelled items for tax calculation
+      }
+      
+      let taxDetails = null;
+      if (item.tax_details) {
+        try {
+          taxDetails = typeof item.tax_details === 'string' ? JSON.parse(item.tax_details) : item.tax_details;
+          
+          // Aggregate tax breakdown from each item
+          if (Array.isArray(taxDetails)) {
+            for (const tax of taxDetails) {
+              const taxCode = tax.componentCode || tax.code || tax.componentName || tax.name || 'TAX';
+              const taxName = tax.componentName || tax.name || taxCode;
+              const taxAmt = parseFloat(tax.amount) || 0;
+              const taxRate = parseFloat(tax.rate) || 0;
+              const itemTotal = parseFloat(item.total_price) || 0;
+              
+              // Add to tax breakup
+              if (!taxBreakup[taxCode]) {
+                taxBreakup[taxCode] = {
+                  name: taxName,
+                  rate: taxRate,
+                  taxableAmount: 0,
+                  taxAmount: 0
+                };
+              }
+              taxBreakup[taxCode].taxableAmount += itemTotal;
+              taxBreakup[taxCode].taxAmount += taxAmt;
+              
+              // Categorize by tax type
+              const codeUpper = taxCode.toUpperCase();
+              if (codeUpper.includes('CGST')) {
+                cgstAmount += taxAmt;
+              } else if (codeUpper.includes('SGST')) {
+                sgstAmount += taxAmt;
+              } else if (codeUpper.includes('IGST')) {
+                igstAmount += taxAmt;
+              } else if (codeUpper.includes('VAT')) {
+                vatAmount += taxAmt;
+              } else if (codeUpper.includes('CESS')) {
+                cessAmount += taxAmt;
+              }
+            }
+          }
+        } catch (e) { /* ignore */ }
+      }
+      return {
+        id: item.id,
+        itemId: item.item_id,
+        itemName: item.item_name,
+        shortName: item.short_name,
+        variantId: item.variant_id,
+        variantName: item.variant_name,
+        itemType: item.item_type,
+        categoryName: item.category_name,
+        quantity: item.quantity,
+        unitPrice: parseFloat(item.unit_price) || 0,
+        totalPrice: parseFloat(item.total_price) || 0,
+        taxAmount: parseFloat(item.tax_amount) || 0,
+        taxDetails,
+        status: item.status,
+        kotStatus: item.kot_status,
+        specialInstructions: item.special_instructions,
+        stationName: item.station_name,
+        stationType: item.station_type,
+        counterName: item.counter_name,
+        imageUrl: prefixImageUrl(item.image_url),
+        addons: addonsMap[item.id] || [],
+        createdAt: item.created_at,
+        updatedAt: item.updated_at
+      };
+    }).filter(Boolean); // Remove null entries (cancelled items)
+
+    // Get applied discounts with approver info
     const [discounts] = await pool.query(
-      'SELECT * FROM order_discounts WHERE order_id = ?',
+      `SELECT od.*, u.name as approved_by_name, uc.name as created_by_name
+       FROM order_discounts od
+       LEFT JOIN users u ON od.approved_by = u.id
+       LEFT JOIN users uc ON od.created_by = uc.id
+       WHERE od.order_id = ?`,
       [orderId]
     );
+    
+    const formattedDiscounts = discounts.map(d => ({
+      id: d.id,
+      discountId: d.discount_id,
+      discountCode: d.discount_code,
+      discountName: d.discount_name,
+      discountType: d.discount_type,
+      discountValue: parseFloat(d.discount_value) || 0,
+      discountAmount: parseFloat(d.discount_amount) || 0,
+      appliedOn: d.applied_on || 'subtotal',
+      orderItemId: d.order_item_id,
+      approvedBy: d.approved_by,
+      approvedByName: d.approved_by_name,
+      createdBy: d.created_by,
+      createdByName: d.created_by_name,
+      createdAt: d.created_at
+    }));
 
-    return { ...order, items, discounts };
+    // Get payments with full details and split breakdown
+    const [payments] = await pool.query(
+      `SELECT p.*, u.name as received_by_name
+       FROM payments p
+       LEFT JOIN users u ON p.received_by = u.id
+       WHERE p.order_id = ? 
+       ORDER BY p.created_at DESC`,
+      [orderId]
+    );
+    
+    const formattedPayments = [];
+    for (const payment of payments) {
+      const formatted = {
+        id: payment.id,
+        invoiceId: payment.invoice_id,
+        paymentMode: payment.payment_mode,
+        amount: parseFloat(payment.amount) || 0,
+        tipAmount: parseFloat(payment.tip_amount) || 0,
+        totalAmount: parseFloat(payment.total_amount) || 0,
+        status: payment.status,
+        transactionId: payment.transaction_id,
+        referenceNumber: payment.reference_number,
+        cardLastFour: payment.card_last_four,
+        cardType: payment.card_type,
+        upiId: payment.upi_id,
+        walletProvider: payment.wallet_provider,
+        receivedBy: payment.received_by,
+        receivedByName: payment.received_by_name,
+        notes: payment.notes,
+        createdAt: payment.created_at
+      };
+      
+      // For split payments, fetch the breakdown
+      if (payment.payment_mode === 'split') {
+        const [splitDetails] = await pool.query(
+          'SELECT * FROM split_payments WHERE payment_id = ?', [payment.id]
+        );
+        formatted.splitBreakdown = splitDetails.map(sp => ({
+          id: sp.id,
+          paymentMode: sp.payment_mode,
+          amount: parseFloat(sp.amount) || 0,
+          transactionId: sp.transaction_id,
+          referenceNumber: sp.reference_number,
+          cardLastFour: sp.card_last_four,
+          cardType: sp.card_type,
+          upiId: sp.upi_id,
+          walletProvider: sp.wallet_provider,
+          notes: sp.notes
+        }));
+      }
+      formattedPayments.push(formatted);
+    }
+
+    // Get invoice details if exists
+    const [invoiceRows] = await pool.query(
+      `SELECT i.*, u.name as generated_by_name
+       FROM invoices i
+       LEFT JOIN users u ON i.generated_by = u.id
+       WHERE i.order_id = ? AND i.is_cancelled = 0
+       ORDER BY i.created_at DESC LIMIT 1`,
+      [orderId]
+    );
+    
+    let invoice = null;
+    if (invoiceRows[0]) {
+      const inv = invoiceRows[0];
+      let taxBreakup = null;
+      if (inv.tax_breakup) {
+        try {
+          taxBreakup = typeof inv.tax_breakup === 'string' ? JSON.parse(inv.tax_breakup) : inv.tax_breakup;
+        } catch (e) { /* ignore */ }
+      }
+      let hsnSummary = null;
+      if (inv.hsn_summary) {
+        try {
+          hsnSummary = typeof inv.hsn_summary === 'string' ? JSON.parse(inv.hsn_summary) : inv.hsn_summary;
+        } catch (e) { /* ignore */ }
+      }
+      
+      invoice = {
+        id: inv.id,
+        uuid: inv.uuid,
+        invoiceNumber: inv.invoice_number,
+        invoiceDate: inv.invoice_date,
+        invoiceTime: inv.invoice_time,
+        subtotal: parseFloat(inv.subtotal) || 0,
+        discountAmount: parseFloat(inv.discount_amount) || 0,
+        taxableAmount: parseFloat(inv.taxable_amount) || 0,
+        cgstAmount: parseFloat(inv.cgst_amount) || 0,
+        sgstAmount: parseFloat(inv.sgst_amount) || 0,
+        igstAmount: parseFloat(inv.igst_amount) || 0,
+        vatAmount: parseFloat(inv.vat_amount) || 0,
+        cessAmount: parseFloat(inv.cess_amount) || 0,
+        totalTax: parseFloat(inv.total_tax) || 0,
+        serviceCharge: parseFloat(inv.service_charge) || 0,
+        packagingCharge: parseFloat(inv.packaging_charge) || 0,
+        deliveryCharge: parseFloat(inv.delivery_charge) || 0,
+        roundOff: parseFloat(inv.round_off) || 0,
+        grandTotal: parseFloat(inv.grand_total) || 0,
+        amountInWords: inv.amount_in_words,
+        paymentStatus: inv.payment_status,
+        taxBreakup,
+        hsnSummary,
+        isInterstate: !!inv.is_interstate,
+        generatedBy: inv.generated_by,
+        generatedByName: inv.generated_by_name,
+        notes: inv.notes,
+        createdAt: inv.created_at
+      };
+    }
+
+    // Get KOTs for this order (if table exists)
+    let kots = [];
+    try {
+      const [kotRows] = await pool.query(
+        `SELECT k.id, k.kot_number, k.status, k.station_id, k.created_at,
+          ks.name as station_name
+         FROM kot k
+         LEFT JOIN kitchen_stations ks ON k.station_id = ks.id
+         WHERE k.order_id = ?
+         ORDER BY k.created_at DESC`,
+        [orderId]
+      );
+      kots = kotRows;
+    } catch (e) { /* KOT table may not exist */ }
+
+    // Calculate totals and summary
+    const totalDiscount = formattedDiscounts.reduce((sum, d) => sum + d.discountAmount, 0);
+    const totalPaid = formattedPayments.filter(p => p.status === 'completed').reduce((sum, p) => sum + p.totalAmount, 0);
+    const balanceDue = (parseFloat(order.total_amount) || 0) - totalPaid;
+
+    // Build comprehensive response
+    return {
+      // Order basic info
+      id: order.id,
+      uuid: order.uuid,
+      orderNumber: order.order_number,
+      orderType: order.order_type,
+      status: order.status,
+      paymentStatus: order.payment_status,
+      isPriority: !!order.is_priority,
+      
+      // Table & Location
+      tableId: order.table_id,
+      tableNumber: order.table_number,
+      tableName: order.table_name,
+      tableCapacity: order.table_capacity,
+      floorId: order.floor_id,
+      floorName: order.floor_name,
+      sectionId: order.section_id,
+      sectionName: order.section_name,
+      
+      // Customer info
+      customerId: order.customer_id || order.customer_id,
+      customerName: order.customer_name || order.customer_name_db,
+      customerPhone: order.customer_phone || order.customer_phone_db,
+      customerEmail: order.customer_email,
+      customerGstin: order.customer_gstin,
+      guestCount: order.guest_count,
+      
+      // Financial summary
+      subtotal: parseFloat(order.subtotal) || 0,
+      taxAmount: parseFloat(order.tax_amount) || 0,
+      discountAmount: parseFloat(order.discount_amount) || 0,
+      serviceCharge: parseFloat(order.service_charge) || 0,
+      packagingCharge: parseFloat(order.packaging_charge) || 0,
+      deliveryCharge: parseFloat(order.delivery_charge) || 0,
+      roundOff: parseFloat(order.round_off) || 0,
+      totalAmount: parseFloat(order.total_amount) || 0,
+      paidAmount: parseFloat(order.paid_amount) || 0,
+      
+      // Tax breakdown (calculated from items)
+      cgstAmount: parseFloat(cgstAmount.toFixed(2)),
+      sgstAmount: parseFloat(sgstAmount.toFixed(2)),
+      igstAmount: parseFloat(igstAmount.toFixed(2)),
+      vatAmount: parseFloat(vatAmount.toFixed(2)),
+      cessAmount: parseFloat(cessAmount.toFixed(2)),
+      totalTax: parseFloat((cgstAmount + sgstAmount + igstAmount + vatAmount + cessAmount).toFixed(2)),
+      taxBreakup,
+      
+      // Calculated fields
+      totalDiscount,
+      totalPaid,
+      balanceDue: balanceDue > 0 ? balanceDue : 0,
+      
+      // Staff info
+      createdBy: {
+        id: order.created_by_id,
+        name: order.created_by_name,
+        email: order.created_by_email
+      },
+      captainId: order.captain_id,
+      
+      // Outlet info
+      outletId: order.outlet_id,
+      outletName: order.outlet_name,
+      outletGstin: order.outlet_gstin,
+      outletFssai: order.outlet_fssai,
+      outletAddress: order.outlet_address,
+      outletCity: order.outlet_city,
+      outletState: order.outlet_state,
+      
+      // Order notes
+      notes: order.notes,
+      kitchenNotes: order.kitchen_notes,
+      
+      // Timestamps
+      createdAt: order.created_at,
+      updatedAt: order.updated_at,
+      
+      // Related data
+      items: formattedItems,
+      discounts: formattedDiscounts,
+      payments: formattedPayments,
+      invoice,
+      kots: kots.map(k => ({
+        id: k.id,
+        kotNumber: k.kot_number,
+        status: k.status,
+        stationId: k.station_id,
+        stationName: k.station_name,
+        createdAt: k.created_at
+      })),
+      
+      // Item counts
+      itemCount: formattedItems.length,
+      totalQuantity: formattedItems.reduce((sum, i) => sum + (i.quantity || 0), 0)
+    };
   },
 
   /**
@@ -643,7 +999,7 @@ const orderService = {
     const pool = getPool();
     const {
       search, sortBy = 'created_at', sortOrder = 'DESC',
-      status, floorIds = [], cashierId, userRole
+      status, cashierId, userRole
     } = filters;
     const page = Math.max(1, parseInt(filters.page) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(filters.limit) || 20));
@@ -662,12 +1018,6 @@ const orderService = {
     if (cashierId && userRole && !privilegedRoles.includes(userRole)) {
       whereClause += ` AND o.created_by = ?`;
       params.push(cashierId);
-    }
-
-    // Floor restriction for strict floor assignments
-    if (floorIds && floorIds.length > 0) {
-      whereClause += ` AND o.floor_id IN (${floorIds.map(() => '?').join(',')})`;
-      params.push(...floorIds);
     }
 
     // Status filter: 'pending' (active/not paid), 'completed', 'cancelled', 'all'

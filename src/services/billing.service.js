@@ -727,14 +727,16 @@ const billingService = {
     for (const item of order.items) {
       if (item.status === 'cancelled') continue;
 
-      const itemTotal = parseFloat(item.total_price);
+      // Handle both snake_case (raw DB) and camelCase (formatted) item structures
+      const itemTotal = parseFloat(item.total_price || item.totalPrice) || 0;
       subtotal += itemTotal;
 
-      // Parse tax details
-      if (item.tax_details) {
-        const taxDetails = typeof item.tax_details === 'string' 
-          ? JSON.parse(item.tax_details) 
-          : item.tax_details;
+      // Parse tax details (handle both snake_case and camelCase)
+      const itemTaxDetails = item.tax_details || item.taxDetails;
+      if (itemTaxDetails) {
+        const taxDetails = typeof itemTaxDetails === 'string' 
+          ? JSON.parse(itemTaxDetails) 
+          : itemTaxDetails;
 
         if (Array.isArray(taxDetails)) {
           // For interstate: convert CGST+SGST to IGST
