@@ -900,10 +900,10 @@ const paymentService = {
    * @param {number} openingCash - Opening cash amount
    * @param {number} userId - Cashier user ID
    */
-  async openCashDrawer(outletId, openingCash, userId, floorId = null, notes) {
+  async openCashDrawer(outletId, openingCash, userId, floorId = null, notes = null) {
     const pool = getPool();
     const today = getLocalDate();
-
+    console.log(notes);
     // If floorId not provided, get from user's assigned floor
     if (!floorId) {
       const [userFloors] = await pool.query(
@@ -953,9 +953,9 @@ const paymentService = {
     await pool.query(
       `INSERT INTO cash_drawer (
         outlet_id, floor_id, user_id, transaction_type, amount,
-        balance_before, balance_after, description, notes
-      ) VALUES (?, ?, ?, 'opening', ?, 0, ?, 'Shift opening', ?)`,
-      [outletId, floorId, userId, openingCash, openingCash, notes]
+        balance_before, balance_after, description
+      ) VALUES (?, ?, ?, 'opening', ?, 0, ?, 'Shift opening')`,
+      [outletId, floorId, userId, openingCash, openingCash]
     );
 
     // Get floor info for response
