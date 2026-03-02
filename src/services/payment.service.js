@@ -2179,11 +2179,11 @@ const paymentService = {
     let ordersQuery = `
       SELECT 
         o.id, o.uuid, o.order_number, o.order_type, o.status, o.payment_status,
-        o.table_number, o.customer_name, o.customer_phone,
+        o.customer_name, o.customer_phone,
         o.subtotal, o.tax_amount, o.discount_amount, o.total_amount,
         o.created_at, o.updated_at,
         u.name as created_by_name,
-        t.table_number as table_num, t.name as table_name,
+        t.table_number, t.name as table_name,
         p.payment_mode, p.total_amount as paid_amount, p.status as payment_record_status
       FROM orders o
       LEFT JOIN users u ON o.created_by = u.id
@@ -2240,7 +2240,7 @@ const paymentService = {
           orderType: row.order_type,
           status: row.status,
           paymentStatus: row.payment_status,
-          tableNumber: row.table_num || row.table_number,
+          tableNumber: row.table_number,
           tableName: row.table_name,
           customerName: row.customer_name,
           customerPhone: row.customer_phone,
