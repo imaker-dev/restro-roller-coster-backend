@@ -8959,3 +8959,1231 @@ Error: Column 'outlet_id' cannot be null
     at Layer.handle [as handle_request] (E:\restro-backend\node_modules\express\lib\router\layer.js:95:5)
 2026-02-24 12:26:23 [ERROR]: Direct Bill print failed for INV/2526/000006:
 2026-02-24 12:26:23 [ERROR]: Direct bill print failed for INV/2526/000006:
+2026-02-27 15:39:42 [ERROR]: Failed to start server: {"code":"ECONNREFUSED","fatal":true}
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+2026-02-28 17:09:49 [ERROR]: Get current user failed: User not found
+Error: User not found
+    at AuthService.getCurrentUser (E:\restro-backend\src\services\auth.service.js:340:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getCurrentUser (E:\restro-backend\src\controllers\auth.controller.js:137:18)
+2026-02-28 17:09:49 [ERROR]: Unhandled error: User not found
+Error: User not found
+    at AuthService.getCurrentUser (E:\restro-backend\src\services\auth.service.js:340:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getCurrentUser (E:\restro-backend\src\controllers\auth.controller.js:137:18)
+2026-02-28 17:10:45 [ERROR]: Get current user failed: User not found
+Error: User not found
+    at AuthService.getCurrentUser (E:\restro-backend\src\services\auth.service.js:340:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getCurrentUser (E:\restro-backend\src\controllers\auth.controller.js:137:18)
+2026-02-28 17:10:45 [ERROR]: Unhandled error: User not found
+Error: User not found
+    at AuthService.getCurrentUser (E:\restro-backend\src\services\auth.service.js:340:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getCurrentUser (E:\restro-backend\src\controllers\auth.controller.js:137:18)
+2026-02-28 17:12:39 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1099:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:360:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:664:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-02-28 17:13:18 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1099:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:360:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:664:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-02-28 17:14:13 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1099:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:360:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:664:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-02-28 17:16:48 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1099:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:360:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:664:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-02-28 18:38:08 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1221:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-02-28 18:46:49 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-02-28 18:48:18 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-02-28 18:48:23 [ERROR]: Direct Bill print failed for INV/2526/000046:
+2026-02-28 18:48:23 [ERROR]: Direct bill print failed for INV/2526/000046:
+2026-02-28 18:48:23 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-02-28 19:00:47 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-02-28 19:00:52 [ERROR]: Direct Bill print failed for INV/2526/000047:
+2026-02-28 19:00:52 [ERROR]: Direct bill print failed for INV/2526/000047:
+2026-02-28 19:00:52 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-02-28 19:19:46 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-02-28 19:19:51 [ERROR]: Direct Bill print failed for INV/2526/000048:
+2026-02-28 19:19:51 [ERROR]: Direct bill print failed for INV/2526/000048:
+2026-02-28 19:19:51 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-02-28 19:21:13 [ERROR]: Get shift detail error: Shift not found
+Error: Shift not found
+    at Object.getShiftDetail (E:\restro-backend\src\services\payment.service.js:1836:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getShiftDetail (E:\restro-backend\src\controllers\order.controller.js:1312:21)
+2026-02-28 19:21:13 [ERROR]: Get shift detail error: Shift not found
+Error: Shift not found
+    at Object.getShiftDetail (E:\restro-backend\src\services\payment.service.js:1836:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getShiftDetail (E:\restro-backend\src\controllers\order.controller.js:1312:21)
+2026-02-28 19:25:57 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-02-28 19:26:02 [ERROR]: Direct Bill print failed for INV/2526/000049:
+2026-02-28 19:26:02 [ERROR]: Direct bill print failed for INV/2526/000049:
+2026-02-28 19:26:02 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-02-28 19:29:46 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.printInvoice (E:\restro-backend\src\services\billing.service.js:983:5)
+    at async printInvoice (E:\restro-backend\src\controllers\order.controller.js:445:23)
+2026-02-28 19:29:51 [ERROR]: Direct Bill print failed for INV/2526/000049:
+2026-02-28 19:29:51 [ERROR]: Direct bill print failed for INV/2526/000049:
+2026-02-28 19:29:51 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.printInvoice (E:\restro-backend\src\services\billing.service.js:983:5)
+    at async printInvoice (E:\restro-backend\src\controllers\order.controller.js:445:23)
+2026-02-28 19:33:50 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-02-28 19:33:55 [ERROR]: Direct Bill print failed for INV/2526/000050:
+2026-02-28 19:33:55 [ERROR]: Direct bill print failed for INV/2526/000050:
+2026-02-28 19:33:55 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-02-28 19:34:22 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:522:11)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-02-28 19:34:27 [ERROR]: Direct Bill print failed for INV/2526/000050:
+2026-02-28 19:34:27 [ERROR]: Direct bill print failed for INV/2526/000050:
+2026-02-28 19:34:27 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:522:11)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-02-28 19:37:05 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-02-28 19:37:10 [ERROR]: Direct Bill print failed for INV/2526/000051:
+2026-02-28 19:37:10 [ERROR]: Direct bill print failed for INV/2526/000051:
+2026-02-28 19:37:10 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-02-28 19:43:13 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-02-28 19:43:18 [ERROR]: Direct Bill print failed for INV/2526/000052:
+2026-02-28 19:43:18 [ERROR]: Direct bill print failed for INV/2526/000052:
+2026-02-28 19:43:18 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 09:12:53 [ERROR]: Get shift summary by ID error: You can only view your own shifts
+Error: You can only view your own shifts
+    at Object.getShiftSummaryById (E:\restro-backend\src\services\payment.service.js:2052:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getShiftSummaryById (E:\restro-backend\src\controllers\order.controller.js:1339:23)
+2026-03-01 09:13:24 [ERROR]: Get shift summary by ID error: You can only view your own shifts
+Error: You can only view your own shifts
+    at Object.getShiftSummaryById (E:\restro-backend\src\services\payment.service.js:2052:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getShiftSummaryById (E:\restro-backend\src\controllers\order.controller.js:1339:23)
+2026-03-01 09:13:33 [ERROR]: Get shift summary by ID error: You can only view your own shifts
+Error: You can only view your own shifts
+    at Object.getShiftSummaryById (E:\restro-backend\src\services\payment.service.js:2052:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getShiftSummaryById (E:\restro-backend\src\controllers\order.controller.js:1339:23)
+2026-03-01 09:15:07 [ERROR]: Open cash drawer error: Shift already open for this floor
+Error: Shift already open for this floor
+    at Object.openCashDrawer (E:\restro-backend\src\services\payment.service.js:940:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async openCashDrawer (E:\restro-backend\src\controllers\order.controller.js:701:22)
+2026-03-01 09:15:29 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 09:15:34 [ERROR]: Direct Bill print failed for INV/2526/000053:
+2026-03-01 09:15:34 [ERROR]: Direct bill print failed for INV/2526/000053:
+2026-03-01 09:15:34 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 09:17:01 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 09:17:06 [ERROR]: Direct Bill print failed for INV/2526/000054:
+2026-03-01 09:17:06 [ERROR]: Direct bill print failed for INV/2526/000054:
+2026-03-01 09:17:06 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 09:18:21 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 09:18:26 [ERROR]: Direct Bill print failed for INV/2526/000055:
+2026-03-01 09:18:26 [ERROR]: Direct bill print failed for INV/2526/000055:
+2026-03-01 09:18:26 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 09:26:44 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 09:26:49 [ERROR]: Direct Bill print failed for INV/2526/000056:
+2026-03-01 09:26:49 [ERROR]: Direct bill print failed for INV/2526/000056:
+2026-03-01 09:26:49 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 09:28:04 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 09:28:09 [ERROR]: Direct Bill print failed for INV/2526/000057:
+2026-03-01 09:28:09 [ERROR]: Direct bill print failed for INV/2526/000057:
+2026-03-01 09:28:09 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 09:39:53 [ERROR]: Open cash drawer error: Shift already open for this floor
+Error: Shift already open for this floor
+    at Object.openCashDrawer (E:\restro-backend\src\services\payment.service.js:940:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async openCashDrawer (E:\restro-backend\src\controllers\order.controller.js:701:22)
+2026-03-01 09:40:17 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 09:40:22 [ERROR]: Direct Bill print failed for INV/2526/000058:
+2026-03-01 09:40:22 [ERROR]: Direct bill print failed for INV/2526/000058:
+2026-03-01 09:40:22 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:05:48 [ERROR]: Socket error: 4Zz5I9LzOoiS1MOnAAAB invalid payload
+Error: invalid payload
+    at Decoder.decodeString (E:\restro-backend\node_modules\socket.io-parser\build\cjs\index.js:235:23)
+    at Decoder.add (E:\restro-backend\node_modules\socket.io-parser\build\cjs\index.js:138:27)
+    at Client.ondata (E:\restro-backend\node_modules\socket.io\dist\client.js:185:26)
+    at Socket.emit (node:events:518:28)
+    at Socket.onPacket (E:\restro-backend\node_modules\engine.io\build\socket.js:117:22)
+    at WebSocket.emit (node:events:518:28)
+    at WebSocket.onPacket (E:\restro-backend\node_modules\engine.io\build\transport.js:96:14)
+    at WebSocket.onData (E:\restro-backend\node_modules\engine.io\build\transport.js:105:14)
+    at WebSocket.<anonymous> (E:\restro-backend\node_modules\engine.io\build\transports\websocket.js:40:19)
+    at WebSocket.emit (node:events:518:28)
+2026-03-01 10:06:03 [ERROR]: Get shift summary by ID error: calculatedExpectedCash is not defined
+ReferenceError: calculatedExpectedCash is not defined
+    at Object.getShiftSummaryById (E:\restro-backend\src\services\payment.service.js:2205:23)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getShiftSummaryById (E:\restro-backend\src\controllers\order.controller.js:1335:23)
+2026-03-01 10:06:35 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:06:40 [ERROR]: Direct Bill print failed for INV/2526/000059:
+2026-03-01 10:06:40 [ERROR]: Direct bill print failed for INV/2526/000059:
+2026-03-01 10:06:40 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:07:09 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:07:14 [ERROR]: Direct Bill print failed for INV/2526/000060:
+2026-03-01 10:07:14 [ERROR]: Direct bill print failed for INV/2526/000060:
+2026-03-01 10:07:14 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:08:20 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:08:25 [ERROR]: Direct Bill print failed for INV/2526/000061:
+2026-03-01 10:08:25 [ERROR]: Direct bill print failed for INV/2526/000061:
+2026-03-01 10:08:25 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:08:49 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:08:54 [ERROR]: Direct Bill print failed for INV/2526/000062:
+2026-03-01 10:08:54 [ERROR]: Direct bill print failed for INV/2526/000062:
+2026-03-01 10:08:54 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:09:26 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:09:31 [ERROR]: Direct Bill print failed for INV/2526/000063:
+2026-03-01 10:09:31 [ERROR]: Direct bill print failed for INV/2526/000063:
+2026-03-01 10:09:31 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:11:05 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:11:10 [ERROR]: Direct Bill print failed for INV/2526/000064:
+2026-03-01 10:11:10 [ERROR]: Direct bill print failed for INV/2526/000064:
+2026-03-01 10:11:10 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:11:18 [ERROR]: Cancel order error: Order cannot be cancelled after bill is generated or when completed/cancelled
+Error: Order cannot be cancelled after bill is generated or when completed/cancelled
+    at Object.cancelOrder (E:\restro-backend\src\services\order.service.js:1302:15)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async cancelOrder (E:\restro-backend\src\controllers\order.controller.js:151:21)
+2026-03-01 10:11:23 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:522:11)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:11:28 [ERROR]: Direct Bill print failed for INV/2526/000064:
+2026-03-01 10:11:28 [ERROR]: Direct bill print failed for INV/2526/000064:
+2026-03-01 10:11:28 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:522:11)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:11:56 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:12:01 [ERROR]: Direct Bill print failed for INV/2526/000065:
+2026-03-01 10:12:01 [ERROR]: Direct bill print failed for INV/2526/000065:
+2026-03-01 10:12:01 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:12:37 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:12:42 [ERROR]: Direct Bill print failed for INV/2526/000066:
+2026-03-01 10:12:42 [ERROR]: Direct bill print failed for INV/2526/000066:
+2026-03-01 10:12:42 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:22:00 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:22:05 [ERROR]: Direct Bill print failed for INV/2526/000067:
+2026-03-01 10:22:05 [ERROR]: Direct bill print failed for INV/2526/000067:
+2026-03-01 10:22:05 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:25:59 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:26:04 [ERROR]: Direct Bill print failed for INV/2526/000068:
+2026-03-01 10:26:04 [ERROR]: Direct bill print failed for INV/2526/000068:
+2026-03-01 10:26:04 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:42:06 [ERROR]: Open cash drawer error: Shift already open for this floor
+Error: Shift already open for this floor
+    at Object.openCashDrawer (E:\restro-backend\src\services\payment.service.js:940:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async openCashDrawer (E:\restro-backend\src\controllers\order.controller.js:701:22)
+2026-03-01 10:42:58 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:43:03 [ERROR]: Direct Bill print failed for INV/2526/000069:
+2026-03-01 10:43:03 [ERROR]: Direct bill print failed for INV/2526/000069:
+2026-03-01 10:43:03 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:46:08 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:46:13 [ERROR]: Direct Bill print failed for INV/2526/000070:
+2026-03-01 10:46:13 [ERROR]: Direct bill print failed for INV/2526/000070:
+2026-03-01 10:46:13 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:59:32 [ERROR]: Open cash drawer error: Shift already open for this floor
+Error: Shift already open for this floor
+    at Object.openCashDrawer (E:\restro-backend\src\services\payment.service.js:940:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async openCashDrawer (E:\restro-backend\src\controllers\order.controller.js:701:22)
+2026-03-01 10:59:33 [ERROR]: Open cash drawer error: Shift already open for this floor
+Error: Shift already open for this floor
+    at Object.openCashDrawer (E:\restro-backend\src\services\payment.service.js:940:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async openCashDrawer (E:\restro-backend\src\controllers\order.controller.js:701:22)
+2026-03-01 10:59:51 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 10:59:56 [ERROR]: Direct Bill print failed for INV/2526/000071:
+2026-03-01 10:59:56 [ERROR]: Direct bill print failed for INV/2526/000071:
+2026-03-01 10:59:56 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 11:09:40 [ERROR]: Open cash drawer error: Duplicate entry '43-32-2026-03-01' for key 'uk_day_session_floor' {"code":"ER_DUP_ENTRY","errno":1062,"sql":"INSERT INTO day_sessions (\n        outlet_id, floor_id, session_date, opening_time, opening_cash, status, opened_by, cashier_id\n      ) VALUES ('43', 32, '2026-03-01', NOW(), 1000, 'open', 177, 177)","sqlState":"23000","sqlMessage":"Duplicate entry '43-32-2026-03-01' for key 'uk_day_session_floor'"}
+Error: Duplicate entry '43-32-2026-03-01' for key 'uk_day_session_floor'
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.openCashDrawer (E:\restro-backend\src\services\payment.service.js:945:33)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async openCashDrawer (E:\restro-backend\src\controllers\order.controller.js:701:22)
+2026-03-01 11:09:41 [ERROR]: Open cash drawer error: Duplicate entry '43-32-2026-03-01' for key 'uk_day_session_floor' {"code":"ER_DUP_ENTRY","errno":1062,"sql":"INSERT INTO day_sessions (\n        outlet_id, floor_id, session_date, opening_time, opening_cash, status, opened_by, cashier_id\n      ) VALUES ('43', 32, '2026-03-01', NOW(), 1000, 'open', 177, 177)","sqlState":"23000","sqlMessage":"Duplicate entry '43-32-2026-03-01' for key 'uk_day_session_floor'"}
+Error: Duplicate entry '43-32-2026-03-01' for key 'uk_day_session_floor'
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.openCashDrawer (E:\restro-backend\src\services\payment.service.js:945:33)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async openCashDrawer (E:\restro-backend\src\controllers\order.controller.js:701:22)
+2026-03-01 11:09:57 [ERROR]: Open cash drawer error: Duplicate entry '43-32-2026-03-01' for key 'uk_day_session_floor' {"code":"ER_DUP_ENTRY","errno":1062,"sql":"INSERT INTO day_sessions (\n        outlet_id, floor_id, session_date, opening_time, opening_cash, status, opened_by, cashier_id\n      ) VALUES ('43', 32, '2026-03-01', NOW(), 1000, 'open', 177, 177)","sqlState":"23000","sqlMessage":"Duplicate entry '43-32-2026-03-01' for key 'uk_day_session_floor'"}
+Error: Duplicate entry '43-32-2026-03-01' for key 'uk_day_session_floor'
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.openCashDrawer (E:\restro-backend\src\services\payment.service.js:945:33)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async openCashDrawer (E:\restro-backend\src\controllers\order.controller.js:701:22)
+2026-03-01 11:12:30 [ERROR]: Open cash drawer error: Duplicate entry '43-32-2026-03-01' for key 'uk_day_session_floor' {"code":"ER_DUP_ENTRY","errno":1062,"sql":"INSERT INTO day_sessions (\n        outlet_id, floor_id, session_date, opening_time, opening_cash, status, opened_by, cashier_id\n      ) VALUES ('43', 32, '2026-03-01', NOW(), 1000, 'open', 177, 177)","sqlState":"23000","sqlMessage":"Duplicate entry '43-32-2026-03-01' for key 'uk_day_session_floor'"}
+Error: Duplicate entry '43-32-2026-03-01' for key 'uk_day_session_floor'
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.openCashDrawer (E:\restro-backend\src\services\payment.service.js:945:33)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async openCashDrawer (E:\restro-backend\src\controllers\order.controller.js:701:22)
+2026-03-01 11:12:44 [ERROR]: Open cash drawer error: Duplicate entry '43-32-2026-03-01' for key 'uk_day_session_floor' {"code":"ER_DUP_ENTRY","errno":1062,"sql":"INSERT INTO day_sessions (\n        outlet_id, floor_id, session_date, opening_time, opening_cash, status, opened_by, cashier_id\n      ) VALUES ('43', 32, '2026-03-01', NOW(), 1000, 'open', 177, 177)","sqlState":"23000","sqlMessage":"Duplicate entry '43-32-2026-03-01' for key 'uk_day_session_floor'"}
+Error: Duplicate entry '43-32-2026-03-01' for key 'uk_day_session_floor'
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.openCashDrawer (E:\restro-backend\src\services\payment.service.js:945:33)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async openCashDrawer (E:\restro-backend\src\controllers\order.controller.js:701:22)
+2026-03-01 11:13:03 [ERROR]: Open cash drawer error: Duplicate entry '43-32-2026-03-01' for key 'uk_day_session_floor' {"code":"ER_DUP_ENTRY","errno":1062,"sql":"INSERT INTO day_sessions (\n        outlet_id, floor_id, session_date, opening_time, opening_cash, status, opened_by, cashier_id\n      ) VALUES ('43', 32, '2026-03-01', NOW(), 1000, 'open', 177, 177)","sqlState":"23000","sqlMessage":"Duplicate entry '43-32-2026-03-01' for key 'uk_day_session_floor'"}
+Error: Duplicate entry '43-32-2026-03-01' for key 'uk_day_session_floor'
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.openCashDrawer (E:\restro-backend\src\services\payment.service.js:945:33)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async openCashDrawer (E:\restro-backend\src\controllers\order.controller.js:701:22)
+2026-03-01 11:16:04 [ERROR]: Open cash drawer error: Shift already open for this floor
+Error: Shift already open for this floor
+    at Object.openCashDrawer (E:\restro-backend\src\services\payment.service.js:940:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async openCashDrawer (E:\restro-backend\src\controllers\order.controller.js:701:22)
+2026-03-01 11:16:05 [ERROR]: Open cash drawer error: Shift already open for this floor
+Error: Shift already open for this floor
+    at Object.openCashDrawer (E:\restro-backend\src\services\payment.service.js:940:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async openCashDrawer (E:\restro-backend\src\controllers\order.controller.js:701:22)
+2026-03-01 11:18:27 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 11:18:32 [ERROR]: Direct Bill print failed for INV/2526/000072:
+2026-03-01 11:18:32 [ERROR]: Direct bill print failed for INV/2526/000072:
+2026-03-01 11:18:32 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 11:40:39 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 11:40:44 [ERROR]: Direct Bill print failed for INV/2526/000073:
+2026-03-01 11:40:44 [ERROR]: Direct bill print failed for INV/2526/000073:
+2026-03-01 11:40:44 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 11:42:39 [ERROR]: Open cash drawer error: Shift already open for this floor
+Error: Shift already open for this floor
+    at Object.openCashDrawer (E:\restro-backend\src\services\payment.service.js:940:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async openCashDrawer (E:\restro-backend\src\controllers\order.controller.js:701:22)
+2026-03-01 11:43:01 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 11:43:06 [ERROR]: Direct Bill print failed for INV/2526/000074:
+2026-03-01 11:43:06 [ERROR]: Direct bill print failed for INV/2526/000074:
+2026-03-01 11:43:06 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 11:49:53 [ERROR]: Open cash drawer error: Shift already open for this floor
+Error: Shift already open for this floor
+    at Object.openCashDrawer (E:\restro-backend\src\services\payment.service.js:940:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async openCashDrawer (E:\restro-backend\src\controllers\order.controller.js:701:22)
+2026-03-01 11:50:10 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 11:50:15 [ERROR]: Direct Bill print failed for INV/2526/000075:
+2026-03-01 11:50:15 [ERROR]: Direct bill print failed for INV/2526/000075:
+2026-03-01 11:50:15 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 11:50:39 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 11:50:44 [ERROR]: Direct Bill print failed for INV/2526/000076:
+2026-03-01 11:50:44 [ERROR]: Direct bill print failed for INV/2526/000076:
+2026-03-01 11:50:44 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 11:58:57 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 11:59:06 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:522:11)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 11:59:11 [ERROR]: Direct Bill print failed for INV/2526/000077:
+2026-03-01 11:59:11 [ERROR]: Direct bill print failed for INV/2526/000077:
+2026-03-01 11:59:11 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:522:11)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 11:59:22 [ERROR]: Close cash drawer error: dayTotals is not defined
+ReferenceError: dayTotals is not defined
+    at Object.closeCashDrawer (E:\restro-backend\src\services\payment.service.js:1085:11)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async closeCashDrawer (E:\restro-backend\src\controllers\order.controller.js:718:22)
+2026-03-01 11:59:49 [ERROR]: Close cash drawer error: dayTotals is not defined
+ReferenceError: dayTotals is not defined
+    at Object.closeCashDrawer (E:\restro-backend\src\services\payment.service.js:1109:21)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async closeCashDrawer (E:\restro-backend\src\controllers\order.controller.js:718:22)
+2026-03-01 12:01:25 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 12:01:30 [ERROR]: Direct Bill print failed for INV/2526/000078:
+2026-03-01 12:01:30 [ERROR]: Direct bill print failed for INV/2526/000078:
+2026-03-01 12:01:30 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 12:12:58 [ERROR]: Close cash drawer error: dayTotals is not defined
+ReferenceError: dayTotals is not defined
+    at Object.closeCashDrawer (E:\restro-backend\src\services\payment.service.js:1127:21)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async closeCashDrawer (E:\restro-backend\src\controllers\order.controller.js:718:22)
+2026-03-01 12:13:57 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 12:14:02 [ERROR]: Direct Bill print failed for INV/2526/000079:
+2026-03-01 12:14:02 [ERROR]: Direct bill print failed for INV/2526/000079:
+2026-03-01 12:14:02 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:685:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 12:24:54 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.printInvoice (E:\restro-backend\src\services\billing.service.js:983:5)
+    at async printInvoice (E:\restro-backend\src\controllers\order.controller.js:445:23)
+2026-03-01 12:24:59 [ERROR]: Direct Bill print failed for INV/2526/000079:
+2026-03-01 12:24:59 [ERROR]: Direct bill print failed for INV/2526/000079:
+2026-03-01 12:24:59 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.printInvoice (E:\restro-backend\src\services\billing.service.js:983:5)
+    at async printInvoice (E:\restro-backend\src\controllers\order.controller.js:445:23)
+2026-03-01 12:25:45 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1402:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:373:9)
+    at async Object.printInvoice (E:\restro-backend\src\services\billing.service.js:983:5)
+    at async printInvoice (E:\restro-backend\src\controllers\order.controller.js:445:23)
+2026-03-01 12:25:50 [ERROR]: Direct Bill print failed for INV/2526/000079:
+2026-03-01 12:25:50 [ERROR]: Direct bill print failed for INV/2526/000079:
+2026-03-01 12:25:50 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1254:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:381:5)
+    at async Object.printInvoice (E:\restro-backend\src\services\billing.service.js:983:5)
+    at async printInvoice (E:\restro-backend\src\controllers\order.controller.js:445:23)
+2026-03-01 12:35:51 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1413:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:379:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:691:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 12:35:56 [ERROR]: Direct Bill print failed for INV/2526/000080:
+2026-03-01 12:35:56 [ERROR]: Direct bill print failed for INV/2526/000080:
+2026-03-01 12:35:56 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1265:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:387:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:691:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 12:40:48 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1413:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:379:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:691:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 12:40:53 [ERROR]: Direct Bill print failed for INV/2526/000081:
+2026-03-01 12:40:53 [ERROR]: Direct bill print failed for INV/2526/000081:
+2026-03-01 12:40:53 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1265:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:387:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:691:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 12:50:28 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBillDirect (E:\restro-backend\src\services\printer.service.js:1413:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:379:9)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:691:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 12:50:33 [ERROR]: Direct Bill print failed for INV/2526/000082:
+2026-03-01 12:50:33 [ERROR]: Direct bill print failed for INV/2526/000082:
+2026-03-01 12:50:33 [ERROR]: Image to ESC/POS conversion failed: Input buffer contains unsupported image format
+Error: Input buffer contains unsupported image format
+    at Sharp.metadata (E:\restro-backend\node_modules\sharp\lib\input.js:637:17)
+    at imageToEscPos (E:\restro-backend\src\utils\escpos-image.js:57:47)
+    at async loadOutletLogo (E:\restro-backend\src\utils\escpos-image.js:173:24)
+    at async Object.printBill (E:\restro-backend\src\services\printer.service.js:1265:16)
+    at async Object.printBillToThermal (E:\restro-backend\src\services\billing.service.js:387:5)
+    at async Object.generateBill (E:\restro-backend\src\services\billing.service.js:691:9)
+    at async generateBill (E:\restro-backend\src\controllers\order.controller.js:390:23)
+2026-03-01 22:17:20 [ERROR]: Direct KOT print failed for KOT0301030:
+2026-03-01 22:17:20 [ERROR]: Failed to print KOT KOT0301030:
+2026-03-01 22:17:25 [ERROR]: Direct KOT print failed for BOT0301001:
+2026-03-01 22:17:25 [ERROR]: Failed to print KOT BOT0301001:
+2026-03-01 22:17:30 [ERROR]: Direct KOT print failed for KOT0301001:
+2026-03-01 22:17:30 [ERROR]: Failed to print KOT KOT0301001:
+2026-03-01 22:23:15 [ERROR]: Direct KOT print failed for BOT0301002:
+2026-03-01 22:23:15 [ERROR]: Failed to print KOT BOT0301002:
+2026-03-01 22:23:20 [ERROR]: Direct KOT print failed for KOT0301001:
+2026-03-01 22:23:20 [ERROR]: Failed to print KOT KOT0301001:
+2026-03-01 22:23:25 [ERROR]: Direct KOT print failed for KOT0301031:
+2026-03-01 22:23:25 [ERROR]: Failed to print KOT KOT0301031:
+2026-03-01 22:23:30 [ERROR]: Direct KOT print failed for KOT0301002:
+2026-03-01 22:23:30 [ERROR]: Failed to print KOT KOT0301002:
+2026-03-02 17:09:27 [ERROR]: Get daily sales report error: Table 'restro.payments' doesn't exist in engine {"errno":1932,"sql":"SELECT \n        DATE(p.created_at) as report_date,\n        SUM(p.total_amount) as total_collection,\n        SUM(CASE WHEN p.payment_mode = 'cash' THEN p.total_amount ELSE 0 END) as cash_collection,\n        SUM(CASE WHEN p.payment_mode = 'card' THEN p.total_amount ELSE 0 END) as card_collection,\n        SUM(CASE WHEN p.payment_mode = 'upi' THEN p.total_amount ELSE 0 END) as upi_collection,\n        SUM(CASE WHEN p.payment_mode = 'wallet' THEN p.total_amount ELSE 0 END) as wallet_collection,\n        SUM(CASE WHEN p.payment_mode = 'credit' THEN p.total_amount ELSE 0 END) as credit_collection,\n        SUM(p.tip_amount) as tip_amount\n       FROM payments p\n       JOIN orders o ON p.order_id = o.id\n       WHERE p.outlet_id = '43' AND DATE(p.created_at) BETWEEN '2026-02-24' AND '2026-03-02' AND p.status = 'completed' AND p.payment_mode != 'split'\n       GROUP BY DATE(p.created_at)","sqlState":"42S02","sqlMessage":"Table 'restro.payments' doesn't exist in engine"}
+Error: Table 'restro.payments' doesn't exist in engine
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.getDailySalesReport (E:\restro-backend\src\services\reports.service.js:337:34)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getDailySalesReport (E:\restro-backend\src\controllers\order.controller.js:801:22)
+2026-03-02 17:09:35 [ERROR]: Get daily sales report error: Table 'restro.payments' doesn't exist in engine {"errno":1932,"sql":"SELECT \n        DATE(p.created_at) as report_date,\n        SUM(p.total_amount) as total_collection,\n        SUM(CASE WHEN p.payment_mode = 'cash' THEN p.total_amount ELSE 0 END) as cash_collection,\n        SUM(CASE WHEN p.payment_mode = 'card' THEN p.total_amount ELSE 0 END) as card_collection,\n        SUM(CASE WHEN p.payment_mode = 'upi' THEN p.total_amount ELSE 0 END) as upi_collection,\n        SUM(CASE WHEN p.payment_mode = 'wallet' THEN p.total_amount ELSE 0 END) as wallet_collection,\n        SUM(CASE WHEN p.payment_mode = 'credit' THEN p.total_amount ELSE 0 END) as credit_collection,\n        SUM(p.tip_amount) as tip_amount\n       FROM payments p\n       JOIN orders o ON p.order_id = o.id\n       WHERE p.outlet_id = '43' AND DATE(p.created_at) BETWEEN '2026-02-24' AND '2026-03-02' AND p.status = 'completed' AND p.payment_mode != 'split'\n       GROUP BY DATE(p.created_at)","sqlState":"42S02","sqlMessage":"Table 'restro.payments' doesn't exist in engine"}
+Error: Table 'restro.payments' doesn't exist in engine
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.getDailySalesReport (E:\restro-backend\src\services\reports.service.js:337:34)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getDailySalesReport (E:\restro-backend\src\controllers\order.controller.js:801:22)
+2026-03-02 17:09:40 [ERROR]: Get shift history error: Table 'restro.day_sessions' doesn't exist in engine {"errno":1932,"sql":"SELECT COUNT(*) as total FROM day_sessions ds WHERE ds.outlet_id = '43' AND ds.session_date >= '2026-02-24' AND ds.session_date <= '2026-03-02'","sqlState":"42S02","sqlMessage":"Table 'restro.day_sessions' doesn't exist in engine"}
+Error: Table 'restro.day_sessions' doesn't exist in engine
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.getShiftHistory (E:\restro-backend\src\services\payment.service.js:1802:38)
+    at getShiftHistory (E:\restro-backend\src\controllers\order.controller.js:1279:43)
+    at Layer.handle [as handle_request] (E:\restro-backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (E:\restro-backend\node_modules\express\lib\router\route.js:149:13)
+    at E:\restro-backend\src\middlewares\auth.middleware.js:119:14
+    at Layer.handle [as handle_request] (E:\restro-backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (E:\restro-backend\node_modules\express\lib\router\route.js:149:13)
+    at Route.dispatch (E:\restro-backend\node_modules\express\lib\router\route.js:119:3)
+    at Layer.handle [as handle_request] (E:\restro-backend\node_modules\express\lib\router\layer.js:95:5)
+2026-03-02 17:09:44 [ERROR]: Get shift history error: Table 'restro.day_sessions' doesn't exist in engine {"errno":1932,"sql":"SELECT COUNT(*) as total FROM day_sessions ds WHERE ds.outlet_id = '43' AND ds.session_date >= '2026-02-24' AND ds.session_date <= '2026-03-02'","sqlState":"42S02","sqlMessage":"Table 'restro.day_sessions' doesn't exist in engine"}
+Error: Table 'restro.day_sessions' doesn't exist in engine
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.getShiftHistory (E:\restro-backend\src\services\payment.service.js:1802:38)
+    at getShiftHistory (E:\restro-backend\src\controllers\order.controller.js:1279:43)
+    at Layer.handle [as handle_request] (E:\restro-backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (E:\restro-backend\node_modules\express\lib\router\route.js:149:13)
+    at E:\restro-backend\src\middlewares\auth.middleware.js:119:14
+    at Layer.handle [as handle_request] (E:\restro-backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (E:\restro-backend\node_modules\express\lib\router\route.js:149:13)
+    at Route.dispatch (E:\restro-backend\node_modules\express\lib\router\route.js:119:3)
+    at Layer.handle [as handle_request] (E:\restro-backend\node_modules\express\lib\router\layer.js:95:5)
+2026-03-02 17:10:19 [ERROR]: Get customer details error: Table 'restro.payments' doesn't exist in engine {"errno":1932,"sql":"SELECT\n           p.id, p.order_id, p.invoice_id,\n           p.payment_mode, p.amount, p.tip_amount, p.total_amount,\n           p.status, p.transaction_id, p.reference_number,\n           p.created_at\n         FROM payments p\n         WHERE p.order_id IN (640)\n         ORDER BY p.order_id ASC, p.created_at ASC, p.id ASC","sqlState":"42S02","sqlMessage":"Table 'restro.payments' doesn't exist in engine"}
+Error: Table 'restro.payments' doesn't exist in engine
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.getCustomerDetails (E:\restro-backend\src\services\customer.service.js:686:37)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getDetails (E:\restro-backend\src\controllers\customer.controller.js:183:22)
+2026-03-02 17:10:20 [ERROR]: Get customer details error: Table 'restro.payments' doesn't exist in engine {"errno":1932,"sql":"SELECT\n           p.id, p.order_id, p.invoice_id,\n           p.payment_mode, p.amount, p.tip_amount, p.total_amount,\n           p.status, p.transaction_id, p.reference_number,\n           p.created_at\n         FROM payments p\n         WHERE p.order_id IN (640)\n         ORDER BY p.order_id ASC, p.created_at ASC, p.id ASC","sqlState":"42S02","sqlMessage":"Table 'restro.payments' doesn't exist in engine"}
+Error: Table 'restro.payments' doesn't exist in engine
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.getCustomerDetails (E:\restro-backend\src\services\customer.service.js:686:37)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getDetails (E:\restro-backend\src\controllers\customer.controller.js:183:22)
+2026-03-02 17:10:22 [ERROR]: Get customer details error: Table 'restro.payments' doesn't exist in engine {"errno":1932,"sql":"SELECT\n           p.id, p.order_id, p.invoice_id,\n           p.payment_mode, p.amount, p.tip_amount, p.total_amount,\n           p.status, p.transaction_id, p.reference_number,\n           p.created_at\n         FROM payments p\n         WHERE p.order_id IN (640)\n         ORDER BY p.order_id ASC, p.created_at ASC, p.id ASC","sqlState":"42S02","sqlMessage":"Table 'restro.payments' doesn't exist in engine"}
+Error: Table 'restro.payments' doesn't exist in engine
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.getCustomerDetails (E:\restro-backend\src\services\customer.service.js:686:37)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getDetails (E:\restro-backend\src\controllers\customer.controller.js:183:22)
+2026-03-02 17:10:22 [ERROR]: Get customer details error: Table 'restro.payments' doesn't exist in engine {"errno":1932,"sql":"SELECT\n           p.id, p.order_id, p.invoice_id,\n           p.payment_mode, p.amount, p.tip_amount, p.total_amount,\n           p.status, p.transaction_id, p.reference_number,\n           p.created_at\n         FROM payments p\n         WHERE p.order_id IN (640)\n         ORDER BY p.order_id ASC, p.created_at ASC, p.id ASC","sqlState":"42S02","sqlMessage":"Table 'restro.payments' doesn't exist in engine"}
+Error: Table 'restro.payments' doesn't exist in engine
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.getCustomerDetails (E:\restro-backend\src\services\customer.service.js:686:37)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getDetails (E:\restro-backend\src\controllers\customer.controller.js:183:22)
+2026-03-02 17:10:29 [ERROR]: Get admin order list error: Table 'restro.payments' doesn't exist in engine {"errno":1932,"sql":"SELECT \n        o.*,\n        ol.name as outlet_name,\n        t.table_number,\n        t.name as table_name,\n        f.name as floor_name,\n        s.name as section_name,\n        captain.name as captain_name,\n        inv.id as invoice_id,\n        inv.invoice_number,\n        inv.grand_total as invoice_total,\n        inv.payment_status as invoice_payment_status,\n        (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count,\n        (SELECT COUNT(*) FROM kot_tickets WHERE order_id = o.id) as kot_count,\n        (SELECT SUM(total_amount) FROM payments WHERE order_id = o.id AND status = 'completed') as paid_amount\n       FROM orders o\n       LEFT JOIN outlets ol ON o.outlet_id = ol.id\n       LEFT JOIN tables t ON o.table_id = t.id\n       LEFT JOIN floors f ON t.floor_id = f.id\n       LEFT JOIN sections s ON t.section_id = s.id\n       LEFT JOIN users captain ON o.created_by = captain.id\n       LEFT JOIN invoices inv ON o.id = inv.order_id\n       WHERE o.outlet_id = '43'\n       GROUP BY o.id\n       ORDER BY o.created_at DESC\n       LIMIT 10 OFFSET 0","sqlState":"42S02","sqlMessage":"Table 'restro.payments' doesn't exist in engine"}
+Error: Table 'restro.payments' doesn't exist in engine
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.getAdminOrderList (E:\restro-backend\src\services\order.service.js:2127:33)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getAdminOrderList (E:\restro-backend\src\controllers\order.controller.js:1418:22)
+2026-03-02 17:10:29 [ERROR]: Get admin order list error: Table 'restro.payments' doesn't exist in engine {"errno":1932,"sql":"SELECT \n        o.*,\n        ol.name as outlet_name,\n        t.table_number,\n        t.name as table_name,\n        f.name as floor_name,\n        s.name as section_name,\n        captain.name as captain_name,\n        inv.id as invoice_id,\n        inv.invoice_number,\n        inv.grand_total as invoice_total,\n        inv.payment_status as invoice_payment_status,\n        (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count,\n        (SELECT COUNT(*) FROM kot_tickets WHERE order_id = o.id) as kot_count,\n        (SELECT SUM(total_amount) FROM payments WHERE order_id = o.id AND status = 'completed') as paid_amount\n       FROM orders o\n       LEFT JOIN outlets ol ON o.outlet_id = ol.id\n       LEFT JOIN tables t ON o.table_id = t.id\n       LEFT JOIN floors f ON t.floor_id = f.id\n       LEFT JOIN sections s ON t.section_id = s.id\n       LEFT JOIN users captain ON o.created_by = captain.id\n       LEFT JOIN invoices inv ON o.id = inv.order_id\n       WHERE o.outlet_id = '43'\n       GROUP BY o.id\n       ORDER BY o.created_at DESC\n       LIMIT 10 OFFSET 0","sqlState":"42S02","sqlMessage":"Table 'restro.payments' doesn't exist in engine"}
+Error: Table 'restro.payments' doesn't exist in engine
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.getAdminOrderList (E:\restro-backend\src\services\order.service.js:2127:33)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getAdminOrderList (E:\restro-backend\src\controllers\order.controller.js:1418:22)
+2026-03-02 17:15:11 [ERROR]: Get admin order list error: Table 'restro.payments' doesn't exist in engine {"errno":1932,"sql":"SELECT \n        o.*,\n        ol.name as outlet_name,\n        t.table_number,\n        t.name as table_name,\n        f.name as floor_name,\n        s.name as section_name,\n        captain.name as captain_name,\n        inv.id as invoice_id,\n        inv.invoice_number,\n        inv.grand_total as invoice_total,\n        inv.payment_status as invoice_payment_status,\n        (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count,\n        (SELECT COUNT(*) FROM kot_tickets WHERE order_id = o.id) as kot_count,\n        (SELECT SUM(total_amount) FROM payments WHERE order_id = o.id AND status = 'completed') as paid_amount\n       FROM orders o\n       LEFT JOIN outlets ol ON o.outlet_id = ol.id\n       LEFT JOIN tables t ON o.table_id = t.id\n       LEFT JOIN floors f ON t.floor_id = f.id\n       LEFT JOIN sections s ON t.section_id = s.id\n       LEFT JOIN users captain ON o.created_by = captain.id\n       LEFT JOIN invoices inv ON o.id = inv.order_id\n       WHERE o.outlet_id = '43'\n       GROUP BY o.id\n       ORDER BY o.created_at DESC\n       LIMIT 10 OFFSET 0","sqlState":"42S02","sqlMessage":"Table 'restro.payments' doesn't exist in engine"}
+Error: Table 'restro.payments' doesn't exist in engine
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.getAdminOrderList (E:\restro-backend\src\services\order.service.js:2127:33)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getAdminOrderList (E:\restro-backend\src\controllers\order.controller.js:1418:22)
+2026-03-02 17:15:12 [ERROR]: Get admin order list error: Table 'restro.payments' doesn't exist in engine {"errno":1932,"sql":"SELECT \n        o.*,\n        ol.name as outlet_name,\n        t.table_number,\n        t.name as table_name,\n        f.name as floor_name,\n        s.name as section_name,\n        captain.name as captain_name,\n        inv.id as invoice_id,\n        inv.invoice_number,\n        inv.grand_total as invoice_total,\n        inv.payment_status as invoice_payment_status,\n        (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count,\n        (SELECT COUNT(*) FROM kot_tickets WHERE order_id = o.id) as kot_count,\n        (SELECT SUM(total_amount) FROM payments WHERE order_id = o.id AND status = 'completed') as paid_amount\n       FROM orders o\n       LEFT JOIN outlets ol ON o.outlet_id = ol.id\n       LEFT JOIN tables t ON o.table_id = t.id\n       LEFT JOIN floors f ON t.floor_id = f.id\n       LEFT JOIN sections s ON t.section_id = s.id\n       LEFT JOIN users captain ON o.created_by = captain.id\n       LEFT JOIN invoices inv ON o.id = inv.order_id\n       WHERE o.outlet_id = '43'\n       GROUP BY o.id\n       ORDER BY o.created_at DESC\n       LIMIT 10 OFFSET 0","sqlState":"42S02","sqlMessage":"Table 'restro.payments' doesn't exist in engine"}
+Error: Table 'restro.payments' doesn't exist in engine
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.getAdminOrderList (E:\restro-backend\src\services\order.service.js:2127:33)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getAdminOrderList (E:\restro-backend\src\controllers\order.controller.js:1418:22)
+2026-03-02 17:17:21 [ERROR]: Get admin order list error: Table 'restro.payments' doesn't exist in engine {"errno":1932,"sql":"SELECT \n        o.*,\n        ol.name as outlet_name,\n        t.table_number,\n        t.name as table_name,\n        f.name as floor_name,\n        s.name as section_name,\n        captain.name as captain_name,\n        inv.id as invoice_id,\n        inv.invoice_number,\n        inv.grand_total as invoice_total,\n        inv.payment_status as invoice_payment_status,\n        (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count,\n        (SELECT COUNT(*) FROM kot_tickets WHERE order_id = o.id) as kot_count,\n        (SELECT SUM(total_amount) FROM payments WHERE order_id = o.id AND status = 'completed') as paid_amount\n       FROM orders o\n       LEFT JOIN outlets ol ON o.outlet_id = ol.id\n       LEFT JOIN tables t ON o.table_id = t.id\n       LEFT JOIN floors f ON t.floor_id = f.id\n       LEFT JOIN sections s ON t.section_id = s.id\n       LEFT JOIN users captain ON o.created_by = captain.id\n       LEFT JOIN invoices inv ON o.id = inv.order_id\n       WHERE o.outlet_id = '43'\n       GROUP BY o.id\n       ORDER BY o.created_at DESC\n       LIMIT 10 OFFSET 0","sqlState":"42S02","sqlMessage":"Table 'restro.payments' doesn't exist in engine"}
+Error: Table 'restro.payments' doesn't exist in engine
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.getAdminOrderList (E:\restro-backend\src\services\order.service.js:2127:33)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getAdminOrderList (E:\restro-backend\src\controllers\order.controller.js:1418:22)
+2026-03-02 17:17:22 [ERROR]: Get admin order list error: Table 'restro.payments' doesn't exist in engine {"errno":1932,"sql":"SELECT \n        o.*,\n        ol.name as outlet_name,\n        t.table_number,\n        t.name as table_name,\n        f.name as floor_name,\n        s.name as section_name,\n        captain.name as captain_name,\n        inv.id as invoice_id,\n        inv.invoice_number,\n        inv.grand_total as invoice_total,\n        inv.payment_status as invoice_payment_status,\n        (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count,\n        (SELECT COUNT(*) FROM kot_tickets WHERE order_id = o.id) as kot_count,\n        (SELECT SUM(total_amount) FROM payments WHERE order_id = o.id AND status = 'completed') as paid_amount\n       FROM orders o\n       LEFT JOIN outlets ol ON o.outlet_id = ol.id\n       LEFT JOIN tables t ON o.table_id = t.id\n       LEFT JOIN floors f ON t.floor_id = f.id\n       LEFT JOIN sections s ON t.section_id = s.id\n       LEFT JOIN users captain ON o.created_by = captain.id\n       LEFT JOIN invoices inv ON o.id = inv.order_id\n       WHERE o.outlet_id = '43'\n       GROUP BY o.id\n       ORDER BY o.created_at DESC\n       LIMIT 10 OFFSET 0","sqlState":"42S02","sqlMessage":"Table 'restro.payments' doesn't exist in engine"}
+Error: Table 'restro.payments' doesn't exist in engine
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.getAdminOrderList (E:\restro-backend\src\services\order.service.js:2127:33)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getAdminOrderList (E:\restro-backend\src\controllers\order.controller.js:1418:22)
+2026-03-02 17:24:15 [ERROR]: Get admin order list error: Table 'restro.payments' doesn't exist in engine {"errno":1932,"sql":"SELECT \n        o.*,\n        ol.name as outlet_name,\n        t.table_number,\n        t.name as table_name,\n        f.name as floor_name,\n        s.name as section_name,\n        captain.name as captain_name,\n        inv.id as invoice_id,\n        inv.invoice_number,\n        inv.grand_total as invoice_total,\n        inv.payment_status as invoice_payment_status,\n        (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count,\n        (SELECT COUNT(*) FROM kot_tickets WHERE order_id = o.id) as kot_count,\n        (SELECT SUM(total_amount) FROM payments WHERE order_id = o.id AND status = 'completed') as paid_amount\n       FROM orders o\n       LEFT JOIN outlets ol ON o.outlet_id = ol.id\n       LEFT JOIN tables t ON o.table_id = t.id\n       LEFT JOIN floors f ON t.floor_id = f.id\n       LEFT JOIN sections s ON t.section_id = s.id\n       LEFT JOIN users captain ON o.created_by = captain.id\n       LEFT JOIN invoices inv ON o.id = inv.order_id\n       WHERE o.outlet_id = '43'\n       GROUP BY o.id\n       ORDER BY o.created_at DESC\n       LIMIT 10 OFFSET 0","sqlState":"42S02","sqlMessage":"Table 'restro.payments' doesn't exist in engine"}
+Error: Table 'restro.payments' doesn't exist in engine
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.getAdminOrderList (E:\restro-backend\src\services\order.service.js:2127:33)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getAdminOrderList (E:\restro-backend\src\controllers\order.controller.js:1418:22)
+2026-03-02 17:24:15 [ERROR]: Get admin order list error: Table 'restro.payments' doesn't exist in engine {"errno":1932,"sql":"SELECT \n        o.*,\n        ol.name as outlet_name,\n        t.table_number,\n        t.name as table_name,\n        f.name as floor_name,\n        s.name as section_name,\n        captain.name as captain_name,\n        inv.id as invoice_id,\n        inv.invoice_number,\n        inv.grand_total as invoice_total,\n        inv.payment_status as invoice_payment_status,\n        (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count,\n        (SELECT COUNT(*) FROM kot_tickets WHERE order_id = o.id) as kot_count,\n        (SELECT SUM(total_amount) FROM payments WHERE order_id = o.id AND status = 'completed') as paid_amount\n       FROM orders o\n       LEFT JOIN outlets ol ON o.outlet_id = ol.id\n       LEFT JOIN tables t ON o.table_id = t.id\n       LEFT JOIN floors f ON t.floor_id = f.id\n       LEFT JOIN sections s ON t.section_id = s.id\n       LEFT JOIN users captain ON o.created_by = captain.id\n       LEFT JOIN invoices inv ON o.id = inv.order_id\n       WHERE o.outlet_id = '43'\n       GROUP BY o.id\n       ORDER BY o.created_at DESC\n       LIMIT 10 OFFSET 0","sqlState":"42S02","sqlMessage":"Table 'restro.payments' doesn't exist in engine"}
+Error: Table 'restro.payments' doesn't exist in engine
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.getAdminOrderList (E:\restro-backend\src\services\order.service.js:2127:33)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getAdminOrderList (E:\restro-backend\src\controllers\order.controller.js:1418:22)
+2026-03-02 17:28:23 [ERROR]: Get admin order list error: Table 'restro.payments' doesn't exist in engine {"errno":1932,"sql":"SELECT \n        o.*,\n        ol.name as outlet_name,\n        t.table_number,\n        t.name as table_name,\n        f.name as floor_name,\n        s.name as section_name,\n        captain.name as captain_name,\n        inv.id as invoice_id,\n        inv.invoice_number,\n        inv.grand_total as invoice_total,\n        inv.payment_status as invoice_payment_status,\n        (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count,\n        (SELECT COUNT(*) FROM kot_tickets WHERE order_id = o.id) as kot_count,\n        (SELECT SUM(total_amount) FROM payments WHERE order_id = o.id AND status = 'completed') as paid_amount\n       FROM orders o\n       LEFT JOIN outlets ol ON o.outlet_id = ol.id\n       LEFT JOIN tables t ON o.table_id = t.id\n       LEFT JOIN floors f ON t.floor_id = f.id\n       LEFT JOIN sections s ON t.section_id = s.id\n       LEFT JOIN users captain ON o.created_by = captain.id\n       LEFT JOIN invoices inv ON o.id = inv.order_id\n       WHERE o.outlet_id = '43'\n       GROUP BY o.id\n       ORDER BY o.created_at DESC\n       LIMIT 10 OFFSET 0","sqlState":"42S02","sqlMessage":"Table 'restro.payments' doesn't exist in engine"}
+Error: Table 'restro.payments' doesn't exist in engine
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.getAdminOrderList (E:\restro-backend\src\services\order.service.js:2127:33)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getAdminOrderList (E:\restro-backend\src\controllers\order.controller.js:1418:22)
+2026-03-02 17:28:24 [ERROR]: Get admin order list error: Table 'restro.payments' doesn't exist in engine {"errno":1932,"sql":"SELECT \n        o.*,\n        ol.name as outlet_name,\n        t.table_number,\n        t.name as table_name,\n        f.name as floor_name,\n        s.name as section_name,\n        captain.name as captain_name,\n        inv.id as invoice_id,\n        inv.invoice_number,\n        inv.grand_total as invoice_total,\n        inv.payment_status as invoice_payment_status,\n        (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count,\n        (SELECT COUNT(*) FROM kot_tickets WHERE order_id = o.id) as kot_count,\n        (SELECT SUM(total_amount) FROM payments WHERE order_id = o.id AND status = 'completed') as paid_amount\n       FROM orders o\n       LEFT JOIN outlets ol ON o.outlet_id = ol.id\n       LEFT JOIN tables t ON o.table_id = t.id\n       LEFT JOIN floors f ON t.floor_id = f.id\n       LEFT JOIN sections s ON t.section_id = s.id\n       LEFT JOIN users captain ON o.created_by = captain.id\n       LEFT JOIN invoices inv ON o.id = inv.order_id\n       WHERE o.outlet_id = '43'\n       GROUP BY o.id\n       ORDER BY o.created_at DESC\n       LIMIT 10 OFFSET 0","sqlState":"42S02","sqlMessage":"Table 'restro.payments' doesn't exist in engine"}
+Error: Table 'restro.payments' doesn't exist in engine
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.getAdminOrderList (E:\restro-backend\src\services\order.service.js:2127:33)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getAdminOrderList (E:\restro-backend\src\controllers\order.controller.js:1418:22)
+2026-03-02 17:35:00 [ERROR]: Get admin order list error: Table 'restro.payments' doesn't exist in engine {"errno":1932,"sql":"SELECT \n        o.*,\n        ol.name as outlet_name,\n        t.table_number,\n        t.name as table_name,\n        f.name as floor_name,\n        s.name as section_name,\n        captain.name as captain_name,\n        inv.id as invoice_id,\n        inv.invoice_number,\n        inv.grand_total as invoice_total,\n        inv.payment_status as invoice_payment_status,\n        (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count,\n        (SELECT COUNT(*) FROM kot_tickets WHERE order_id = o.id) as kot_count,\n        (SELECT SUM(total_amount) FROM payments WHERE order_id = o.id AND status = 'completed') as paid_amount\n       FROM orders o\n       LEFT JOIN outlets ol ON o.outlet_id = ol.id\n       LEFT JOIN tables t ON o.table_id = t.id\n       LEFT JOIN floors f ON t.floor_id = f.id\n       LEFT JOIN sections s ON t.section_id = s.id\n       LEFT JOIN users captain ON o.created_by = captain.id\n       LEFT JOIN invoices inv ON o.id = inv.order_id\n       WHERE o.outlet_id = '43'\n       GROUP BY o.id\n       ORDER BY o.created_at DESC\n       LIMIT 10 OFFSET 0","sqlState":"42S02","sqlMessage":"Table 'restro.payments' doesn't exist in engine"}
+Error: Table 'restro.payments' doesn't exist in engine
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.getAdminOrderList (E:\restro-backend\src\services\order.service.js:2127:33)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getAdminOrderList (E:\restro-backend\src\controllers\order.controller.js:1418:22)
+2026-03-02 17:35:01 [ERROR]: Get admin order list error: Table 'restro.payments' doesn't exist in engine {"errno":1932,"sql":"SELECT \n        o.*,\n        ol.name as outlet_name,\n        t.table_number,\n        t.name as table_name,\n        f.name as floor_name,\n        s.name as section_name,\n        captain.name as captain_name,\n        inv.id as invoice_id,\n        inv.invoice_number,\n        inv.grand_total as invoice_total,\n        inv.payment_status as invoice_payment_status,\n        (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count,\n        (SELECT COUNT(*) FROM kot_tickets WHERE order_id = o.id) as kot_count,\n        (SELECT SUM(total_amount) FROM payments WHERE order_id = o.id AND status = 'completed') as paid_amount\n       FROM orders o\n       LEFT JOIN outlets ol ON o.outlet_id = ol.id\n       LEFT JOIN tables t ON o.table_id = t.id\n       LEFT JOIN floors f ON t.floor_id = f.id\n       LEFT JOIN sections s ON t.section_id = s.id\n       LEFT JOIN users captain ON o.created_by = captain.id\n       LEFT JOIN invoices inv ON o.id = inv.order_id\n       WHERE o.outlet_id = '43'\n       GROUP BY o.id\n       ORDER BY o.created_at DESC\n       LIMIT 10 OFFSET 0","sqlState":"42S02","sqlMessage":"Table 'restro.payments' doesn't exist in engine"}
+Error: Table 'restro.payments' doesn't exist in engine
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.getAdminOrderList (E:\restro-backend\src\services\order.service.js:2127:33)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getAdminOrderList (E:\restro-backend\src\controllers\order.controller.js:1418:22)
+2026-03-02 17:35:03 [ERROR]: Get daily sales report error: Table 'restro.payments' doesn't exist in engine {"errno":1932,"sql":"SELECT \n        DATE(p.created_at) as report_date,\n        SUM(p.total_amount) as total_collection,\n        SUM(CASE WHEN p.payment_mode = 'cash' THEN p.total_amount ELSE 0 END) as cash_collection,\n        SUM(CASE WHEN p.payment_mode = 'card' THEN p.total_amount ELSE 0 END) as card_collection,\n        SUM(CASE WHEN p.payment_mode = 'upi' THEN p.total_amount ELSE 0 END) as upi_collection,\n        SUM(CASE WHEN p.payment_mode = 'wallet' THEN p.total_amount ELSE 0 END) as wallet_collection,\n        SUM(CASE WHEN p.payment_mode = 'credit' THEN p.total_amount ELSE 0 END) as credit_collection,\n        SUM(p.tip_amount) as tip_amount\n       FROM payments p\n       JOIN orders o ON p.order_id = o.id\n       WHERE p.outlet_id = '43' AND DATE(p.created_at) BETWEEN '2026-02-24' AND '2026-03-02' AND p.status = 'completed' AND p.payment_mode != 'split'\n       GROUP BY DATE(p.created_at)","sqlState":"42S02","sqlMessage":"Table 'restro.payments' doesn't exist in engine"}
+Error: Table 'restro.payments' doesn't exist in engine
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.getDailySalesReport (E:\restro-backend\src\services\reports.service.js:337:34)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getDailySalesReport (E:\restro-backend\src\controllers\order.controller.js:801:22)
+2026-03-02 17:35:41 [ERROR]: Get staff report error: Table 'restro.payments' doesn't exist in engine {"errno":1932,"sql":"SELECT p.received_by as user_id, SUM(p.tip_amount) as tips\n       FROM payments p\n       JOIN orders o ON p.order_id = o.id\n       WHERE p.outlet_id = '43' AND DATE(p.created_at) BETWEEN '2026-02-24' AND '2026-03-02' AND p.status = 'completed' AND p.tip_amount > 0\n       GROUP BY p.received_by","sqlState":"42S02","sqlMessage":"Table 'restro.payments' doesn't exist in engine"}
+Error: Table 'restro.payments' doesn't exist in engine
+    at PromisePool.query (E:\restro-backend\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at Object.getStaffReport (E:\restro-backend\src\services\reports.service.js:843:31)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async getStaffReport (E:\restro-backend\src\controllers\order.controller.js:877:22)
