@@ -932,7 +932,22 @@ const printerService = {
     const dash = '-'.repeat(w);
     const cmd = this.getEscPosCommands();
 
-    const title = kotData.station === 'bar' ? 'BAR ORDER (BOT)' : 'KITCHEN ORDER (KOT)';
+    const station = String(kotData.station || '').trim().toLowerCase();
+    const isBarOrder = station === 'bar' || station === 'main_bar';
+    const orderType = isBarOrder ? 'BOT' : 'KOT';
+    const stationLabelMap = {
+      kitchen: 'KITCHEN',
+      main_kitchen: 'MAIN KITCHEN',
+      tandoor: 'TANDOOR',
+      wok: 'WOK',
+      grill: 'GRILL',
+      dessert: 'DESSERT',
+      bar: 'BAR',
+      main_bar: 'BAR',
+      mocktail: 'MOCKTAIL'
+    };
+    const stationLabel = stationLabelMap[station] || (station ? station.replace(/_/g, ' ').toUpperCase() : 'KITCHEN');
+    const title = `${stationLabel} ORDER (${orderType})`;
     lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + title);
     lines.push(cmd.BOLD_OFF + cmd.ALIGN_LEFT + 'KOT#: ' + kotData.kotNumber);
     lines.push(this.padBetween('Table: ' + (kotData.tableNumber || 'Takeaway'), kotData.time || '', w));
