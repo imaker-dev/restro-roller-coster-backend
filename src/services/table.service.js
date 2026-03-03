@@ -1340,6 +1340,7 @@ const tableService = {
    * - Secondary tables restored to "available"
    * - Primary table capacity reduced by the sum of merged table capacities
    * - Handles both primary and secondary table IDs
+   * - VALIDATION: Cannot unmerge if session is active or order exists
    */
   async unmergeTables(tableId, userId) {
     const pool = getPool();
@@ -1389,6 +1390,24 @@ const tableService = {
 
       if (merges.length === 0) throw new Error('No merged tables found for this table');
 
+      // VALIDATION: Check if primary table has active session or order
+      // Only block unmerge if there's an active session with an order (occupied/running/billing)
+      const blockedStatuses = ['occupied', 'running', 'billing'];
+      if (blockedStatuses.includes(primaryTable.status)) {
+        // Check for active session on primary table
+        const [activeSessions] = await connection.query(
+          `SELECT ts.id, ts.order_id, o.order_number 
+           FROM table_sessions ts
+           LEFT JOIN orders o ON ts.order_id = o.id
+           WHERE ts.table_id = ? AND ts.status = 'active'`,
+          [primaryTableId]
+        );
+        if (activeSessions.length > 0) {
+          const session = activeSessions[0];
+          throw new Error(`Cannot unmerge: Table ${primaryTable.table_number} has active session${session.order_number ? ` with order ${session.order_number}` : ''}. Complete the order/payment first.`);
+        }
+      }
+
       // Calculate capacity to subtract
       const capacityToRemove = merges.reduce((sum, m) => sum + (m.capacity || 0), 0);
 
@@ -1420,6 +1439,30 @@ const tableService = {
         unmergedTableIds: mergedIds,
         removedCapacity: capacityToRemove,
         unmergedBy: userId
+      });
+
+      // Get table numbers for the unmerged tables
+      const [unmergedTableDetails] = await pool.query(
+        `SELECT id, table_number, floor_id FROM tables WHERE id IN (?)`,
+        [mergedIds]
+      );
+
+      // Emit dedicated unmerge socket event via Redis
+      const { publishMessage } = require('../config/redis');
+      await publishMessage('table:unmerge', {
+        outletId: primaryTable.outlet_id,
+        primaryTableId,
+        primaryTableNumber: primaryTable.table_number,
+        floorId: primaryTable.floor_id,
+        unmergedTableIds: mergedIds,
+        unmergedTables: unmergedTableDetails.map(t => ({
+          id: t.id,
+          tableNumber: t.table_number,
+          floorId: t.floor_id
+        })),
+        event: 'tables_unmerged',
+        unmergedBy: userId,
+        timestamp: new Date().toISOString()
       });
 
       this.broadcastTableUpdate(primaryTable.outlet_id, primaryTable.floor_id, {
@@ -1676,6 +1719,202 @@ const tableService = {
     );
 
     return kots;
+  },
+
+  // ========================
+  // Table Transfer
+  // ========================
+
+  /**
+   * Transfer table session from one table to another
+   * Moves entire session including orders, KOTs, billing data
+   * Only Cashier, Captain, Manager, Admin, Super Admin can perform this
+   * 
+   * @param {number} sourceTableId - Table to transfer FROM
+   * @param {number} targetTableId - Table to transfer TO
+   * @param {number} userId - User performing the transfer
+   * @returns {Object} Transfer result with updated table info
+   */
+  async transferTable(sourceTableId, targetTableId, userId) {
+    const pool = getPool();
+    const connection = await pool.getConnection();
+
+    try {
+      await connection.beginTransaction();
+
+      // 1. Validate user role - only authorized roles can transfer
+      const [userRoles] = await connection.query(
+        `SELECT r.slug as role_name FROM user_roles ur 
+         JOIN roles r ON ur.role_id = r.id 
+         WHERE ur.user_id = ? AND ur.is_active = 1`,
+        [userId]
+      );
+      const allowedRoles = ['super_admin', 'admin', 'manager', 'cashier', 'captain'];
+      const hasPermission = userRoles.some(r => allowedRoles.includes(r.role_name));
+      if (!hasPermission) {
+        throw new Error('Only Cashier, Captain, Manager, Admin, or Super Admin can transfer tables');
+      }
+
+      // 2. Get source table with active session
+      const sourceTable = await this.getById(sourceTableId);
+      if (!sourceTable) throw new Error('Source table not found');
+      if (!['occupied', 'running', 'billing'].includes(sourceTable.status)) {
+        throw new Error(`Source table is ${sourceTable.status}, must be occupied/running/billing to transfer`);
+      }
+
+      // 3. Get active session on source table
+      const [sourceSessions] = await connection.query(
+        `SELECT ts.*, o.id as order_id, o.order_number, o.status as order_status, 
+                o.floor_id, o.section_id, o.customer_id, o.customer_name
+         FROM table_sessions ts
+         LEFT JOIN orders o ON ts.order_id = o.id
+         WHERE ts.table_id = ? AND ts.status = 'active'`,
+        [sourceTableId]
+      );
+      if (!sourceSessions[0]) {
+        throw new Error('No active session found on source table');
+      }
+      const session = sourceSessions[0];
+
+      // 4. Get target table and validate
+      const targetTable = await this.getById(targetTableId);
+      if (!targetTable) throw new Error('Target table not found');
+      if (targetTable.status !== 'available') {
+        throw new Error(`Target table is ${targetTable.status}, must be available for transfer`);
+      }
+      if (targetTable.outlet_id !== sourceTable.outlet_id) {
+        throw new Error('Cannot transfer between different outlets');
+      }
+
+      // 5. Store old values for audit
+      const transferDetails = {
+        sourceTableId,
+        sourceTableNumber: sourceTable.table_number,
+        sourceFloorId: sourceTable.floor_id,
+        targetTableId,
+        targetTableNumber: targetTable.table_number,
+        targetFloorId: targetTable.floor_id,
+        sessionId: session.id,
+        orderId: session.order_id,
+        orderNumber: session.order_number,
+        transferredBy: userId,
+        transferredAt: new Date()
+      };
+
+      // 6. Update table_sessions - move to new table
+      await connection.query(
+        `UPDATE table_sessions SET table_id = ? WHERE id = ?`,
+        [targetTableId, session.id]
+      );
+
+      // 7. Update orders - change table reference
+      if (session.order_id) {
+        await connection.query(
+          `UPDATE orders SET 
+            table_id = ?, 
+            floor_id = ?, 
+            section_id = ?
+           WHERE id = ?`,
+          [targetTableId, targetTable.floor_id, targetTable.section_id, session.order_id]
+        );
+
+        // 8. Update future KOT references - change table_number for new prints
+        // Note: We update table_number on orders table reference, not on existing KOTs
+        // Existing KOT history stays intact, new KOTs will get new table number from order
+      }
+
+      // 9. Update source table status to available
+      await connection.query(
+        `UPDATE tables SET status = 'available' WHERE id = ?`,
+        [sourceTableId]
+      );
+
+      // 10. Update target table status to match source's previous status
+      await connection.query(
+        `UPDATE tables SET status = ? WHERE id = ?`,
+        [sourceTable.status, targetTableId]
+      );
+
+      // 11. Handle merged tables - if source had merged tables, transfer them too
+      const [mergedTables] = await connection.query(
+        `SELECT merged_table_id FROM table_merges 
+         WHERE primary_table_id = ? AND unmerged_at IS NULL`,
+        [sourceTableId]
+      );
+      if (mergedTables.length > 0) {
+        // Update merge records to point to new primary table
+        await connection.query(
+          `UPDATE table_merges SET primary_table_id = ? 
+           WHERE primary_table_id = ? AND unmerged_at IS NULL`,
+          [targetTableId, sourceTableId]
+        );
+        transferDetails.mergedTableIds = mergedTables.map(m => m.merged_table_id);
+      }
+
+      // 12. Log history for both tables
+      await connection.query(
+        `INSERT INTO table_history (table_id, event_type, event_data, created_at) VALUES (?, ?, ?, NOW())`,
+        [sourceTableId, 'table_transferred_from', JSON.stringify(transferDetails)]
+      );
+      await connection.query(
+        `INSERT INTO table_history (table_id, event_type, event_data, created_at) VALUES (?, ?, ?, NOW())`,
+        [targetTableId, 'table_transferred_to', JSON.stringify(transferDetails)]
+      );
+
+      await connection.commit();
+
+      // 13. Broadcast real-time updates to BOTH floors (source and target may be different)
+      // Source table update - now available
+      this.broadcastTableUpdate(sourceTable.outlet_id, sourceTable.floor_id, {
+        event: 'table_transferred',
+        type: 'source',
+        tableId: sourceTableId,
+        tableNumber: sourceTable.table_number,
+        newStatus: 'available',
+        transfer: transferDetails
+      });
+
+      // Target table update - now has session
+      this.broadcastTableUpdate(targetTable.outlet_id, targetTable.floor_id, {
+        event: 'table_transferred',
+        type: 'target',
+        tableId: targetTableId,
+        tableNumber: targetTable.table_number,
+        newStatus: sourceTable.status,
+        transfer: transferDetails
+      });
+
+      // Also broadcast to outlet level for POS/Kitchen screens
+      const { publishMessage } = require('../config/redis');
+      await publishMessage('table:transfer', {
+        outletId: sourceTable.outlet_id,
+        ...transferDetails
+      });
+
+      // Invalidate cache for both floors
+      await this.invalidateCache(sourceTable.outlet_id, sourceTable.floor_id);
+      if (sourceTable.floor_id !== targetTable.floor_id) {
+        await this.invalidateCache(targetTable.outlet_id, targetTable.floor_id);
+      }
+
+      // Get updated table info
+      const updatedSourceTable = await this.getById(sourceTableId);
+      const updatedTargetTable = await this.getById(targetTableId);
+
+      return {
+        success: true,
+        message: `Table transferred from ${sourceTable.table_number} to ${targetTable.table_number}`,
+        transfer: transferDetails,
+        sourceTable: updatedSourceTable,
+        targetTable: updatedTargetTable
+      };
+
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
   },
 
   // ========================

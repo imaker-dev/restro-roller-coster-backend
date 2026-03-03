@@ -245,6 +245,31 @@ const tableController = {
   },
 
   // ========================
+  // Table Transfer
+  // ========================
+
+  async transferTable(req, res, next) {
+    try {
+      const { targetTableId } = req.body;
+      if (!targetTableId) {
+        return res.status(400).json({ success: false, message: 'targetTableId is required' });
+      }
+      const result = await tableService.transferTable(
+        parseInt(req.params.id),
+        parseInt(targetTableId),
+        req.user.userId
+      );
+      res.json({
+        success: true,
+        message: result.message,
+        data: result
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  // ========================
   // Merge Operations
   // ========================
 

@@ -105,6 +105,19 @@ router.get('/:id/session', tableController.getCurrentSession);
 router.post('/:id/session/transfer', authorize('super_admin', 'admin', 'manager'), tableController.transferSession);
 
 // ========================
+// Table Transfer Routes
+// ========================
+
+/**
+ * @route   POST /api/v1/tables/:id/transfer
+ * @desc    Transfer table session from one table to another (T1 → T2)
+ *          Moves entire session including orders, KOTs, billing data
+ *          Source table becomes available, target table gets the session
+ * @access  Private (cashier, captain, manager, admin, super_admin)
+ */
+router.post('/:id/transfer', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), tableController.transferTable);
+
+// ========================
 // Table Merge Routes
 // ========================
 
