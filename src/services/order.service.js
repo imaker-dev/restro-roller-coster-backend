@@ -942,7 +942,31 @@ const orderService = {
       
       // Item counts
       itemCount: formattedItems.length,
-      totalQuantity: formattedItems.reduce((sum, i) => sum + (i.quantity || 0), 0)
+      totalQuantity: formattedItems.reduce((sum, i) => sum + (i.quantity || 0), 0),
+      
+      // Snake_case aliases for backward compatibility with billing/other services
+      outlet_id: order.outlet_id,
+      order_type: order.order_type,
+      table_id: order.table_id,
+      floor_id: order.floor_id,
+      section_id: order.section_id,
+      customer_id: order.customer_id,
+      customer_name: order.customer_name || order.customer_name_db,
+      customer_phone: order.customer_phone || order.customer_phone_db,
+      customer_email: order.customer_email,
+      customer_gstin: order.customer_gstin,
+      customer_company_name: order.customer_company_name,
+      customer_gst_state: order.customer_gst_state,
+      customer_gst_state_code: order.customer_gst_state_code,
+      is_interstate: order.is_interstate,
+      subtotal: parseFloat(order.subtotal) || 0,
+      tax_amount: parseFloat(order.tax_amount) || 0,
+      discount_amount: parseFloat(order.discount_amount) || 0,
+      service_charge: parseFloat(order.service_charge) || 0,
+      packaging_charge: parseFloat(order.packaging_charge) || 0,
+      delivery_charge: parseFloat(order.delivery_charge) || 0,
+      total_amount: parseFloat(order.total_amount) || 0,
+      created_by: order.created_by
     };
   },
 

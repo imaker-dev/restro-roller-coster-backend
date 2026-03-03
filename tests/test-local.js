@@ -1,16 +1,17 @@
 /**
  * Local API Test - localhost:3005
- * Comprehensive Order Details Test
+ * Customer Link-Order & Order Details Test
  */
 require('dotenv').config();
 const { initializeDatabase, getPool } = require('../src/database');
 const orderService = require('../src/services/order.service');
+const customerService = require('../src/services/customer.service');
 
 const OUTLET_ID = 43;
 
 async function main() {
   console.log('═'.repeat(70));
-  console.log('  COMPREHENSIVE ORDER DETAILS API TEST');
+  console.log('  CUSTOMER LINK-ORDER & ORDER DETAILS TEST');
   console.log('═'.repeat(70));
 
   try {
@@ -140,6 +141,75 @@ async function main() {
       console.log(`     Name: ${orderDetail.outletName}`);
       console.log(`     GSTIN: ${orderDetail.outletGstin || 'N/A'}`);
       console.log(`     Address: ${orderDetail.outletAddress || 'N/A'}, ${orderDetail.outletCity || ''}`);
+    }
+
+    // Test 3: Customer Link-Order Scenarios
+    console.log('\n📍 TEST 3: Customer Link-Order Scenarios');
+    console.log('─'.repeat(60));
+    
+    // Find an order without customer to test
+    const [testOrders] = await pool.query(`
+      SELECT id, order_number, customer_id, customer_name 
+      FROM orders WHERE outlet_id = ? 
+      ORDER BY id DESC LIMIT 1
+    `, [OUTLET_ID]);
+    
+    if (testOrders.length > 0) {
+      const testOrderId = testOrders[0].id;
+      console.log(`\n  Testing with Order: ${testOrders[0].order_number} (ID: ${testOrderId})`);
+      console.log(`  Current customer_id: ${testOrders[0].customer_id || 'None'}`);
+      
+      // Scenario 1: First link - creates or finds customer
+      console.log('\n  ┌─ SCENARIO 1: First Link (Create/Find)');
+      const firstLink = await customerService.linkToOrder(testOrderId, {
+        name: 'Test Customer ' + Date.now(),
+        phone: '9999' + Math.floor(Math.random() * 1000000).toString().padStart(6, '0'),
+        email: 'test@example.com'
+      });
+      console.log(`  │  Customer ID: ${firstLink.customerId}`);
+      console.log(`  │  Name: ${firstLink.customerName}`);
+      console.log(`  │  Phone: ${firstLink.customerPhone}`);
+      console.log(`  │  isUpdate: ${firstLink.isUpdate}`);
+      
+      // Scenario 2: Second link with same order - should UPDATE
+      console.log('\n  ├─ SCENARIO 2: Second Link (Update existing)');
+      const secondLink = await customerService.linkToOrder(testOrderId, {
+        name: 'Updated Customer Name',
+        phone: '8888888888',
+        email: 'updated@example.com',
+        address: 'New Address 123'
+      });
+      console.log(`  │  Customer ID: ${secondLink.customerId} (same: ${secondLink.customerId === firstLink.customerId})`);
+      console.log(`  │  Name: ${secondLink.customerName}`);
+      console.log(`  │  Phone: ${secondLink.customerPhone}`);
+      console.log(`  │  Email: ${secondLink.customerEmail}`);
+      console.log(`  │  Address: ${secondLink.customerAddress}`);
+      console.log(`  │  isUpdate: ${secondLink.isUpdate}`);
+      
+      // Scenario 3: Third link with GST details - should UPDATE with GST
+      console.log('\n  ├─ SCENARIO 3: Third Link (Add GST details)');
+      const thirdLink = await customerService.linkToOrder(testOrderId, {
+        gstin: '24AAACC1234A1Z5',
+        companyName: 'Test Company Pvt Ltd',
+        isGstCustomer: true
+      });
+      console.log(`  │  Customer ID: ${thirdLink.customerId} (same: ${thirdLink.customerId === firstLink.customerId})`);
+      console.log(`  │  Name: ${thirdLink.customerName}`);
+      console.log(`  │  GSTIN: ${thirdLink.gstin}`);
+      console.log(`  │  Company: ${thirdLink.companyName}`);
+      console.log(`  │  isGstCustomer: ${thirdLink.isGstCustomer}`);
+      console.log(`  │  isUpdate: ${thirdLink.isUpdate}`);
+      
+      // Verify customer details API returns updated data
+      console.log('\n  └─ VERIFY: Customer Details API');
+      const customerDetails = await customerService.getById(thirdLink.customerId);
+      console.log(`     Name: ${customerDetails.name}`);
+      console.log(`     Phone: ${customerDetails.phone}`);
+      console.log(`     Email: ${customerDetails.email}`);
+      console.log(`     Address: ${customerDetails.address}`);
+      console.log(`     GSTIN: ${customerDetails.gstin}`);
+      console.log(`     Company: ${customerDetails.companyName}`);
+      console.log(`     isGstCustomer: ${customerDetails.isGstCustomer}`);
     }
 
     console.log('\n' + '═'.repeat(70));

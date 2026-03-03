@@ -30,23 +30,27 @@ function getLocalDate(date = new Date()) {
 
 function formatInvoiceItem(item) {
   if (!item) return null;
+  
+  // Handle both snake_case (raw DB) and camelCase (formatted) item structures
+  const taxDetails = item.tax_details || item.taxDetails;
+  
   return {
     id: item.id,
-    orderItemId: item.order_item_id || item.id,
-    itemId: item.item_id,
-    name: item.item_name || item.name,
-    shortName: item.short_name || null,
-    imageUrl: prefixImageUrl(item.image_url),
-    variantName: item.variant_name || null,
-    itemType: item.item_type || null,
+    orderItemId: item.order_item_id || item.orderItemId || item.id,
+    itemId: item.item_id || item.itemId,
+    name: item.item_name || item.itemName || item.name,
+    shortName: item.short_name || item.shortName || null,
+    imageUrl: prefixImageUrl(item.image_url || item.imageUrl),
+    variantName: item.variant_name || item.variantName || null,
+    itemType: item.item_type || item.itemType || null,
     quantity: parseInt(item.quantity) || 0,
-    unitPrice: parseFloat(item.unit_price) || 0,
-    totalPrice: parseFloat(item.total_price) || 0,
-    taxDetails: item.tax_details
-      ? (typeof item.tax_details === 'string' ? JSON.parse(item.tax_details) : item.tax_details)
+    unitPrice: parseFloat(item.unit_price || item.unitPrice) || 0,
+    totalPrice: parseFloat(item.total_price || item.totalPrice) || 0,
+    taxDetails: taxDetails
+      ? (typeof taxDetails === 'string' ? JSON.parse(taxDetails) : taxDetails)
       : null,
     status: item.status,
-    specialInstructions: item.special_instructions || null,
+    specialInstructions: item.special_instructions || item.specialInstructions || null,
   };
 }
 
