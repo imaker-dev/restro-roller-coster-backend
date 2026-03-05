@@ -94,6 +94,45 @@ const getDayEndSummary = async (req, res, next) => {
   }
 };
 
+/**
+ * GET /api/v1/reports/day-end-summary/detail
+ * Day End Summary Detail - Comprehensive details for a specific date
+ */
+const getDayEndSummaryDetail = async (req, res, next) => {
+  try {
+    const { outletId, date } = req.query;
+    
+    if (!outletId) {
+      return res.status(400).json({ success: false, message: 'outletId is required' });
+    }
+
+    const scope = await getUserDataScope(req.user, parseInt(outletId));
+    
+    const result = await reportsService.getDayEndSummaryDetail(
+      parseInt(outletId),
+      date,
+      {
+        floorIds: scope.floorIds,
+        userId: scope.userId,
+        isCashier: scope.isCashier
+      }
+    );
+
+    res.status(200).json({
+      success: true,
+      data: result,
+      meta: {
+        role: scope.roleSlug,
+        isFiltered: !scope.isAdmin,
+        floorRestricted: scope.floorIds.length > 0
+      }
+    });
+  } catch (error) {
+    logger.error('Get Day End Summary Detail failed:', error);
+    next(error);
+  }
+};
+
 // ========================
 // RUNNING ORDERS/TABLES
 // ========================
@@ -619,6 +658,7 @@ const getCounterSalesReport = async (req, res, next) => {
 
 module.exports = {
   getDayEndSummary,
+  getDayEndSummaryDetail,
   getRunningOrders,
   getRunningTables,
   getDailySalesReport,

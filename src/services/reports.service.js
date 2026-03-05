@@ -4469,16 +4469,17 @@ const reportsService = {
     let conditions = ['o.outlet_id = ?', 'DATE(o.created_at) BETWEEN ? AND ?'];
     let params = [outletId, start, end];
 
-    // Floor restriction
+    // Floor restriction - include takeaway/delivery orders (they have NULL floor_id)
     if (floorIds.length > 0) {
-      conditions.push(`o.floor_id IN (${floorIds.map(() => '?').join(',')})`);
+      const floorPlaceholders = floorIds.map(() => '?').join(',');
+      conditions.push(`(o.floor_id IN (${floorPlaceholders}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`);
       params.push(...floorIds);
     }
 
-    // Cashier sees only their billed orders
+    // Cashier sees only their billed orders or orders they created
     if (isCashier && userId) {
-      conditions.push('o.billed_by = ?');
-      params.push(userId);
+      conditions.push('(o.billed_by = ? OR o.created_by = ?)');
+      params.push(userId, userId);
     }
 
     const whereClause = 'WHERE ' + conditions.join(' AND ');
@@ -4489,12 +4490,15 @@ const reportsService = {
         COUNT(*) as total_orders,
         COUNT(CASE WHEN o.status IN ('paid', 'completed') THEN 1 END) as completed_orders,
         COUNT(CASE WHEN o.status = 'cancelled' THEN 1 END) as cancelled_orders,
+        COUNT(CASE WHEN o.order_type = 'dine_in' AND o.status != 'cancelled' THEN 1 END) as dine_in_orders,
+        COUNT(CASE WHEN o.order_type = 'takeaway' AND o.status != 'cancelled' THEN 1 END) as takeaway_orders,
+        COUNT(CASE WHEN o.order_type = 'delivery' AND o.status != 'cancelled' THEN 1 END) as delivery_orders,
         SUM(CASE WHEN o.status IN ('paid', 'completed') THEN o.total_amount ELSE 0 END) as total_sales,
         SUM(CASE WHEN o.status != 'cancelled' THEN o.subtotal ELSE 0 END) as gross_sales,
         SUM(CASE WHEN o.status != 'cancelled' THEN o.discount_amount ELSE 0 END) as total_discount,
         SUM(CASE WHEN o.status != 'cancelled' THEN o.tax_amount ELSE 0 END) as total_tax,
         SUM(CASE WHEN o.status != 'cancelled' THEN o.service_charge ELSE 0 END) as total_sc,
-        SUM(o.guest_count) as total_guests
+        SUM(CASE WHEN o.status != 'cancelled' THEN o.guest_count ELSE 0 END) as total_guests
        FROM orders o
        ${whereClause}
        GROUP BY DATE(o.created_at)
@@ -4502,11 +4506,12 @@ const reportsService = {
       params
     );
 
-    // Get payment breakdown
+    // Get payment breakdown (regular payments)
     const [payRows] = await pool.query(
       `SELECT 
         DATE(p.created_at) as report_date,
         p.payment_mode,
+        COUNT(*) as payment_count,
         SUM(p.total_amount) as amount
        FROM payments p
        JOIN orders o ON p.order_id = o.id
@@ -4515,20 +4520,53 @@ const reportsService = {
       params
     );
 
+    // Get split payment breakdown (actual payment modes from split_payments table)
+    const [splitRows] = await pool.query(
+      `SELECT 
+        DATE(p.created_at) as report_date,
+        sp.payment_mode,
+        COUNT(*) as payment_count,
+        SUM(sp.amount) as amount
+       FROM split_payments sp
+       JOIN payments p ON sp.payment_id = p.id
+       JOIN orders o ON p.order_id = o.id
+       ${whereClause} AND p.status = 'completed' AND p.payment_mode = 'split'
+       GROUP BY DATE(p.created_at), sp.payment_mode`,
+      params
+    );
+
     const paymentByDate = {};
+    // Add regular payments (excluding split which we'll break down)
     for (const pr of payRows) {
       const dateKey = pr.report_date instanceof Date ? pr.report_date.toISOString().slice(0, 10) : pr.report_date;
-      if (!paymentByDate[dateKey]) paymentByDate[dateKey] = {};
-      paymentByDate[dateKey][pr.payment_mode] = parseFloat(pr.amount) || 0;
+      if (!paymentByDate[dateKey]) paymentByDate[dateKey] = { breakdown: {}, splitBreakdown: {} };
+      if (pr.payment_mode !== 'split') {
+        paymentByDate[dateKey].breakdown[pr.payment_mode] = parseFloat(pr.amount) || 0;
+      }
+    }
+    // Add split payment breakdown
+    for (const sp of splitRows) {
+      const dateKey = sp.report_date instanceof Date ? sp.report_date.toISOString().slice(0, 10) : sp.report_date;
+      if (!paymentByDate[dateKey]) paymentByDate[dateKey] = { breakdown: {}, splitBreakdown: {} };
+      paymentByDate[dateKey].splitBreakdown[sp.payment_mode] = parseFloat(sp.amount) || 0;
+      // Also add to main breakdown for totals
+      paymentByDate[dateKey].breakdown[sp.payment_mode] = 
+        (paymentByDate[dateKey].breakdown[sp.payment_mode] || 0) + (parseFloat(sp.amount) || 0);
     }
 
     const summary = rows.map(r => {
       const dateKey = r.report_date instanceof Date ? r.report_date.toISOString().slice(0, 10) : r.report_date;
+      const payments = paymentByDate[dateKey] || { breakdown: {}, splitBreakdown: {} };
       return {
         date: dateKey,
         totalOrders: parseInt(r.total_orders) || 0,
         completedOrders: parseInt(r.completed_orders) || 0,
         cancelledOrders: parseInt(r.cancelled_orders) || 0,
+        ordersByType: {
+          dineIn: parseInt(r.dine_in_orders) || 0,
+          takeaway: parseInt(r.takeaway_orders) || 0,
+          delivery: parseInt(r.delivery_orders) || 0
+        },
         totalSales: parseFloat(r.total_sales) || 0,
         grossSales: parseFloat(r.gross_sales) || 0,
         totalDiscount: parseFloat(r.total_discount) || 0,
@@ -4536,7 +4574,8 @@ const reportsService = {
         totalServiceCharge: parseFloat(r.total_sc) || 0,
         totalGuests: parseInt(r.total_guests) || 0,
         avgOrderValue: r.completed_orders > 0 ? parseFloat((r.total_sales / r.completed_orders).toFixed(2)) : 0,
-        payments: paymentByDate[dateKey] || {}
+        payments: payments.breakdown,
+        splitPaymentBreakdown: payments.splitBreakdown
       };
     });
 
@@ -4545,9 +4584,16 @@ const reportsService = {
       totalOrders: summary.reduce((s, r) => s + r.totalOrders, 0),
       completedOrders: summary.reduce((s, r) => s + r.completedOrders, 0),
       cancelledOrders: summary.reduce((s, r) => s + r.cancelledOrders, 0),
+      ordersByType: {
+        dineIn: summary.reduce((s, r) => s + r.ordersByType.dineIn, 0),
+        takeaway: summary.reduce((s, r) => s + r.ordersByType.takeaway, 0),
+        delivery: summary.reduce((s, r) => s + r.ordersByType.delivery, 0)
+      },
       totalSales: parseFloat(summary.reduce((s, r) => s + r.totalSales, 0).toFixed(2)),
+      grossSales: parseFloat(summary.reduce((s, r) => s + r.grossSales, 0).toFixed(2)),
       totalDiscount: parseFloat(summary.reduce((s, r) => s + r.totalDiscount, 0).toFixed(2)),
       totalTax: parseFloat(summary.reduce((s, r) => s + r.totalTax, 0).toFixed(2)),
+      totalServiceCharge: parseFloat(summary.reduce((s, r) => s + r.totalServiceCharge, 0).toFixed(2)),
       totalGuests: summary.reduce((s, r) => s + r.totalGuests, 0)
     };
 
@@ -4556,6 +4602,411 @@ const reportsService = {
       days: summary,
       grandTotal,
       dayCount: summary.length
+    };
+  },
+
+  /**
+   * Day End Summary Detail - Comprehensive details for a specific date
+   * Includes: orders list, item sales, category breakdown, staff performance, hourly breakdown, refunds, discounts
+   */
+  async getDayEndSummaryDetail(outletId, date, options = {}) {
+    const pool = getPool();
+    const targetDate = date || new Date().toISOString().slice(0, 10);
+    const { floorIds = [], userId = null, isCashier = false } = options;
+
+    let conditions = ['o.outlet_id = ?', 'DATE(o.created_at) = ?'];
+    let params = [outletId, targetDate];
+
+    // Floor restriction - include takeaway/delivery orders
+    if (floorIds.length > 0) {
+      const floorPlaceholders = floorIds.map(() => '?').join(',');
+      conditions.push(`(o.floor_id IN (${floorPlaceholders}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`);
+      params.push(...floorIds);
+    }
+
+    // Cashier sees only their orders
+    if (isCashier && userId) {
+      conditions.push('(o.billed_by = ? OR o.created_by = ?)');
+      params.push(userId, userId);
+    }
+
+    const whereClause = 'WHERE ' + conditions.join(' AND ');
+
+    // 1. Order Summary Statistics
+    const [summaryRows] = await pool.query(
+      `SELECT 
+        COUNT(*) as total_orders,
+        COUNT(CASE WHEN o.status IN ('paid', 'completed') THEN 1 END) as completed_orders,
+        COUNT(CASE WHEN o.status = 'cancelled' THEN 1 END) as cancelled_orders,
+        COUNT(CASE WHEN o.order_type = 'dine_in' AND o.status != 'cancelled' THEN 1 END) as dine_in_orders,
+        COUNT(CASE WHEN o.order_type = 'takeaway' AND o.status != 'cancelled' THEN 1 END) as takeaway_orders,
+        COUNT(CASE WHEN o.order_type = 'delivery' AND o.status != 'cancelled' THEN 1 END) as delivery_orders,
+        SUM(CASE WHEN o.status IN ('paid', 'completed') THEN o.total_amount ELSE 0 END) as total_sales,
+        SUM(CASE WHEN o.status != 'cancelled' THEN o.subtotal ELSE 0 END) as gross_sales,
+        SUM(CASE WHEN o.status != 'cancelled' THEN o.discount_amount ELSE 0 END) as total_discount,
+        SUM(CASE WHEN o.status != 'cancelled' THEN o.tax_amount ELSE 0 END) as total_tax,
+        SUM(CASE WHEN o.status != 'cancelled' THEN o.service_charge ELSE 0 END) as total_service_charge,
+        SUM(CASE WHEN o.status != 'cancelled' THEN o.guest_count ELSE 0 END) as total_guests,
+        AVG(CASE WHEN o.status IN ('paid', 'completed') THEN o.total_amount END) as avg_order_value,
+        MAX(CASE WHEN o.status IN ('paid', 'completed') THEN o.total_amount END) as max_order_value,
+        MIN(CASE WHEN o.status IN ('paid', 'completed') AND o.total_amount > 0 THEN o.total_amount END) as min_order_value
+       FROM orders o
+       ${whereClause}`,
+      params
+    );
+
+    // 2. Payment Breakdown
+    const [paymentRows] = await pool.query(
+      `SELECT 
+        p.payment_mode,
+        COUNT(*) as count,
+        SUM(p.total_amount) as amount
+       FROM payments p
+       JOIN orders o ON p.order_id = o.id
+       ${whereClause} AND p.status = 'completed'
+       GROUP BY p.payment_mode`,
+      params
+    );
+
+    // 3. Split Payment Breakdown
+    const [splitPaymentRows] = await pool.query(
+      `SELECT 
+        sp.payment_mode,
+        COUNT(*) as count,
+        SUM(sp.amount) as amount
+       FROM split_payments sp
+       JOIN payments p ON sp.payment_id = p.id
+       JOIN orders o ON p.order_id = o.id
+       ${whereClause} AND p.status = 'completed' AND p.payment_mode = 'split'
+       GROUP BY sp.payment_mode`,
+      params
+    );
+
+    // 4. Hourly Breakdown
+    const [hourlyRows] = await pool.query(
+      `SELECT 
+        HOUR(o.created_at) as hour,
+        COUNT(*) as order_count,
+        SUM(CASE WHEN o.status IN ('paid', 'completed') THEN o.total_amount ELSE 0 END) as sales,
+        SUM(CASE WHEN o.status != 'cancelled' THEN o.guest_count ELSE 0 END) as guests
+       FROM orders o
+       ${whereClause} AND o.status != 'cancelled'
+       GROUP BY HOUR(o.created_at)
+       ORDER BY hour`,
+      params
+    );
+
+    // 5. Category-wise Sales
+    const [categoryRows] = await pool.query(
+      `SELECT 
+        c.id as category_id,
+        c.name as category_name,
+        COUNT(DISTINCT oi.id) as items_sold,
+        SUM(oi.quantity) as total_quantity,
+        SUM(oi.total_price) as total_sales
+       FROM order_items oi
+       JOIN orders o ON oi.order_id = o.id
+       LEFT JOIN items i ON oi.item_id = i.id
+       LEFT JOIN categories c ON i.category_id = c.id
+       ${whereClause} AND oi.status != 'cancelled' AND o.status != 'cancelled'
+       GROUP BY c.id, c.name
+       ORDER BY total_sales DESC`,
+      params
+    );
+
+    // 6. Top Selling Items
+    const [topItemRows] = await pool.query(
+      `SELECT 
+        i.id as item_id,
+        COALESCE(i.name, oi.item_name) as item_name,
+        c.name as category_name,
+        SUM(oi.quantity) as quantity_sold,
+        SUM(oi.total_price) as total_sales,
+        COUNT(DISTINCT o.id) as order_count
+       FROM order_items oi
+       JOIN orders o ON oi.order_id = o.id
+       LEFT JOIN items i ON oi.item_id = i.id
+       LEFT JOIN categories c ON i.category_id = c.id
+       ${whereClause} AND oi.status != 'cancelled' AND o.status != 'cancelled'
+       GROUP BY i.id, COALESCE(i.name, oi.item_name), c.name
+       ORDER BY quantity_sold DESC
+       LIMIT 20`,
+      params
+    );
+
+    // 7. Staff Performance
+    const [staffRows] = await pool.query(
+      `SELECT 
+        u.id as user_id,
+        u.name as user_name,
+        GROUP_CONCAT(DISTINCT r.name) as role_name,
+        COUNT(DISTINCT CASE WHEN o.status != 'cancelled' THEN o.id END) as orders_handled,
+        SUM(CASE WHEN o.status IN ('paid', 'completed') THEN o.total_amount ELSE 0 END) as total_sales,
+        AVG(CASE WHEN o.status IN ('paid', 'completed') THEN o.total_amount END) as avg_order_value
+       FROM orders o
+       JOIN users u ON o.created_by = u.id
+       LEFT JOIN user_roles ur ON u.id = ur.user_id AND ur.is_active = 1
+       LEFT JOIN roles r ON ur.role_id = r.id AND r.is_active = 1
+       ${whereClause}
+       GROUP BY u.id, u.name
+       ORDER BY total_sales DESC`,
+      params
+    );
+
+    // 8. Discounts Applied
+    const [discountRows] = await pool.query(
+      `SELECT 
+        od.discount_name,
+        od.discount_type,
+        COUNT(*) as times_applied,
+        SUM(od.discount_amount) as total_amount,
+        u.name as approved_by_name
+       FROM order_discounts od
+       JOIN orders o ON od.order_id = o.id
+       LEFT JOIN users u ON od.approved_by = u.id
+       ${whereClause}
+       GROUP BY od.discount_name, od.discount_type, u.name
+       ORDER BY total_amount DESC`,
+      params
+    );
+
+    // 9. Refunds - query separately with direct date filter
+    let refundRows = [];
+    try {
+      const [refunds] = await pool.query(
+        `SELECT 
+          rf.id, rf.refund_amount, rf.reason, rf.status, rf.created_at,
+          o.order_number, o.total_amount as order_total,
+          u.name as refunded_by
+         FROM refunds rf
+         JOIN orders o ON rf.order_id = o.id
+         LEFT JOIN users u ON rf.refunded_by = u.id
+         WHERE o.outlet_id = ? AND DATE(rf.created_at) = ? AND rf.status IN ('completed', 'approved')
+         ORDER BY rf.created_at DESC`,
+        [outletId, targetDate]
+      );
+      refundRows = refunds;
+    } catch (e) {
+      // Refunds table may not exist or have different structure
+      refundRows = [];
+    }
+
+    // 10. Orders List (with basic details)
+    const [ordersRows] = await pool.query(
+      `SELECT 
+        o.id, o.uuid, o.order_number, o.order_type, o.status, o.payment_status,
+        o.customer_name, o.customer_phone, o.guest_count,
+        o.subtotal, o.discount_amount, o.tax_amount, o.service_charge, o.total_amount,
+        o.created_at, o.updated_at,
+        t.table_number, f.name as floor_name,
+        u.name as created_by_name,
+        p.payment_mode
+       FROM orders o
+       LEFT JOIN tables t ON o.table_id = t.id
+       LEFT JOIN floors f ON o.floor_id = f.id
+       LEFT JOIN users u ON o.created_by = u.id
+       LEFT JOIN payments p ON p.order_id = o.id AND p.status = 'completed'
+       ${whereClause}
+       ORDER BY o.created_at DESC`,
+      params
+    );
+
+    // 11. Floor-wise breakdown
+    const [floorRows] = await pool.query(
+      `SELECT 
+        COALESCE(f.name, 'Takeaway/Delivery') as floor_name,
+        o.order_type,
+        COUNT(*) as order_count,
+        SUM(CASE WHEN o.status IN ('paid', 'completed') THEN o.total_amount ELSE 0 END) as sales
+       FROM orders o
+       LEFT JOIN floors f ON o.floor_id = f.id
+       ${whereClause} AND o.status != 'cancelled'
+       GROUP BY f.name, o.order_type
+       ORDER BY sales DESC`,
+      params
+    );
+
+    // 12. Cancelled orders summary
+    const [cancelledRows] = await pool.query(
+      `SELECT 
+        o.id, o.order_number, o.order_type, o.total_amount,
+        o.customer_name, o.cancel_reason,
+        o.created_at, o.updated_at as cancelled_at,
+        u.name as created_by_name
+       FROM orders o
+       LEFT JOIN users u ON o.created_by = u.id
+       ${whereClause} AND o.status = 'cancelled'
+       ORDER BY o.updated_at DESC`,
+      params
+    );
+
+    // Format summary
+    const summary = summaryRows[0] || {};
+
+    // Format payment breakdown
+    const paymentBreakdown = {};
+    let totalPayments = 0;
+    for (const p of paymentRows) {
+      if (p.payment_mode !== 'split') {
+        paymentBreakdown[p.payment_mode] = {
+          count: parseInt(p.count) || 0,
+          amount: parseFloat(p.amount) || 0
+        };
+        totalPayments += parseFloat(p.amount) || 0;
+      }
+    }
+    // Add split payment details
+    for (const sp of splitPaymentRows) {
+      if (!paymentBreakdown[sp.payment_mode]) {
+        paymentBreakdown[sp.payment_mode] = { count: 0, amount: 0 };
+      }
+      paymentBreakdown[sp.payment_mode].count += parseInt(sp.count) || 0;
+      paymentBreakdown[sp.payment_mode].amount += parseFloat(sp.amount) || 0;
+      totalPayments += parseFloat(sp.amount) || 0;
+    }
+
+    // Format hourly breakdown
+    const hourlyBreakdown = hourlyRows.map(h => ({
+      hour: h.hour,
+      timeSlot: `${String(h.hour).padStart(2, '0')}:00 - ${String(h.hour + 1).padStart(2, '0')}:00`,
+      orderCount: parseInt(h.order_count) || 0,
+      sales: parseFloat(h.sales) || 0,
+      guests: parseInt(h.guests) || 0
+    }));
+
+    // Format category breakdown
+    const categoryBreakdown = categoryRows.map(c => ({
+      categoryId: c.category_id,
+      categoryName: c.category_name,
+      itemsSold: parseInt(c.items_sold) || 0,
+      totalQuantity: parseInt(c.total_quantity) || 0,
+      totalSales: parseFloat(c.total_sales) || 0
+    }));
+
+    // Format top items
+    const topSellingItems = topItemRows.map(i => ({
+      itemId: i.item_id,
+      itemName: i.item_name,
+      categoryName: i.category_name,
+      quantitySold: parseInt(i.quantity_sold) || 0,
+      totalSales: parseFloat(i.total_sales) || 0,
+      orderCount: parseInt(i.order_count) || 0
+    }));
+
+    // Format staff performance
+    const staffPerformance = staffRows.map(s => ({
+      userId: s.user_id,
+      userName: s.user_name,
+      roleName: s.role_name,
+      ordersHandled: parseInt(s.orders_handled) || 0,
+      totalSales: parseFloat(s.total_sales) || 0,
+      avgOrderValue: parseFloat(s.avg_order_value) || 0
+    }));
+
+    // Format discounts
+    const discountsApplied = discountRows.map(d => ({
+      discountName: d.discount_name,
+      discountType: d.discount_type,
+      timesApplied: parseInt(d.times_applied) || 0,
+      totalAmount: parseFloat(d.total_amount) || 0,
+      approvedBy: d.approved_by_name
+    }));
+
+    // Format refunds
+    const refunds = refundRows.map(r => ({
+      id: r.id,
+      orderNumber: r.order_number,
+      orderTotal: parseFloat(r.order_total) || 0,
+      refundAmount: parseFloat(r.refund_amount) || 0,
+      reason: r.reason,
+      refundedBy: r.refunded_by,
+      createdAt: r.created_at
+    }));
+
+    // Format orders
+    const orders = ordersRows.map(o => ({
+      id: o.id,
+      uuid: o.uuid,
+      orderNumber: o.order_number,
+      orderType: o.order_type,
+      status: o.status,
+      paymentStatus: o.payment_status,
+      customerName: o.customer_name,
+      customerPhone: o.customer_phone,
+      guestCount: o.guest_count,
+      tableNumber: o.table_number,
+      floorName: o.floor_name,
+      subtotal: parseFloat(o.subtotal) || 0,
+      discountAmount: parseFloat(o.discount_amount) || 0,
+      taxAmount: parseFloat(o.tax_amount) || 0,
+      serviceCharge: parseFloat(o.service_charge) || 0,
+      totalAmount: parseFloat(o.total_amount) || 0,
+      paymentMode: o.payment_mode,
+      createdBy: o.created_by_name,
+      createdAt: o.created_at,
+      updatedAt: o.updated_at
+    }));
+
+    // Format floor breakdown
+    const floorBreakdown = floorRows.map(f => ({
+      floorName: f.floor_name,
+      orderType: f.order_type,
+      orderCount: parseInt(f.order_count) || 0,
+      sales: parseFloat(f.sales) || 0
+    }));
+
+    // Format cancelled orders
+    const cancelledOrders = cancelledRows.map(c => ({
+      id: c.id,
+      orderNumber: c.order_number,
+      orderType: c.order_type,
+      totalAmount: parseFloat(c.total_amount) || 0,
+      customerName: c.customer_name,
+      cancelReason: c.cancel_reason,
+      createdBy: c.created_by_name,
+      createdAt: c.created_at,
+      cancelledAt: c.cancelled_at
+    }));
+
+    // Calculate totals for refunds
+    const totalRefunds = refunds.reduce((sum, r) => sum + r.refundAmount, 0);
+    const totalDiscounts = discountsApplied.reduce((sum, d) => sum + d.totalAmount, 0);
+
+    return {
+      date: targetDate,
+      summary: {
+        totalOrders: parseInt(summary.total_orders) || 0,
+        completedOrders: parseInt(summary.completed_orders) || 0,
+        cancelledOrders: parseInt(summary.cancelled_orders) || 0,
+        ordersByType: {
+          dineIn: parseInt(summary.dine_in_orders) || 0,
+          takeaway: parseInt(summary.takeaway_orders) || 0,
+          delivery: parseInt(summary.delivery_orders) || 0
+        },
+        totalSales: parseFloat(summary.total_sales) || 0,
+        grossSales: parseFloat(summary.gross_sales) || 0,
+        totalDiscount: parseFloat(summary.total_discount) || 0,
+        totalTax: parseFloat(summary.total_tax) || 0,
+        totalServiceCharge: parseFloat(summary.total_service_charge) || 0,
+        netSales: (parseFloat(summary.total_sales) || 0) - totalRefunds,
+        totalGuests: parseInt(summary.total_guests) || 0,
+        avgOrderValue: parseFloat(summary.avg_order_value) || 0,
+        maxOrderValue: parseFloat(summary.max_order_value) || 0,
+        minOrderValue: parseFloat(summary.min_order_value) || 0,
+        totalRefunds,
+        totalDiscountsApplied: totalDiscounts
+      },
+      paymentBreakdown,
+      hourlyBreakdown,
+      categoryBreakdown,
+      topSellingItems,
+      staffPerformance,
+      floorBreakdown,
+      discountsApplied,
+      refunds,
+      cancelledOrders,
+      orders,
+      orderCount: orders.length
     };
   },
 
