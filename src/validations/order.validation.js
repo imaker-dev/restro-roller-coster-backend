@@ -107,7 +107,11 @@ module.exports = {
     appliedOn: Joi.string().valid('subtotal', 'item').default('subtotal'),
     orderItemId: Joi.number().integer().positive().allow(null),
     approvedBy: Joi.number().integer().positive().allow(null),
-    approvalReason: Joi.string().max(255).allow('', null)
+    approvalReason: Joi.string().max(255).allow('', null),
+    securityKey: Joi.string().required().messages({
+      'any.required': 'Security key is required to apply discount',
+      'string.empty': 'Security key is required to apply discount'
+    })
   }),
 
   applyDiscountCode: Joi.object({

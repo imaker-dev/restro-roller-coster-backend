@@ -44,6 +44,15 @@ router.get('/running-tables', authorize(...REPORT_ROLES), reportsController.getR
 router.get('/day-end-summary', authorize(...REPORT_ROLES), reportsController.getDayEndSummary);
 
 /**
+ * @route   GET /api/v1/reports/day-end-summary/detail
+ * @desc    Day End Summary Detail - Comprehensive details for a specific date
+ * @access  Private (admin, manager, cashier)
+ * @query   outletId - Required
+ * @query   date - Target date (YYYY-MM-DD), defaults to today
+ */
+router.get('/day-end-summary/detail', authorize(...REPORT_ROLES), reportsController.getDayEndSummaryDetail);
+
+/**
  * @route   GET /api/v1/reports/daily-sales
  * @desc    Daily sales aggregated report
  * @access  Private (admin, manager, cashier)

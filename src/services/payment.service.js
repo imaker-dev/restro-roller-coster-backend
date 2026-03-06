@@ -360,6 +360,36 @@ const paymentService = {
 
     // Emit table update if released - table now available
     if (paymentStatus === 'completed' && tableId) {
+      // Check if there were merged tables and emit unmerge event
+      const pool = getPool();
+      const [mergeCheck] = await pool.query(
+        `SELECT tm.merged_table_id, t.table_number, t.floor_id
+         FROM table_merges tm
+         JOIN tables t ON tm.merged_table_id = t.id
+         WHERE tm.primary_table_id = ? 
+         AND tm.unmerged_at IS NOT NULL 
+         AND tm.unmerged_at >= DATE_SUB(NOW(), INTERVAL 5 SECOND)`,
+        [tableId]
+      );
+
+      // Emit unmerge event if tables were just unmerged
+      if (mergeCheck.length > 0) {
+        const unmergedTableIds = mergeCheck.map(m => m.merged_table_id);
+        await publishMessage('table:unmerge', {
+          outletId,
+          primaryTableId: tableId,
+          floorId: order.floor_id,
+          unmergedTableIds,
+          unmergedTables: mergeCheck.map(m => ({
+            id: m.merged_table_id,
+            tableNumber: m.table_number,
+            floorId: m.floor_id
+          })),
+          event: 'tables_unmerged_after_payment',
+          timestamp: new Date().toISOString()
+        });
+      }
+
       await publishMessage('table:update', {
         outletId,
         tableId,
@@ -2108,6 +2138,7 @@ const paymentService = {
 
     // Get order statistics (filtered by shift time range)
     // Also calculate real-time total_sales and total_orders for open shifts
+    // Include takeaway/delivery orders even with floor filter (they have NULL floor_id)
     let orderQuery = `
       SELECT 
         COUNT(*) as total_orders,
@@ -2125,7 +2156,8 @@ const paymentService = {
     const orderParams = [shift.outlet_id, shiftStartTime, shiftEndTime];
     
     if (floorId) {
-      orderQuery += ` AND floor_id = ?`;
+      // Include dine-in from this floor + ALL takeaway/delivery orders (they have no floor)
+      orderQuery += ` AND (floor_id = ? OR (floor_id IS NULL AND order_type IN ('takeaway', 'delivery')))`;
       orderParams.push(floorId);
     }
     
@@ -2156,6 +2188,7 @@ const paymentService = {
     logger.info(`Shift ${shiftId} detail calc - Time: ${shiftStartTime} to ${shiftEndTime}, Opening: ${openingCash}, Cash: ${totalCashSales}, UPI: ${totalUpiSales}, Card: ${totalCardSales}, Total: ${calculatedTotalSales}, Expected: ${expectedAmount}, ExpectedCash: ${expectedCash}, ClosingCash: ${closingCash}, Variance: ${cashVariance}`);
 
     // Get staff who worked during this shift (filtered by shift time range)
+    // Include takeaway/delivery orders even with floor filter
     let staffQuery = `
       SELECT 
         u.id as user_id,
@@ -2168,7 +2201,7 @@ const paymentService = {
     const staffParams = [shift.outlet_id, shiftStartTime, shiftEndTime];
     
     if (floorId) {
-      staffQuery += ` AND o.floor_id = ?`;
+      staffQuery += ` AND (o.floor_id = ? OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`;
       staffParams.push(floorId);
     }
     staffQuery += ` GROUP BY u.id, u.name ORDER BY total_sales DESC`;
@@ -2176,6 +2209,7 @@ const paymentService = {
     const [staffActivity] = await pool.query(staffQuery, staffParams);
 
     // Get orders with items and payment status during this shift
+    // Include takeaway/delivery orders even with floor filter
     let ordersQuery = `
       SELECT 
         o.id, o.uuid, o.order_number, o.order_type, o.status, o.payment_status,
@@ -2193,7 +2227,7 @@ const paymentService = {
     const ordersParams = [shift.outlet_id, shiftStartTime, shiftEndTime];
     
     if (floorId) {
-      ordersQuery += ` AND o.floor_id = ?`;
+      ordersQuery += ` AND (o.floor_id = ? OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`;
       ordersParams.push(floorId);
     }
     ordersQuery += ` ORDER BY o.created_at DESC`;

@@ -853,6 +853,7 @@ const customerService = {
 
       let customerId = customerData.customerId;
       let customer = null;
+      let isUpdate = false; // Track if this is an update operation
       const isInterstate = customerData.isInterstate === true;
       const taxType = isInterstate ? 'IGST' : 'CGST+SGST';
 
@@ -860,18 +861,56 @@ const customerService = {
       const gstin = customerData.gstin || null;
       const { gstState, gstStateCode } = deriveGstState(gstin);
 
-      // Get order info (needed for outlet_id)
+      // Get order info (needed for outlet_id and existing customer_id)
       const [orderRows] = await connection.query(
-        'SELECT outlet_id FROM orders WHERE id = ?', [orderId]
+        'SELECT outlet_id, customer_id FROM orders WHERE id = ?', [orderId]
       );
       const outletId = orderRows[0]?.outlet_id;
+      const existingCustomerId = orderRows[0]?.customer_id;
       if (!outletId) throw new Error('Order not found');
 
-      // If customerId provided, get the customer
-      if (customerId) {
+      // SCENARIO 1: Order already has a customer linked - UPDATE existing customer
+      if (existingCustomerId && !customerId) {
+        customerId = existingCustomerId;
         customer = await this.getById(customerId);
-      } else if (customerData.phone) {
-        // Try to find existing customer by phone
+        isUpdate = true;
+        
+        // Update existing customer with new details
+        const updateFields = [];
+        const updateValues = [];
+        
+        if (customerData.name) { updateFields.push('name = ?'); updateValues.push(customerData.name); }
+        if (customerData.phone) { updateFields.push('phone = ?'); updateValues.push(customerData.phone); }
+        if (customerData.email) { updateFields.push('email = ?'); updateValues.push(customerData.email); }
+        if (customerData.address) { updateFields.push('address = ?'); updateValues.push(customerData.address); }
+        if (gstin) { 
+          updateFields.push('gstin = ?', 'is_gst_customer = 1'); 
+          updateValues.push(gstin); 
+        }
+        if (customerData.companyName) { updateFields.push('company_name = ?'); updateValues.push(customerData.companyName); }
+        if (customerData.companyPhone) { updateFields.push('company_phone = ?'); updateValues.push(customerData.companyPhone); }
+        if (customerData.companyAddress) { updateFields.push('company_address = ?'); updateValues.push(customerData.companyAddress); }
+        if (gstState) { updateFields.push('gst_state = ?'); updateValues.push(gstState); }
+        if (gstStateCode) { updateFields.push('gst_state_code = ?'); updateValues.push(gstStateCode); }
+        updateFields.push('is_interstate = ?'); updateValues.push(isInterstate ? 1 : 0);
+        
+        if (updateFields.length > 0) {
+          updateValues.push(customerId);
+          await connection.query(
+            `UPDATE customers SET ${updateFields.join(', ')}, updated_at = NOW() WHERE id = ?`,
+            updateValues
+          );
+        }
+        
+        // Refresh customer data after update
+        customer = await this.getById(customerId);
+      }
+      // SCENARIO 2: customerId explicitly provided - use that customer
+      else if (customerId) {
+        customer = await this.getById(customerId);
+      } 
+      // SCENARIO 3: Try to find existing customer by phone
+      else if (customerData.phone) {
         const found = await this.getByPhone(outletId, customerData.phone);
         if (found && !Array.isArray(found)) {
           customer = found;
@@ -882,7 +921,7 @@ const customerService = {
         }
       }
 
-      // Create new customer if not found
+      // SCENARIO 4: Create new customer if not found
       if (!customerId && customerData.name) {
         const newCustomer = await this.create({
           outletId,
@@ -960,13 +999,19 @@ const customerService = {
         updateValues
       );
 
-      // Update customer stats
-      if (customerId) {
+      // Update customer stats (only increment total_orders if this is NOT an update operation)
+      if (customerId && !isUpdate) {
         await connection.query(
           `UPDATE customers SET 
             total_orders = total_orders + 1,
             last_order_at = NOW()
            WHERE id = ?`,
+          [customerId]
+        );
+      } else if (customerId && isUpdate) {
+        // Just update last_order_at for updates
+        await connection.query(
+          `UPDATE customers SET last_order_at = NOW() WHERE id = ?`,
           [customerId]
         );
       }
@@ -1035,11 +1080,14 @@ const customerService = {
         customer: finalCustomer,
         customerName: finalCustomer?.name || customerData.name || 'Walk-in Customer',
         customerPhone: finalCustomer?.phone || customerData.phone || null,
+        customerEmail: finalCustomer?.email || customerData.email || null,
+        customerAddress: finalCustomer?.address || customerData.address || null,
         isGstCustomer: finalCustomer?.isGstCustomer || false,
         gstin: finalCustomer?.gstin || customerData.gstin || null,
         companyName: finalCustomer?.companyName || customerData.companyName || null,
         isInterstate,
-        taxType
+        taxType,
+        isUpdate // Indicates if existing customer was updated vs new creation
       };
     } catch (error) {
       await connection.rollback();

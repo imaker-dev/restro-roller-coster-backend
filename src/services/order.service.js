@@ -942,7 +942,31 @@ const orderService = {
       
       // Item counts
       itemCount: formattedItems.length,
-      totalQuantity: formattedItems.reduce((sum, i) => sum + (i.quantity || 0), 0)
+      totalQuantity: formattedItems.reduce((sum, i) => sum + (i.quantity || 0), 0),
+      
+      // Snake_case aliases for backward compatibility with billing/other services
+      outlet_id: order.outlet_id,
+      order_type: order.order_type,
+      table_id: order.table_id,
+      floor_id: order.floor_id,
+      section_id: order.section_id,
+      customer_id: order.customer_id,
+      customer_name: order.customer_name || order.customer_name_db,
+      customer_phone: order.customer_phone || order.customer_phone_db,
+      customer_email: order.customer_email,
+      customer_gstin: order.customer_gstin,
+      customer_company_name: order.customer_company_name,
+      customer_gst_state: order.customer_gst_state,
+      customer_gst_state_code: order.customer_gst_state_code,
+      is_interstate: order.is_interstate,
+      subtotal: parseFloat(order.subtotal) || 0,
+      tax_amount: parseFloat(order.tax_amount) || 0,
+      discount_amount: parseFloat(order.discount_amount) || 0,
+      service_charge: parseFloat(order.service_charge) || 0,
+      packaging_charge: parseFloat(order.packaging_charge) || 0,
+      delivery_charge: parseFloat(order.delivery_charge) || 0,
+      total_amount: parseFloat(order.total_amount) || 0,
+      created_by: order.created_by
     };
   },
 
@@ -1233,7 +1257,7 @@ const orderService = {
       createdAt: d.created_at
     }));
 
-    // 5. Payments
+    // 5. Payments with split breakdown
     const [payments] = await pool.query(
       `SELECT p.*, u.name as received_by_name
        FROM payments p
@@ -1242,6 +1266,28 @@ const orderService = {
        ORDER BY p.created_at`,
       [orderId]
     );
+
+    // Fetch split payment breakdown for split payments
+    for (const payment of payments) {
+      if (payment.payment_mode === 'split') {
+        const [splitDetails] = await pool.query(
+          'SELECT * FROM split_payments WHERE payment_id = ?',
+          [payment.id]
+        );
+        payment.splitBreakdown = splitDetails.map(sp => ({
+          id: sp.id,
+          paymentMode: sp.payment_mode,
+          amount: parseFloat(sp.amount) || 0,
+          referenceNumber: sp.reference_number || null,
+          transactionId: sp.transaction_id || null,
+          cardLastFour: sp.card_last_four || null,
+          cardType: sp.card_type || null,
+          upiId: sp.upi_id || null,
+          walletName: sp.wallet_name || null,
+          bankName: sp.bank_name || null
+        }));
+      }
+    }
 
     const formattedPayments = payments.map(p => ({
       id: p.id,
@@ -1260,6 +1306,7 @@ const orderService = {
       bankName: p.bank_name || null,
       receivedBy: p.received_by,
       receivedByName: p.received_by_name || null,
+      splitBreakdown: p.splitBreakdown || null,
       createdAt: p.created_at
     }));
 

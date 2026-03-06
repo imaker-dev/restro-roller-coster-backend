@@ -201,6 +201,48 @@ const setupRedisPubSub = () => {
     io.to(`outlet:${data.outletId}`).emit('table:updated', data);
   });
 
+  // Table unmerge - broadcast when merged tables are unmerged (manual or after payment)
+  pubsub.subscribe('table:unmerge', (data) => {
+    logger.info(`[RedisPubSub] table:unmerge - outlet: ${data.outletId}, primary: ${data.primaryTableId}, unmerged: ${data.unmergedTableIds?.join(',')}`);
+    
+    // Broadcast to floor room
+    if (data.floorId) {
+      io.to(`floor:${data.outletId}:${data.floorId}`).emit('table:unmerged', data);
+    }
+    
+    // Also broadcast to unmerged tables' floors if different
+    if (data.unmergedTables) {
+      const uniqueFloors = [...new Set(data.unmergedTables.map(t => t.floorId).filter(f => f && f !== data.floorId))];
+      uniqueFloors.forEach(floorId => {
+        io.to(`floor:${data.outletId}:${floorId}`).emit('table:unmerged', data);
+      });
+    }
+    
+    // Broadcast to outlet, captain, and cashier
+    io.to(`outlet:${data.outletId}`).emit('table:unmerged', data);
+    io.to(`captain:${data.outletId}`).emit('table:unmerged', data);
+    io.to(`cashier:${data.outletId}`).emit('table:unmerged', data);
+  });
+
+  // Table transfer - broadcast to all relevant rooms for real-time UI update
+  pubsub.subscribe('table:transfer', (data) => {
+    logger.info(`[RedisPubSub] table:transfer - outlet: ${data.outletId}, from: ${data.sourceTableNumber} to: ${data.targetTableNumber}`);
+    
+    // Broadcast to both source and target floors
+    if (data.sourceFloorId) {
+      io.to(`floor:${data.outletId}:${data.sourceFloorId}`).emit('table:transferred', data);
+    }
+    if (data.targetFloorId && data.targetFloorId !== data.sourceFloorId) {
+      io.to(`floor:${data.outletId}:${data.targetFloorId}`).emit('table:transferred', data);
+    }
+    
+    // Broadcast to outlet, kitchen, captain, and cashier for POS/KDS updates
+    io.to(`outlet:${data.outletId}`).emit('table:transferred', data);
+    io.to(`kitchen:${data.outletId}`).emit('table:transferred', data);
+    io.to(`captain:${data.outletId}`).emit('table:transferred', data);
+    io.to(`cashier:${data.outletId}`).emit('table:transferred', data);
+  });
+
   // Order updates - broadcast to outlet, captain, and cashier
   pubsub.subscribe('order:update', (data) => {
     io.to(`outlet:${data.outletId}`).emit('order:updated', data);
