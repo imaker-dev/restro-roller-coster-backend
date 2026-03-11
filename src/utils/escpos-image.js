@@ -73,9 +73,10 @@ async function imageToEscPos(imageSource, options = {}) {
       return Buffer.alloc(0);
     }
 
-    // Process image with sharp - flatten to white background, enhance contrast
+    // Process image with sharp - flatten to white background, trim whitespace, enhance contrast
     let image = sharp(imageBuffer)
       .flatten({ background: { r: 255, g: 255, b: 255 } }) // Remove transparency, white bg
+      .trim({ background: '#FFFFFF', threshold: 10 }) // Trim white borders
       .normalize() // Enhance contrast
       .grayscale();
 
@@ -164,9 +165,9 @@ async function imageToEscPos(imageSource, options = {}) {
 }
 
 /**
- * Create centered logo command with line feeds
+ * Create centered logo command with minimal spacing
  * @param {Buffer} logoData - ESC/POS bitmap data from imageToEscPos
- * @returns {Buffer} - Centered logo with spacing
+ * @returns {Buffer} - Centered logo with minimal spacing
  */
 function wrapLogoWithAlignment(logoData) {
   if (!logoData || !Buffer.isBuffer(logoData)) {
@@ -176,7 +177,7 @@ function wrapLogoWithAlignment(logoData) {
   return Buffer.concat([
     Buffer.from([0x1B, 0x61, 0x01]),  // Align center
     logoData,
-    Buffer.from([0x0A]),              // Line feed
+    Buffer.from([0x1B, 0x32]),        // Reset line spacing to default (important after image)
     Buffer.from([0x1B, 0x61, 0x00])   // Align left
   ]);
 }

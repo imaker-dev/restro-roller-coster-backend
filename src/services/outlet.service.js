@@ -2,6 +2,7 @@ const { getPool } = require('../database');
 const { v4: uuidv4 } = require('uuid');
 const { cache } = require('../config/redis');
 const logger = require('../utils/logger');
+const appConfig = require('../config/app.config');
 
 const CACHE_TTL = 3600; // 1 hour
 
@@ -521,6 +522,117 @@ const outletService = {
     preview.warning = `This will PERMANENTLY DELETE ${totalRows} rows across ${Object.keys(preview.tables).length} tables. This action CANNOT be undone.`;
 
     return preview;
+  },
+
+  // ========================
+  // Print Logo Settings
+  // ========================
+
+  /**
+   * Get print logo settings for an outlet
+   */
+  async getPrintLogoSettings(outletId) {
+    const pool = getPool();
+    const [rows] = await pool.query(
+      `SELECT id, name, logo_url, print_logo_url, print_logo_enabled 
+       FROM outlets WHERE id = ? AND deleted_at IS NULL`,
+      [outletId]
+    );
+    
+    if (!rows.length) return null;
+    
+    const outlet = rows[0];
+    const baseUrl = appConfig.url;
+    
+    // Helper to add APP_URL prefix to relative paths
+    const getFullUrl = (path) => {
+      if (!path) return null;
+      if (path.startsWith('http://') || path.startsWith('https://')) return path;
+      return `${baseUrl}${path.startsWith('/') ? '' : '/'}${path}`;
+    };
+    
+    return {
+      outletId: outlet.id,
+      outletName: outlet.name,
+      logoUrl: getFullUrl(outlet.logo_url),
+      printLogoUrl: getFullUrl(outlet.print_logo_url),
+      printLogoEnabled: Boolean(outlet.print_logo_enabled)
+    };
+  },
+
+  /**
+   * Update print logo settings for an outlet
+   */
+  async updatePrintLogoSettings(outletId, data, userId) {
+    const pool = getPool();
+    
+    // Verify outlet exists
+    const [existing] = await pool.query(
+      'SELECT id FROM outlets WHERE id = ? AND deleted_at IS NULL',
+      [outletId]
+    );
+    if (!existing.length) return null;
+
+    const updates = [];
+    const params = [];
+
+    if (data.printLogoEnabled !== undefined) {
+      updates.push('print_logo_enabled = ?');
+      params.push(data.printLogoEnabled ? 1 : 0);
+    }
+
+    if (data.printLogoUrl !== undefined) {
+      updates.push('print_logo_url = ?');
+      params.push(data.printLogoUrl);
+    }
+
+    if (updates.length > 0) {
+      params.push(userId, outletId);
+      
+      await pool.query(
+        `UPDATE outlets SET ${updates.join(', ')}, updated_by = ?, updated_at = NOW() WHERE id = ?`,
+        params
+      );
+      
+      logger.info(`Print logo settings updated for outlet ${outletId} by user ${userId}`);
+    }
+
+    return this.getPrintLogoSettings(outletId);
+  },
+
+  /**
+   * Upload print logo image for an outlet
+   */
+  async uploadPrintLogo(outletId, file, userId) {
+    const pool = getPool();
+    
+    // Verify outlet exists
+    const [existing] = await pool.query(
+      'SELECT id, code FROM outlets WHERE id = ? AND deleted_at IS NULL',
+      [outletId]
+    );
+    if (!existing.length) return null;
+
+    // Generate URL path for the uploaded file
+    // File is already saved by multer, we just need to store the path
+    const printLogoPath = `/uploads/logos/${file.filename}`;
+    const baseUrl = appConfig.url;
+    const printLogoUrl = `${baseUrl}${printLogoPath}`;
+
+    await pool.query(
+      `UPDATE outlets SET print_logo_url = ?, print_logo_enabled = 1, updated_by = ?, updated_at = NOW() WHERE id = ?`,
+      [printLogoPath, userId, outletId]
+    );
+
+    logger.info(`Print logo uploaded for outlet ${outletId}: ${printLogoUrl}`);
+
+    return {
+      printLogoUrl,
+      printLogoEnabled: true,
+      filename: file.filename,
+      originalName: file.originalname,
+      size: file.size
+    };
   }
 };
 

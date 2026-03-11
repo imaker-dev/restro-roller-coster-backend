@@ -5,6 +5,7 @@ const tableController = require('../controllers/table.controller');
 const { authenticate, authorize } = require('../middlewares/auth.middleware');
 const { validate } = require('../middlewares');
 const outletValidation = require('../validations/outlet.validation');
+const { singleImage } = require('../utils/upload');
 
 // All routes require authentication
 router.use(authenticate);
@@ -208,5 +209,32 @@ router.put('/sections/:id', authorize('super_admin', 'admin', 'manager'), valida
  * @access  Private (admin)
  */
 router.delete('/sections/:id', authorize('super_admin', 'admin'), outletController.deleteSection);
+
+// ========================
+// Print Logo Routes
+// ========================
+
+/**
+ * @route   GET /api/v1/outlets/:id/print-logo
+ * @desc    Get print logo settings for an outlet
+ * @access  Private (admin, manager)
+ */
+router.get('/:id/print-logo', authorize('super_admin', 'admin', 'manager'), outletController.getPrintLogoSettings);
+
+/**
+ * @route   PUT /api/v1/outlets/:id/print-logo
+ * @desc    Update print logo settings (enable/disable, set URL)
+ * @access  Private (admin)
+ * @body    { printLogoEnabled: boolean, printLogoUrl?: string }
+ */
+router.put('/:id/print-logo', authorize('super_admin', 'admin'), outletController.updatePrintLogoSettings);
+
+/**
+ * @route   POST /api/v1/outlets/:id/print-logo/upload
+ * @desc    Upload print logo image for thermal printer
+ * @access  Private (admin)
+ * @body    multipart/form-data with 'logo' field
+ */
+router.post('/:id/print-logo/upload', authorize('super_admin', 'admin'), singleImage('logo', 'logos'), outletController.uploadPrintLogo);
 
 module.exports = router;

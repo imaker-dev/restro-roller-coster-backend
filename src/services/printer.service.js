@@ -1311,7 +1311,7 @@ const printerService = {
     const logoSource = resolveLogoSource(billData.outletLogoUrl);
     if (logoSource) {
       try {
-        logo = await loadOutletLogo(logoSource, { maxWidth: 300, maxHeight: 120 });
+        logo = await loadOutletLogo(logoSource, { maxWidth: 280, maxHeight: 80 });
       } catch (err) {
         logger.warn('Failed to load logo for bill print:', err.message);
       }
@@ -1459,7 +1459,7 @@ const printerService = {
     const logoSource = resolveLogoSource(billData.outletLogoUrl);
     if (logoSource) {
       try {
-        logo = await loadOutletLogo(logoSource, { maxWidth: 300, maxHeight: 120 });
+        logo = await loadOutletLogo(logoSource, { maxWidth: 280, maxHeight: 80 });
       } catch (err) {
         logger.warn('Failed to load logo for direct bill print:', err.message);
       }

@@ -126,10 +126,12 @@ const kotService = {
     try {
       await connection.beginTransaction();
 
-      // Get order details
+      // Get order details with captain/creator name
       const [orders] = await connection.query(
-        `SELECT o.*, t.table_number FROM orders o
+        `SELECT o.*, t.table_number, u.name as created_by_name 
+         FROM orders o
          LEFT JOIN tables t ON o.table_id = t.id
+         LEFT JOIN users u ON o.created_by = u.id
          WHERE o.id = ?`,
         [orderId]
       );

@@ -314,13 +314,21 @@ const billingService = {
   async printBillToThermal(invoice, order, userId) {
     const pool = getPool();
 
-    // Get outlet info for bill header (including logo_url)
+    // Get outlet info for bill header (including logo settings)
     const [outletInfo] = await pool.query(
-      `SELECT name, CONCAT_WS(', ', NULLIF(address_line1,''), NULLIF(city,''), NULLIF(state,'')) as address, gstin, phone, logo_url
+      `SELECT name, CONCAT_WS(', ', NULLIF(address_line1,''), NULLIF(city,''), NULLIF(state,'')) as address, 
+              gstin, phone, logo_url, print_logo_url, print_logo_enabled
        FROM outlets WHERE id = ?`,
       [invoice.outletId || order.outlet_id]
     );
     const outletData = outletInfo[0] || {};
+    
+    // Determine logo URL for printing (only if print_logo_enabled is true)
+    let printLogoUrl = null;
+    if (outletData.print_logo_enabled) {
+      // Prefer print_logo_url, fallback to logo_url
+      printLogoUrl = outletData.print_logo_url || outletData.logo_url || null;
+    }
     const now = new Date();
     const dd = String(now.getDate()).padStart(2, '0');
     const mm = String(now.getMonth() + 1).padStart(2, '0');
@@ -338,7 +346,7 @@ const billingService = {
       outletAddress: outletData.address || null,
       outletPhone: outletData.phone || null,
       outletGstin: outletData.gstin || null,
-      outletLogoUrl: outletData.logo_url || null,
+      outletLogoUrl: printLogoUrl,
       tableNumber: invoice.tableNumber || order.table_number,
       cashierName: invoice.generatedByName || order.created_by_name || null,
       date: `${dd}/${mm}/${yy}`,

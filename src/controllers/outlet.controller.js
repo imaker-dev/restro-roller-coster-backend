@@ -316,6 +316,82 @@ const outletController = {
     } catch (error) {
       next(error);
     }
+  },
+
+  // ========================
+  // Print Logo Settings
+  // ========================
+
+  /**
+   * Get print logo settings for an outlet
+   * @route GET /api/v1/outlets/:id/print-logo
+   */
+  async getPrintLogoSettings(req, res, next) {
+    try {
+      const settings = await outletService.getPrintLogoSettings(req.params.id);
+      if (!settings) {
+        return res.status(404).json({ success: false, message: 'Outlet not found' });
+      }
+      res.json({ success: true, data: settings });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  /**
+   * Update print logo settings for an outlet
+   * @route PUT /api/v1/outlets/:id/print-logo
+   * @body { printLogoEnabled: boolean, printLogoUrl?: string }
+   */
+  async updatePrintLogoSettings(req, res, next) {
+    try {
+      const { printLogoEnabled, printLogoUrl } = req.body;
+      const settings = await outletService.updatePrintLogoSettings(
+        req.params.id, 
+        { printLogoEnabled, printLogoUrl },
+        req.user.userId
+      );
+      if (!settings) {
+        return res.status(404).json({ success: false, message: 'Outlet not found' });
+      }
+      res.json({ 
+        success: true, 
+        message: 'Print logo settings updated successfully',
+        data: settings 
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  /**
+   * Upload print logo image for an outlet
+   * @route POST /api/v1/outlets/:id/print-logo/upload
+   */
+  async uploadPrintLogo(req, res, next) {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ success: false, message: 'No file uploaded' });
+      }
+      
+      const result = await outletService.uploadPrintLogo(
+        req.params.id,
+        req.file,
+        req.user.userId
+      );
+      
+      if (!result) {
+        return res.status(404).json({ success: false, message: 'Outlet not found' });
+      }
+      
+      res.json({
+        success: true,
+        message: 'Print logo uploaded successfully',
+        data: result
+      });
+    } catch (error) {
+      next(error);
+    }
   }
 };
 

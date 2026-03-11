@@ -63,6 +63,7 @@ class SettingsService {
     { key: 'print_merchant_copy', value: 'false', type: 'boolean', category: 'printing', description: 'Print merchant copy' },
     { key: 'kot_print_copies', value: '1', type: 'number', category: 'printing', description: 'Number of KOT copies' },
     { key: 'bill_print_copies', value: '1', type: 'number', category: 'printing', description: 'Number of bill copies' },
+    { key: 'print_logo_on_bill', value: 'false', type: 'boolean', category: 'printing', description: 'Print logo on bills and invoices' },
     
     // Inventory Settings
     { key: 'allow_negative_stock', value: 'false', type: 'boolean', category: 'inventory', description: 'Allow negative stock' },
