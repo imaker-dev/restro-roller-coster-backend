@@ -1098,14 +1098,15 @@ const tableService = {
       }
 
       // Validate floor shift is open before starting session
+      // No session_date filter - shifts can remain open across days (manual close only)
       if (table.floor_id) {
-        const today = getLocalDate();
         const [floorShift] = await connection.query(
           `SELECT ds.id, ds.status, f.name as floor_name
            FROM day_sessions ds
            JOIN floors f ON ds.floor_id = f.id
-           WHERE ds.outlet_id = ? AND ds.floor_id = ? AND ds.session_date = ? AND ds.status = 'open'`,
-          [table.outlet_id, table.floor_id, today]
+           WHERE ds.outlet_id = ? AND ds.floor_id = ? AND ds.status = 'open'
+           ORDER BY ds.id DESC LIMIT 1`,
+          [table.outlet_id, table.floor_id]
         );
         
         if (!floorShift[0]) {

@@ -27,7 +27,7 @@ const BINARY_CONTENT_PREFIX = 'b64:';
 const CONFIG = {
   // Cloud server URL (your backend API)
   // CLOUD_URL: process.env.CLOUD_URL || 'http://localhost:3005',
-  CLOUD_URL: process.env.CLOUD_URL || 'https://proceedings-pushing-procurement-hip.trycloudflare.com',
+  CLOUD_URL: process.env.CLOUD_URL || 'https://educational-strong-hunting-investigator.trycloudflare.com',
   
   // Outlet ID from your system
   OUTLET_ID: process.env.OUTLET_ID || '44',
@@ -259,11 +259,23 @@ async function reportPrinterStatuses() {
   const printerEntries = Object.entries(CONFIG.PRINTERS || {});
   if (printerEntries.length === 0) return;
 
+  // De-duplicate by printerId to avoid reporting same physical printer multiple times
+  const seenPrinterIds = new Set();
+  const uniqueEntries = [];
+  for (const [station, printer] of printerEntries) {
+    const key = printer.printerId ? String(printer.printerId) : `${printer.ip}:${printer.port}:${station}`;
+    if (!seenPrinterIds.has(key)) {
+      seenPrinterIds.add(key);
+      uniqueEntries.push([station, printer]);
+    }
+  }
+
   const statuses = await Promise.all(
-    printerEntries.map(async ([station, printer]) => {
+    uniqueEntries.map(async ([station, printer]) => {
       const result = await testPrinterConnection(printer.ip, printer.port);
       return {
         station,
+        printerId: printer.printerId || null,
         ipAddress: printer.ip,
         port: printer.port,
         isOnline: result.isOnline,
@@ -302,7 +314,8 @@ async function refreshPrinterConfigFromCloud() {
       const port = Number.isInteger(printer.port) ? printer.port : parseInt(printer.port, 10);
       normalizedPrinters[station] = {
         ip: String(printer.ip).trim(),
-        port: Number.isInteger(port) ? port : 9100
+        port: Number.isInteger(port) ? port : 9100,
+        printerId: printer.printerId || null
       };
     }
 

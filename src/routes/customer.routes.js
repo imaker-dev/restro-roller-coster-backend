@@ -25,7 +25,7 @@ router.post('/:outletId', authorize('super_admin', 'admin', 'manager', 'cashier'
  * @query   q - Search query (min 2 chars)
  * @query   limit - Max results (default 20)
  */
-router.get('/:outletId/search', authorize('super_admin', 'admin', 'manager', 'cashier'), customerController.search);
+router.get('/:outletId/search', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), customerController.search);
 
 /**
  * @route   GET /api/v1/customers/:outletId/by-phone
@@ -33,7 +33,7 @@ router.get('/:outletId/search', authorize('super_admin', 'admin', 'manager', 'ca
  * @access  Private (admin, manager, cashier)
  * @query   phone - Phone number
  */
-router.get('/:outletId/by-phone', authorize('super_admin', 'admin', 'manager', 'cashier'), customerController.getByPhone);
+router.get('/:outletId/by-phone', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), customerController.getByPhone);
 
 /**
  * @route   GET /api/v1/customers/:outletId/list
@@ -41,7 +41,7 @@ router.get('/:outletId/by-phone', authorize('super_admin', 'admin', 'manager', '
  * @access  Private (admin, manager, cashier)
  * @query   page, limit, gstOnly, sortBy, sortOrder
  */
-router.get('/:outletId/list', authorize('super_admin', 'admin', 'manager', 'cashier'), customerController.list);
+router.get('/:outletId/list', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), customerController.list);
 
 /**
  * @route   GET /api/v1/customers/:outletId/details/:customerId
@@ -79,7 +79,7 @@ router.get('/:id/orders', authorize('super_admin', 'admin', 'manager', 'cashier'
  * @desc    Link customer to an order (create if not exists)
  * @access  Private (admin, manager, cashier)
  */
-router.post('/link-order/:orderId', authorize('super_admin', 'admin', 'manager', 'cashier'), customerController.linkToOrder);
+router.post('/link-order/:orderId', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), customerController.linkToOrder);
 
 /**
  * @route   PUT /api/v1/customers/order-gst/:orderId

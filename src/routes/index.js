@@ -27,13 +27,13 @@ router.use('/reports', require('./reports.routes'));
 router.use('/bulk-upload', require('./bulkUpload.routes'));
 router.use('/app', require('./appVersion.routes'));
 router.use('/integrations', require('./integration.routes'));
+router.use('/inventory', require('./inventory.routes'));
 
 // Future routes (uncomment as modules are developed)
 // router.use('/categories', require('./category.routes'));
 // router.use('/items', require('./item.routes'));
 // router.use('/kot', require('./kot.routes'));
 // router.use('/payments', require('./payment.routes'));
-// router.use('/inventory', require('./inventory.routes'));
 // router.use('/reports', require('./report.routes'));
 
 module.exports = router;

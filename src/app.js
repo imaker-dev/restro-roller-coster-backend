@@ -25,7 +25,10 @@ app.use(helmet({
   crossOriginOpenerPolicy: false,
   crossOriginEmbedderPolicy: false,
 }));
+
+// CORS — handle preflight OPTIONS for all routes
 app.use(cors(config.cors));
+app.options('*', cors(config.cors));
 
 // Request parsing
 app.use(express.json({ limit: '10mb' }));

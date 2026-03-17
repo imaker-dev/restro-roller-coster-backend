@@ -397,7 +397,11 @@ const kotService = {
 
       // Priority 1: Has counter (bar items) - counter_id takes precedence
       if (item.counter_id || item.counter_db_id) {
-        station = item.counter_type || 'bar';
+        // Use counter NAME (lowercased) — matches printer station names reliably
+        // counter_type may be misconfigured, but counter names (e.g., "Bar") are always correct
+        station = item.counter_name
+          ? item.counter_name.toLowerCase().replace(/\s+/g, '_')
+          : (item.counter_type || 'bar');
         stationId = item.counter_id || item.counter_db_id;
         stationName = item.counter_name || 'Bar';
         isCounter = true;
@@ -406,7 +410,12 @@ const kotService = {
       }
       // Priority 2: Has kitchen station - group by station_id for precise routing
       else if (item.kitchen_station_id || item.ks_id) {
-        station = item.station_type || 'main_kitchen';
+        // Use station NAME (lowercased) — matches printer station names reliably
+        // station_type may be misconfigured (e.g., all set to 'main_kitchen'),
+        // but station names (e.g., "Kitchen", "Bar", "Tandoor") are always correct
+        station = item.station_name
+          ? item.station_name.toLowerCase().replace(/\s+/g, '_')
+          : (item.station_type || 'kitchen');
         stationId = item.kitchen_station_id || item.ks_id;
         stationName = item.station_name || station;
         isCounter = false;

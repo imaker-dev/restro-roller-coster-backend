@@ -738,13 +738,14 @@ const billingService = {
       Promise.all(emitPromises).catch(err => logger.error('Bill event emit error:', err.message));
 
       // Get floor cashier for routing bill request to correct cashier
+      // No session_date filter - shifts can remain open across days (manual close only)
       let floorCashierId = null;
       if (order.floor_id) {
-        const today = getLocalDate();
         const [floorShift] = await pool.query(
           `SELECT ds.cashier_id FROM day_sessions ds
-           WHERE ds.outlet_id = ? AND ds.floor_id = ? AND ds.session_date = ? AND ds.status = 'open'`,
-          [order.outlet_id, order.floor_id, today]
+           WHERE ds.outlet_id = ? AND ds.floor_id = ? AND ds.status = 'open'
+           ORDER BY ds.id DESC LIMIT 1`,
+          [order.outlet_id, order.floor_id]
         );
         if (floorShift[0]?.cashier_id) {
           floorCashierId = floorShift[0].cashier_id;

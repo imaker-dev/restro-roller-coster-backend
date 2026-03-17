@@ -301,7 +301,7 @@ const printerService = {
       return printers[0];
     }
 
-    // Priority 4: For bill station, find any bill printer
+    // Priority 4: For bill station, find any bill/cashier printer
     if (station === 'bill' || station === 'cashier') {
       [printers] = await pool.query(
         `SELECT * FROM printers WHERE outlet_id = ? AND (station = 'bill' OR station = 'cashier') AND is_active = 1 LIMIT 1`,
@@ -313,7 +313,17 @@ const printerService = {
       }
     }
 
-    // NO FALLBACK - Server-side app requires proper configuration
+    // Priority 5: Final fallback — any active network printer for this outlet
+    // Ensures jobs always get a printer_id so the bridge receives ip_address in the poll response
+    [printers] = await pool.query(
+      `SELECT * FROM printers WHERE outlet_id = ? AND is_active = 1 AND ip_address IS NOT NULL ORDER BY id LIMIT 1`,
+      [outletId]
+    );
+    if (printers[0]) {
+      logger.warn(`Printer lookup [${station}]: Using fallback network printer (id: ${printers[0].id}, station: ${printers[0].station})`);
+      return printers[0];
+    }
+
     logger.error(`Printer lookup [${station}]: No printer configured for outlet ${outletId}. Configure station-to-printer mapping.`);
     return null;
   },
@@ -782,10 +792,20 @@ const printerService = {
 
       let matchedPrinter = null;
 
+      // 1. Direct printer ID match (bridge config now includes printerId)
       if (printerId && printerById.has(printerId)) {
         matchedPrinter = printerById.get(printerId);
       }
 
+      // 2. Station name match (preferred over IP when multiple printers share same IP)
+      if (!matchedPrinter && station) {
+        const stationMatches = printers.filter((printer) => printer.station === station);
+        if (stationMatches.length === 1) {
+          matchedPrinter = stationMatches[0];
+        }
+      }
+
+      // 3. IP+port match (only if unique match found)
       if (!matchedPrinter && ipAddress) {
         const ipMatches = printers.filter((printer) => {
           if (!printer.ip_address || printer.ip_address !== ipAddress) return false;
@@ -794,13 +814,9 @@ const printerService = {
         });
         if (ipMatches.length === 1) {
           matchedPrinter = ipMatches[0];
-        }
-      }
-
-      if (!matchedPrinter && station) {
-        const stationMatches = printers.filter((printer) => printer.station === station);
-        if (stationMatches.length === 1) {
-          matchedPrinter = stationMatches[0];
+        } else if (ipMatches.length > 1 && station) {
+          // Multiple printers on same IP — try to narrow by station
+          matchedPrinter = ipMatches.find((p) => p.station === station) || null;
         }
       }
 
@@ -865,11 +881,14 @@ const printerService = {
     let rows;
     if (isDynamicMode) {
       // Dynamic mode: return ALL active printers for this outlet
-      // Also include kitchen_station.station_type mappings for dynamic station names
+      // Join kitchen_stations AND counters to get all station_type / counter_type mappings
       [rows] = await pool.query(
-        `SELECT p.station, p.ip_address, p.port, ks.station_type as ks_station_type
+        `SELECT p.id as printer_id, p.station, p.ip_address, p.port,
+                ks.station_type as ks_station_type,
+                c.counter_type as counter_type
          FROM printers p
          LEFT JOIN kitchen_stations ks ON ks.printer_id = p.id AND ks.is_active = 1
+         LEFT JOIN counters c ON c.printer_id = p.id AND c.is_active = 1
          WHERE p.outlet_id = ? AND p.is_active = 1 AND p.ip_address IS NOT NULL
          ORDER BY p.station ASC, p.id ASC`,
         [outletId]
@@ -897,12 +916,16 @@ const printerService = {
 
       const placeholders = uniqueStations.map(() => '?').join(',');
       [rows] = await pool.query(
-        `SELECT station, ip_address, port
-         FROM printers
-         WHERE outlet_id = ?
-           AND is_active = 1
-           AND station IN (${placeholders})
-         ORDER BY station ASC, id ASC`,
+        `SELECT p.id as printer_id, p.station, p.ip_address, p.port,
+                ks.station_type as ks_station_type,
+                c.counter_type as counter_type
+         FROM printers p
+         LEFT JOIN kitchen_stations ks ON ks.printer_id = p.id AND ks.is_active = 1
+         LEFT JOIN counters c ON c.printer_id = p.id AND c.is_active = 1
+         WHERE p.outlet_id = ?
+           AND p.is_active = 1
+           AND p.station IN (${placeholders})
+         ORDER BY p.station ASC, p.id ASC`,
         [outletId, ...uniqueStations]
       );
     }
@@ -911,20 +934,106 @@ const printerService = {
     for (const row of rows) {
       const printerConfig = {
         ip: row.ip_address,
-        port: row.port || 9100
+        port: row.port || 9100,
+        printerId: row.printer_id
       };
       
-      // Add by printer.station (e.g., 'kot_kitchen', 'bill')
+      // Add by printer.station (e.g., 'bar', 'kitchen', 'bill')
       const station = typeof row.station === 'string' ? row.station.trim() : '';
       if (station && !printers[station]) {
         printers[station] = printerConfig;
       }
       
-      // Also add by kitchen_station.station_type for dynamic matching (e.g., 'tandoor', 'main_kitchen')
-      const ksStationType = row.ks_station_type ? String(row.ks_station_type).trim() : '';
-      if (ksStationType && !printers[ksStationType]) {
-        printers[ksStationType] = printerConfig;
+      // Add by kitchen_station.station_type (e.g., 'main_kitchen', 'tandoor')
+      const ksType = row.ks_station_type ? String(row.ks_station_type).trim() : '';
+      if (ksType && !printers[ksType]) {
+        printers[ksType] = printerConfig;
       }
+
+      // Add by counter.counter_type (e.g., 'main_bar', 'mocktail')
+      const cType = row.counter_type ? String(row.counter_type).trim() : '';
+      if (cType && !printers[cType]) {
+        printers[cType] = printerConfig;
+      }
+    }
+
+    // ---- Map kitchen station NAMES to printers (KOTs use station_name.toLowerCase()) ----
+    // kitchen_stations.printer_id may be NULL, so the JOIN above misses them.
+    // Query all station names and map each to the best matching printer.
+    const firstPrinter = rows.length > 0
+      ? { ip: rows[0].ip_address, port: rows[0].port || 9100, printerId: rows[0].printer_id }
+      : null;
+
+    try {
+      const [ksRows] = await pool.query(
+        `SELECT ks.name, ks.station_type, ks.printer_id,
+                p.id as linked_printer_id, p.station as linked_station, p.ip_address as linked_ip, p.port as linked_port
+         FROM kitchen_stations ks
+         LEFT JOIN printers p ON ks.printer_id = p.id AND p.is_active = 1
+         WHERE ks.outlet_id = ? AND ks.is_active = 1`,
+        [outletId]
+      );
+      for (const ks of ksRows) {
+        const nameKey = ks.name ? ks.name.toLowerCase().replace(/\s+/g, '_') : '';
+        if (!nameKey) continue;
+        // If this station name isn't already mapped, find the best printer
+        if (!printers[nameKey]) {
+          if (ks.linked_ip) {
+            // Station has a linked printer
+            printers[nameKey] = { ip: ks.linked_ip, port: ks.linked_port || 9100, printerId: ks.linked_printer_id };
+          } else {
+            // No linked printer — map to printer with matching station name, or first available
+            printers[nameKey] = printers[nameKey] || printers[ks.station_type] || firstPrinter;
+          }
+        }
+      }
+      // Also map counter names
+      const [cRows] = await pool.query(
+        `SELECT c.name, c.counter_type, c.printer_id,
+                p.id as linked_printer_id, p.station as linked_station, p.ip_address as linked_ip, p.port as linked_port
+         FROM counters c
+         LEFT JOIN printers p ON c.printer_id = p.id AND p.is_active = 1
+         WHERE c.outlet_id = ? AND c.is_active = 1`,
+        [outletId]
+      );
+      for (const c of cRows) {
+        const nameKey = c.name ? c.name.toLowerCase().replace(/\s+/g, '_') : '';
+        if (!nameKey || printers[nameKey]) continue;
+        if (c.linked_ip) {
+          printers[nameKey] = { ip: c.linked_ip, port: c.linked_port || 9100, printerId: c.linked_printer_id };
+        } else {
+          printers[nameKey] = printers[c.counter_type] || printers['bar'] || firstPrinter;
+        }
+      }
+    } catch (err) {
+      // Non-fatal: bridge still works with printer.station-based mapping
+      logger.warn('getBridgePrinterConfig: station name mapping query failed:', err.message);
+    }
+
+    // ---- Auto-add common station aliases so bridge can route every job type ----
+
+    // bill / cashier — jobs hardcode station='bill'; map to bill/cashier printer or first available
+    if (!printers['bill'] && firstPrinter) {
+      printers['bill'] = printers['cashier'] || firstPrinter;
+    }
+    if (!printers['cashier'] && printers['bill']) {
+      printers['cashier'] = printers['bill'];
+    }
+
+    // main_kitchen ↔ kitchen cross-alias
+    if (!printers['main_kitchen'] && printers['kitchen']) {
+      printers['main_kitchen'] = printers['kitchen'];
+    }
+    if (!printers['kitchen'] && printers['main_kitchen']) {
+      printers['kitchen'] = printers['main_kitchen'];
+    }
+
+    // kot_kitchen / kot_bar legacy aliases
+    if (!printers['kot_kitchen'] && (printers['kitchen'] || printers['main_kitchen'])) {
+      printers['kot_kitchen'] = printers['kitchen'] || printers['main_kitchen'];
+    }
+    if (!printers['kot_bar'] && printers['bar']) {
+      printers['kot_bar'] = printers['bar'];
     }
 
     return {
