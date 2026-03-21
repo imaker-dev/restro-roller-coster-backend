@@ -90,6 +90,20 @@ const inventoryController = {
     }
   },
 
+  async getVendorDetail(req, res) {
+    try {
+      const { purchasePage, purchaseLimit, startDate, endDate, paymentStatus } = req.query;
+      const result = await vendorService.getVendorDetail(parseInt(req.params.id), {
+        purchasePage, purchaseLimit, startDate, endDate, paymentStatus
+      });
+      if (!result) return res.status(404).json({ success: false, message: 'Vendor not found' });
+      res.json({ success: true, data: result });
+    } catch (error) {
+      logger.error('Get vendor detail error:', error);
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
+
   async createVendor(req, res) {
     try {
       const vendor = await vendorService.create(parseInt(req.params.outletId), req.body);

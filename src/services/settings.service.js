@@ -70,6 +70,8 @@ class SettingsService {
     { key: 'low_stock_alert_enabled', value: 'true', type: 'boolean', category: 'inventory', description: 'Enable low stock alerts' },
     { key: 'low_stock_threshold', value: '10', type: 'number', category: 'inventory', description: 'Default low stock threshold' },
     { key: 'auto_deduct_stock', value: 'true', type: 'boolean', category: 'inventory', description: 'Auto deduct stock on order' },
+    { key: 'cancel_reversal_window_minutes', value: '5', type: 'number', category: 'inventory', description: 'Minutes after item creation within which cancel reverses stock (after = wastage)' },
+    { key: 'cancel_stock_action_mode', value: 'auto', type: 'string', category: 'inventory', description: 'How to decide stock action on cancel: auto (system decides) or ask (user chooses)' },
     
     // Order Settings
     { key: 'require_customer_for_order', value: 'false', type: 'boolean', category: 'order', description: 'Require customer details for orders' },

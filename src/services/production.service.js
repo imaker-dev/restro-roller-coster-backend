@@ -364,6 +364,8 @@ const productionService = {
       const productionNumber = await this._generateProductionNumber(outletId, connection);
 
       // Step 1: Deduct raw materials and calculate total input cost
+      // Uses per-batch FIFO deduction with FOR UPDATE locks for concurrency safety
+      // Creates 1 movement PER batch so reversal can restore to exact original batches
       let totalInputCost = 0;
       const inputRecords = [];
 
@@ -405,8 +407,71 @@ const productionService = {
         const balanceBefore = currentStock;
         const balanceAfter = currentStock - qtyInBase;
 
-        // Deduct from batches (FIFO)
-        const firstBatchId = await inventoryService._deductFromBatches(connection, ing.inventoryItemId, qtyInBase);
+        // Deduct from batches (FIFO) with per-batch tracking
+        const [batches] = await connection.query(
+          `SELECT id, remaining_quantity, purchase_price FROM inventory_batches
+           WHERE inventory_item_id = ? AND remaining_quantity > 0 AND is_active = 1
+           ORDER BY purchase_date ASC, id ASC
+           FOR UPDATE`,
+          [ing.inventoryItemId]
+        );
+
+        let remaining = qtyInBase;
+        let ingCost = 0;
+        let runningBalance = balanceBefore;
+
+        for (const batch of batches) {
+          if (remaining <= 0) break;
+          const batchQty = parseFloat(batch.remaining_quantity);
+          const batchPrice = parseFloat(batch.purchase_price);
+          const deduct = Math.min(remaining, batchQty);
+
+          await connection.query(
+            'UPDATE inventory_batches SET remaining_quantity = remaining_quantity - ? WHERE id = ?',
+            [deduct, batch.id]
+          );
+
+          const batchCost = parseFloat((deduct * batchPrice).toFixed(2));
+          ingCost += batchCost;
+
+          // Record per-batch PRODUCTION_OUT movement
+          const batchBalanceBefore = runningBalance;
+          runningBalance -= deduct;
+          await connection.query(
+            `INSERT INTO inventory_movements (
+              outlet_id, inventory_item_id, inventory_batch_id, movement_type,
+              quantity, quantity_in_base, unit_cost, total_cost,
+              balance_before, balance_after, reference_type, reference_id, created_by
+            ) VALUES (?, ?, ?, 'production_out', ?, ?, ?, ?, ?, ?, 'production', NULL, ?)`,
+            [outletId, ing.inventoryItemId, batch.id,
+             -deduct, -deduct, batchPrice, batchCost,
+             batchBalanceBefore, runningBalance, userId]
+          );
+
+          remaining -= deduct;
+        }
+
+        // If remaining > 0, use avg price (insufficient batches)
+        if (remaining > 0) {
+          const avgPrice = parseFloat(item.average_price) || 0;
+          const unbatchedCost = parseFloat((remaining * avgPrice).toFixed(2));
+          ingCost += unbatchedCost;
+          const ubBefore = runningBalance;
+          runningBalance -= remaining;
+          await connection.query(
+            `INSERT INTO inventory_movements (
+              outlet_id, inventory_item_id, inventory_batch_id, movement_type,
+              quantity, quantity_in_base, unit_cost, total_cost,
+              balance_before, balance_after, reference_type, reference_id, created_by
+            ) VALUES (?, ?, NULL, 'production_out', ?, ?, ?, ?, ?, ?, 'production', NULL, ?)`,
+            [outletId, ing.inventoryItemId,
+             -remaining, -remaining, avgPrice, unbatchedCost,
+             ubBefore, runningBalance, userId]
+          );
+        }
+
+        ingCost = parseFloat(ingCost.toFixed(2));
+        totalInputCost += ingCost;
 
         // Update stock
         await connection.query(
@@ -414,29 +479,12 @@ const productionService = {
           [balanceAfter, ing.inventoryItemId]
         );
 
-        // Calculate cost (use average price × qty)
-        const avgPrice = parseFloat(item.average_price) || 0;
-        const ingCost = parseFloat((qtyInBase * avgPrice).toFixed(2));
-        totalInputCost += ingCost;
-
-        // Record PRODUCTION_OUT movement
-        await connection.query(
-          `INSERT INTO inventory_movements (
-            outlet_id, inventory_item_id, inventory_batch_id, movement_type,
-            quantity, quantity_in_base, unit_cost, total_cost,
-            balance_before, balance_after, reference_type, reference_id, created_by
-          ) VALUES (?, ?, ?, 'production_out', ?, ?, ?, ?, ?, ?, 'production', NULL, ?)`,
-          [outletId, ing.inventoryItemId, firstBatchId,
-           -qtyInBase, -qtyInBase, avgPrice, ingCost,
-           balanceBefore, balanceAfter, userId]
-        );
-
         inputRecords.push({
           inventoryItemId: ing.inventoryItemId,
           quantity: ing.quantity,
           unitId: ing.unitId,
           qtyInBase,
-          unitCost: avgPrice,
+          unitCost: parseFloat((ingCost / qtyInBase).toFixed(4)),
           totalCost: ingCost
         });
       }
@@ -659,11 +707,14 @@ const productionService = {
 
   /**
    * Reverse a completed production:
-   * 1. Restore raw materials → create restoration batches + update stock
+   * 1. Restore raw materials to ORIGINAL batches (via production_out movements)
    * 2. Remove output → deactivate output batch + deduct output stock
    * 3. Recalculate average prices for all affected items
    * 4. Record all reversal movements
    * 5. Mark production as cancelled
+   *
+   * Key: Restores inputs to SAME batches they were taken from (no new REV- batches).
+   *      Reverses BOTH inputs (ingredients) AND output (final item).
    */
   async reverseProduction(productionId, { reason, userId } = {}) {
     const pool = getPool();
@@ -682,77 +733,83 @@ const productionService = {
 
       const outletId = production.outlet_id;
 
-      // 2. Load all input records
-      const [inputs] = await connection.query(
-        'SELECT * FROM production_inputs WHERE production_id = ?',
+      // 2. Get original production_out movements (these have the exact batch IDs)
+      const [outMovements] = await connection.query(
+        `SELECT * FROM inventory_movements
+         WHERE reference_type = 'production' AND reference_id = ? AND movement_type = 'production_out'`,
         [productionId]
       );
 
-      // 3. Restore each raw material
+      // 3. Restore each raw material to its ORIGINAL batch
       const restoredItems = [];
-      for (const inp of inputs) {
-        const qtyToRestore = parseFloat(inp.quantity_in_base);
-        const unitCost = parseFloat(inp.unit_cost);
-        const inventoryItemId = inp.inventory_item_id;
+      const itemRestorations = {}; // group by inventory_item_id
 
-        // Lock the inventory item
-        const [[item]] = await connection.query(
-          'SELECT current_stock, average_price FROM inventory_items WHERE id = ? FOR UPDATE',
-          [inventoryItemId]
-        );
-        if (!item) {
-          logger.warn(`Reversal: inventory item ${inventoryItemId} not found, skipping`);
-          continue;
+      for (const mov of outMovements) {
+        const inventoryItemId = mov.inventory_item_id;
+        const batchId = mov.inventory_batch_id; // the ORIGINAL batch
+        const qtyToRestore = Math.abs(parseFloat(mov.quantity));
+        const unitCost = parseFloat(mov.unit_cost) || 0;
+        const totalCost = Math.abs(parseFloat(mov.total_cost)) || 0;
+
+        // Restore to the SAME original batch
+        if (batchId) {
+          await connection.query(
+            `UPDATE inventory_batches SET remaining_quantity = remaining_quantity + ?,
+             is_active = 1 WHERE id = ?`,
+            [qtyToRestore, batchId]
+          );
         }
 
-        const balanceBefore = parseFloat(item.current_stock) || 0;
+        // Lock inventory item once per item
+        if (!itemRestorations[inventoryItemId]) {
+          const [[item]] = await connection.query(
+            'SELECT current_stock, average_price FROM inventory_items WHERE id = ? FOR UPDATE',
+            [inventoryItemId]
+          );
+          if (!item) {
+            logger.warn(`Reversal: inventory item ${inventoryItemId} not found, skipping`);
+            continue;
+          }
+          itemRestorations[inventoryItemId] = {
+            currentStock: parseFloat(item.current_stock) || 0,
+            totalRestored: 0,
+            balanceBefore: parseFloat(item.current_stock) || 0
+          };
+        }
+
+        const ir = itemRestorations[inventoryItemId];
+        const balanceBefore = ir.currentStock + ir.totalRestored;
         const balanceAfter = balanceBefore + qtyToRestore;
+        ir.totalRestored += qtyToRestore;
 
-        // Create a restoration batch (so stock is traceable)
-        const batchCode = `REV-${production.production_number}`;
-        const [batchResult] = await connection.query(
-          `INSERT INTO inventory_batches (
-            inventory_item_id, outlet_id, batch_code, quantity, remaining_quantity,
-            purchase_price, purchase_date, notes, is_active
-          ) VALUES (?, ?, ?, ?, ?, ?, CURDATE(), ?, 1)`,
-          [inventoryItemId, outletId, batchCode, qtyToRestore, qtyToRestore,
-           unitCost, `Restored from reversed production ${production.production_number}`]
-        );
-        const restorationBatchId = batchResult.insertId;
-
-        // Recalculate weighted average price
-        const oldAvg = parseFloat(item.average_price) || 0;
-        let newAvg = unitCost;
-        if (balanceAfter > 0 && balanceBefore > 0) {
-          newAvg = ((balanceBefore * oldAvg) + (qtyToRestore * unitCost)) / balanceAfter;
-        }
-        newAvg = parseFloat(newAvg.toFixed(4));
-
-        // Update stock + average price
-        await connection.query(
-          'UPDATE inventory_items SET current_stock = ?, average_price = ? WHERE id = ?',
-          [balanceAfter, newAvg, inventoryItemId]
-        );
-
-        // Record reversal movement (raw material restored)
+        // Record reversal movement pointing to SAME original batch
         await connection.query(
           `INSERT INTO inventory_movements (
             outlet_id, inventory_item_id, inventory_batch_id, movement_type,
             quantity, quantity_in_base, unit_cost, total_cost,
             balance_before, balance_after, reference_type, reference_id, notes, created_by
           ) VALUES (?, ?, ?, 'production_reversal', ?, ?, ?, ?, ?, ?, 'production', ?, ?, ?)`,
-          [outletId, inventoryItemId, restorationBatchId,
-           qtyToRestore, qtyToRestore, unitCost, parseFloat(inp.total_cost),
+          [outletId, inventoryItemId, batchId,
+           qtyToRestore, qtyToRestore, unitCost, totalCost,
            balanceBefore, balanceAfter, productionId,
-           `Reversed production ${production.production_number}: raw material restored`,
+           `Reversed production ${production.production_number}: raw material restored to original batch`,
            userId]
+        );
+      }
+
+      // Update inventory_items stock for each restored input
+      for (const [inventoryItemId, ir] of Object.entries(itemRestorations)) {
+        const newStock = ir.currentStock + ir.totalRestored;
+        await connection.query(
+          'UPDATE inventory_items SET current_stock = ? WHERE id = ?',
+          [newStock, inventoryItemId]
         );
 
         restoredItems.push({
-          inventoryItemId,
-          qtyRestored: qtyToRestore,
-          batchId: restorationBatchId,
-          batchCode
+          inventoryItemId: parseInt(inventoryItemId),
+          qtyRestored: ir.totalRestored,
+          balanceBefore: ir.balanceBefore,
+          balanceAfter: newStock
         });
       }
 
@@ -795,7 +852,7 @@ const productionService = {
       // Deduct output from inventory item stock
       if (outputItem && outputDeducted > 0) {
         const outputBalanceBefore = parseFloat(outputItem.current_stock) || 0;
-        const outputBalanceAfter = Math.max(0, outputBalanceBefore - outputDeducted);
+        const outputBalanceAfter = outputBalanceBefore - outputDeducted;
 
         await connection.query(
           'UPDATE inventory_items SET current_stock = ? WHERE id = ?',

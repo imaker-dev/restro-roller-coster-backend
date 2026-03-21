@@ -1704,6 +1704,32 @@ const orderController = {
   },
 
   /**
+   * Export item sales detail report as CSV
+   */
+  async exportItemSalesDetail(req, res) {
+    try {
+      const { outletId } = req.params;
+      const { startDate, endDate, serviceType } = req.query;
+      const floorIds = await getUserFloorIds(req.user.userId, outletId);
+      const report = await reportsService.getItemSalesDetail(outletId, startDate, endDate, {
+        limit: 10000,
+        floorIds,
+        serviceType: serviceType || null
+      });
+      
+      const csv = csvExport.itemSalesDetailCSV(report, { startDate, endDate, outletId });
+      const filename = csvExport.generateFilename('item_sales_detail', { startDate, endDate });
+      
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.send(csv);
+    } catch (error) {
+      logger.error('Export item sales detail error:', error);
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
+
+  /**
    * Export staff performance report as CSV
    */
   async exportStaffReport(req, res) {

@@ -1584,7 +1584,7 @@ const orderService = {
       if (!items[0]) throw new Error('Order item not found');
 
       const item = items[0];
-      const { reason, reasonId, quantity, approvedBy } = data;
+      const { reason, reasonId, quantity, approvedBy, stockAction } = data;
 
       // Block cancellation if order is billed, billing, paid, completed or cancelled
       if (['billing', 'billed', 'paid', 'completed', 'cancelled'].includes(item.order_status)) {
@@ -1605,6 +1605,14 @@ const orderService = {
       // Full or partial cancel
       const cancelQuantity = quantity || item.quantity;
       const isFullCancel = cancelQuantity >= item.quantity;
+
+      // Determine stock action BEFORE updating item (need original created_at + kot_id)
+      let stockDecision = { action: 'none', auto: true, reason: 'No stock deducted' };
+      if (item.stock_deducted) {
+        stockDecision = await stockDeductionService.determineCancelStockAction(
+          connection, item, stockAction || null
+        );
+      }
 
       if (isFullCancel) {
         await connection.query(
@@ -1627,16 +1635,18 @@ const orderService = {
         );
       }
 
-      // Log cancellation
+      // Log cancellation with stock_action
       await connection.query(
         `INSERT INTO order_cancel_logs (
           order_id, order_item_id, cancel_type, original_quantity,
-          cancelled_quantity, reason_id, reason_text, approved_by, cancelled_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          cancelled_quantity, reason_id, reason_text, stock_action, stock_action_auto, approved_by, cancelled_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           item.order_id, orderItemId,
           isFullCancel ? 'full_item' : 'quantity_reduce',
-          item.quantity, cancelQuantity, reasonId, reason, approvedBy, userId
+          item.quantity, cancelQuantity, reasonId, reason,
+          stockDecision.action, stockDecision.auto ? 1 : 0,
+          approvedBy, userId
         ]
       );
 
@@ -1678,20 +1688,37 @@ const orderService = {
         }
       }
 
-      // Reverse stock deduction if stock was deducted for this item
+      // Handle stock based on decision: REVERSE or WASTAGE
       if (item.stock_deducted) {
-        if (isFullCancel) {
-          await stockDeductionService.reverseForOrderItem(connection, {
-            orderItemId, outletId: item.outlet_id, userId, reason: reason || 'Item cancelled'
-          });
-        } else {
-          // Partial cancel — reverse proportional stock
-          await stockDeductionService.partialReverseForOrderItem(connection, {
-            orderItemId, outletId: item.outlet_id, userId,
-            reason: reason || 'Quantity reduced',
-            cancelQuantity, originalQuantity: item.quantity
-          });
+        if (stockDecision.action === 'reverse') {
+          // REVERSE: Restore stock to original batches
+          if (isFullCancel) {
+            await stockDeductionService.reverseForOrderItem(connection, {
+              orderItemId, outletId: item.outlet_id, userId, reason: reason || 'Item cancelled'
+            });
+          } else {
+            await stockDeductionService.partialReverseForOrderItem(connection, {
+              orderItemId, outletId: item.outlet_id, userId,
+              reason: reason || 'Quantity reduced',
+              cancelQuantity, originalQuantity: item.quantity
+            });
+          }
+        } else if (stockDecision.action === 'wastage') {
+          // WASTAGE: Stock stays deducted, record as spoilage/wastage
+          if (isFullCancel) {
+            await stockDeductionService.recordWastageForCancelledItem(connection, {
+              orderItemId, orderId: item.order_id, outletId: item.outlet_id, userId,
+              reason: reason || 'Item cancelled (wastage)'
+            });
+          } else {
+            await stockDeductionService.recordWastageForPartialCancel(connection, {
+              orderItemId, orderId: item.order_id, outletId: item.outlet_id, userId,
+              reason: reason || 'Quantity reduced (wastage)',
+              cancelQuantity, originalQuantity: item.quantity
+            });
+          }
         }
+        logger.info(`Cancel item ${orderItemId}: stock_action=${stockDecision.action} (auto=${stockDecision.auto}), reason: ${stockDecision.reason}`);
       }
 
       // Update cost snapshot for quantity change
@@ -1794,7 +1821,7 @@ const orderService = {
       const order = await this.getById(orderId);
       if (!order) throw new Error('Order not found');
 
-      const { reason, reasonId, approvedBy } = data;
+      const { reason, reasonId, approvedBy, stockAction } = data;
 
       // Check if order can be cancelled - block after bill is generated
       if (['billing', 'billed', 'paid', 'completed', 'cancelled'].includes(order.status)) {
@@ -1831,6 +1858,24 @@ const orderService = {
         [orderId]
       );
 
+      // Get all order items with stock deducted for per-item stock action decisions
+      const [stockItems] = await connection.query(
+        `SELECT oi.*, kt.id as kot_id_resolved
+         FROM order_items oi
+         LEFT JOIN kot_tickets kt ON oi.kot_id = kt.id
+         WHERE oi.order_id = ? AND oi.status != 'cancelled' AND oi.stock_deducted = 1`,
+        [orderId]
+      );
+
+      // Determine stock action for each item BEFORE cancellation
+      const itemStockDecisions = [];
+      for (const si of stockItems) {
+        const decision = await stockDeductionService.determineCancelStockAction(
+          connection, si, stockAction || null
+        );
+        itemStockDecisions.push({ item: si, decision });
+      }
+
       // Cancel all items
       await connection.query(
         `UPDATE order_items SET status = 'cancelled', cancelled_by = ?, cancelled_at = NOW(), cancel_reason = ?
@@ -1861,12 +1906,17 @@ const orderService = {
         [userId, reason, orderId]
       );
 
-      // Log cancellation
+      // Determine overall stock action summary for the cancel log
+      const hasReverse = itemStockDecisions.some(d => d.decision.action === 'reverse');
+      const hasWastage = itemStockDecisions.some(d => d.decision.action === 'wastage');
+      const overallStockAction = hasReverse && hasWastage ? 'reverse' : (hasWastage ? 'wastage' : (hasReverse ? 'reverse' : 'none'));
+
+      // Log cancellation with stock_action
       await connection.query(
         `INSERT INTO order_cancel_logs (
-          order_id, cancel_type, reason_id, reason_text, approved_by, cancelled_by
-        ) VALUES (?, 'full_order', ?, ?, ?, ?)`,
-        [orderId, reasonId, reason, approvedBy, userId]
+          order_id, cancel_type, reason_id, reason_text, stock_action, stock_action_auto, approved_by, cancelled_by
+        ) VALUES (?, 'full_order', ?, ?, ?, ?, ?, ?)`,
+        [orderId, reasonId, reason, overallStockAction, 1, approvedBy, userId]
       );
 
       // Auto-cancel any pending invoices for this order
@@ -1883,10 +1933,31 @@ const orderService = {
         );
       }
 
-      // Reverse all stock deductions for this order
-      await stockDeductionService.reverseForOrder(connection, {
-        orderId, outletId: order.outlet_id, userId, reason: reason || 'Order cancelled'
-      });
+      // Handle stock per-item: REVERSE or WASTAGE based on each item's decision
+      let reversedCount = 0, wastageCount = 0;
+      for (const { item: si, decision } of itemStockDecisions) {
+        if (decision.action === 'reverse') {
+          await stockDeductionService.reverseForOrderItem(connection, {
+            orderItemId: si.id, outletId: order.outlet_id, userId, reason: reason || 'Order cancelled'
+          });
+          reversedCount++;
+        } else if (decision.action === 'wastage') {
+          await stockDeductionService.recordWastageForCancelledItem(connection, {
+            orderItemId: si.id, orderId, outletId: order.outlet_id, userId,
+            reason: reason || 'Order cancelled (wastage)'
+          });
+          wastageCount++;
+        }
+      }
+
+      if (reversedCount > 0 || wastageCount > 0) {
+        // Mark order stock handling
+        await connection.query(
+          'UPDATE orders SET stock_reversed = ? WHERE id = ?',
+          [reversedCount > 0 ? 1 : 0, orderId]
+        );
+        logger.info(`Cancel order ${orderId}: ${reversedCount} items reversed, ${wastageCount} items wastage`);
+      }
 
       // Release table if dine-in - end session and set to available
       if (order.table_id) {

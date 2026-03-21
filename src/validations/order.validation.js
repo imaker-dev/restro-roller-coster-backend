@@ -45,16 +45,18 @@ module.exports = {
   }),
 
   cancelItem: Joi.object({
-    reason: Joi.string().max(255).required(),
+    reason: Joi.string().max(255).allow('', null),
     reasonId: Joi.number().integer().positive().allow(null),
     quantity: Joi.number().min(0.5).allow(null),
-    approvedBy: Joi.number().integer().positive().allow(null)
+    approvedBy: Joi.number().integer().positive().allow(null),
+    stockAction: Joi.string().valid('reverse', 'wastage').allow(null)
   }),
 
   cancelOrder: Joi.object({
-    reason: Joi.string().max(255).required(),
+    reason: Joi.string().max(255).allow('', null),
     reasonId: Joi.number().integer().positive().allow(null),
-    approvedBy: Joi.number().integer().positive().allow(null)
+    approvedBy: Joi.number().integer().positive().allow(null),
+    stockAction: Joi.string().valid('reverse', 'wastage').allow(null)
   }),
 
   transferTable: Joi.object({

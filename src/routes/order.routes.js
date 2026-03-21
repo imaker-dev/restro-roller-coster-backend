@@ -745,6 +745,13 @@ router.get('/reports/:outletId/daily-sales/detail/export', authorize('super_admi
 router.get('/reports/:outletId/item-sales/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), orderController.exportItemSales);
 
 /**
+ * @route   GET /api/v1/orders/reports/:outletId/item-sales/detail/export
+ * @desc    Export detailed item sales report as CSV
+ * @access  Private (manager, admin, cashier)
+ */
+router.get('/reports/:outletId/item-sales/detail/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), orderController.exportItemSalesDetail);
+
+/**
  * @route   GET /api/v1/orders/reports/:outletId/category-sales/export
  * @desc    Export category sales report as CSV
  * @access  Private (manager, admin, cashier)

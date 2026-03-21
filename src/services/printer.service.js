@@ -1166,183 +1166,180 @@ const printerService = {
 
   formatBillContent(billData) {
     const lines = [];
-    const w = 42;
+    const w = 56; // 56-char width for TVS RP3230 80mm with Font B at 180 DPI
     const dash = '-'.repeat(w);
     const cmd = this.getEscPosCommands();
+    const FONT_B = '\x1B\x4D\x01'; // Condensed font (9x17, 56 chars/line on 80mm)
+    const LS_TIGHT = '\x1B\x33\x16'; // Tight line spacing for header area
 
-    // Duplicate header (centered)
+    // ── 1. HEADER ───────────────────────────────
     if (billData.isDuplicate) {
-      lines.push(cmd.ALIGN_CENTER + 'Duplicate');
-      if (billData.duplicateNumber) {
-        lines.push('Copy #' + billData.duplicateNumber);
-      }
+      lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + '*** DUPLICATE ***');
+      if (billData.duplicateNumber) lines.push('Copy #' + billData.duplicateNumber);
+      lines.push(cmd.BOLD_OFF);
     }
 
-    // Restaurant name (bold + double height, centered)
+    // Restaurant name (double height, bold, centered)
     lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HEIGHT + (billData.outletName || 'Restaurant'));
+    // Switch to FONT_B with tight spacing for address block
+    lines.push(cmd.NORMAL + cmd.BOLD_OFF + FONT_B + LS_TIGHT);
+    if (billData.outletAddress) lines.push(billData.outletAddress);
+    if (billData.outletPhone) lines.push('Ph: ' + billData.outletPhone);
+    if (billData.outletGstin) lines.push('GSTIN: ' + billData.outletGstin);
+    // Reset to default line spacing after header
+    lines.push('\x1B\x32');
 
-    // Address, phone, gstin (centered, normal size)
-    const infoLines = [];
-    if (billData.outletAddress) infoLines.push('Add.' + billData.outletAddress);
-    if (billData.outletPhone) infoLines.push('Mob.' + billData.outletPhone);
-    if (billData.outletGstin) infoLines.push('GSTIN: ' + billData.outletGstin);
-    if (infoLines.length > 0) {
-      lines.push(cmd.NORMAL + cmd.BOLD_OFF + infoLines[0]);
-      for (let i = 1; i < infoLines.length; i++) lines.push(infoLines[i]);
-    } else {
-      lines.push(cmd.NORMAL + cmd.BOLD_OFF);
-    }
-
-    // Switch to left alignment
+    // ── 2. BILL META (left + right, full width) ─
     lines.push(cmd.ALIGN_LEFT + dash);
-
-    // Date/time + order type/table (order label bold)
     const orderLabel = billData.orderType === 'dine_in'
       ? 'Dine In: ' + (billData.tableNumber || '')
-      : (billData.orderType === 'takeaway' ? 'Takeaway' : (billData.orderType || 'Takeaway'));
-    const datePart = 'Date: ' + (billData.date || '');
-    const dateSpace = Math.max(1, w - datePart.length - orderLabel.length);
-    lines.push(datePart + ' '.repeat(dateSpace) + cmd.BOLD_ON + orderLabel + cmd.BOLD_OFF);
-    lines.push(billData.time || '');
+      : (billData.orderType === 'takeaway' ? 'Takeaway' : (billData.orderType || ''));
+    lines.push(cmd.BOLD_ON + this.padBetween(
+      billData.date + ' ' + (billData.time || ''),
+      orderLabel,
+      w
+    ) + cmd.BOLD_OFF);
+    lines.push(this.padBetween(
+      'Bill: ' + (billData.invoiceNumber || ''),
+      'Cashier: ' + (billData.cashierName || 'Staff'),
+      w
+    ));
 
-    // Cashier + bill number
-    const cashier = 'Cashier: ' + (billData.cashierName || 'Staff');
-    const billNo = 'Bill No.: ' + (billData.invoiceNumber || '');
-    if (cashier.length + billNo.length + 1 <= w) {
-      lines.push(this.padBetween(cashier, billNo, w));
+    // ── 3. CUSTOMER (strict 2-column) ───────────
+    lines.push(dash);
+    const custName = billData.customerName || 'Walk-in';
+    const custPhone = billData.customerPhone || '';
+    const company = billData.customerCompanyName || '';
+    const gstin = billData.customerGstin || '';
+    const state = billData.customerGstState
+      ? billData.customerGstState + (billData.customerGstStateCode ? ' (' + billData.customerGstStateCode + ')' : '')
+      : '';
+
+    if (company || gstin) {
+      lines.push(this.padBetween('Name: ' + custName, 'Co: ' + (company || ''), w));
+      if (custPhone || gstin) {
+        lines.push(this.padBetween(
+          custPhone ? 'Ph: ' + custPhone : '',
+          gstin ? 'GSTIN: ' + gstin : '',
+          w
+        ));
+      }
+      if (billData.isInterstate || state) {
+        lines.push(cmd.BOLD_ON + this.padBetween(
+          billData.isInterstate ? '** INTERSTATE **' : '',
+          state ? 'State: ' + state : '',
+          w
+        ) + cmd.BOLD_OFF);
+      }
     } else {
-      lines.push(cashier);
-      lines.push(billNo);
+      if (custPhone) {
+        lines.push(this.padBetween('Name: ' + custName, 'Ph: ' + custPhone, w));
+      } else {
+        lines.push('Name: ' + custName);
+      }
     }
-    lines.push(dash);
 
-    // Customer details section
-    const custName = billData.customerName || 'Walk-in Customer';
-    lines.push('Customer: ' + custName);
-    if (billData.customerPhone) {
-      lines.push('Phone: ' + billData.customerPhone);
-    }
-    // GST details for B2B customers
-    if (billData.customerGstin) {
-      if (billData.customerCompanyName) {
-        lines.push('Company: ' + billData.customerCompanyName);
-      }
-      lines.push('GSTIN: ' + billData.customerGstin);
-      if (billData.customerGstState) {
-        lines.push('State: ' + billData.customerGstState + (billData.customerGstStateCode ? ' (' + billData.customerGstStateCode + ')' : ''));
-      }
-      if (billData.isInterstate) {
-        lines.push(cmd.BOLD_ON + '** INTERSTATE SUPPLY **' + cmd.BOLD_OFF);
-      }
-    }
+    // ── 4. ITEM TABLE (full width fixed grid) ───
+    // ITEM=30  QTY=5  RATE=10  AMT=11  = 56
     lines.push(dash);
-
-    // Item column header: Item | Qty | Price | Amount
-    const cQ = 4, cP = 8, cA = 9;
-    const cN = w - cQ - cP - cA;
-    lines.push(
-      'Item'.padEnd(cN) +
-      this.rAlign('Qty.', cQ) +
-      this.rAlign('Price', cP) +
-      this.rAlign('Amount', cA)
+    const cN = 30, cQ = 5, cP = 10, cA = 11;
+    lines.push(cmd.BOLD_ON +
+      'ITEM'.padEnd(cN) +
+      this.rAlign('QTY', cQ) +
+      this.rAlign('RATE', cP) +
+      this.rAlign('AMT', cA) +
+      cmd.BOLD_OFF
     );
     lines.push(dash);
 
-    // Items (preserve original case, mark NC items)
     let totalQty = 0;
     for (const item of billData.items || []) {
       const qty = parseInt(item.quantity) || 0;
       totalQty += qty;
+      const price = parseFloat(item.unitPrice).toFixed(2);
+      const amount = parseFloat(item.totalPrice).toFixed(2);
       const cols =
         this.rAlign(qty.toString(), cQ) +
-        this.rAlign(parseFloat(item.unitPrice).toFixed(2), cP) +
-        this.rAlign(parseFloat(item.totalPrice).toFixed(2), cA);
+        this.rAlign(price, cP) +
+        this.rAlign(amount, cA);
       let name = item.itemName || '';
-      
-      // Add NC tag for no-charge items
-      if (item.isNC) {
-        name = name + ' [NC]';
-      }
+      if (item.variantName) name += ' (' + item.variantName + ')';
+      if (item.isNC) name += ' [NC]';
 
       if (name.length <= cN) {
         lines.push(name.padEnd(cN) + cols);
       } else {
         const wrapped = this.wrapText(name, cN);
         for (let i = 0; i < wrapped.length - 1; i++) lines.push(wrapped[i]);
-        const last = wrapped[wrapped.length - 1] || '';
-        lines.push(last.padEnd(cN) + cols);
+        lines.push((wrapped[wrapped.length - 1] || '').padEnd(cN) + cols);
       }
     }
     lines.push(dash);
 
-    // Total qty + subtotal
-    lines.push(this.padBetween('Total Qty: ' + totalQty, 'Sub ' + billData.subtotal, w));
+    // ── 5. SUMMARY (right-aligned values) ───────
+    lines.push(this.padBetween('Total Qty: ' + totalQty, '', w));
+    lines.push(this.padBetween('Subtotal:', billData.subtotal, w));
 
-    // Taxes (UPPERCASE base name, strip embedded rate)
     for (const tax of billData.taxes || []) {
       const baseName = (tax.name || 'Tax').replace(/\s*[\d.]+%?/g, '').trim().toUpperCase();
-      const label = baseName + '@' + tax.rate + '%';
-      lines.push(this.padBetween(label, tax.amount, w));
+      lines.push(this.padBetween(baseName + ' @' + tax.rate + '%:', tax.amount, w));
     }
 
-    // Service charge
     if (billData.serviceCharge) {
       lines.push(this.padBetween('Service Charge:', billData.serviceCharge, w));
     }
 
-    // Discount
-    if (billData.discount) {
+    if (billData.discounts && billData.discounts.length > 0) {
+      for (const disc of billData.discounts) {
+        const discAmt = parseFloat(disc.amount).toFixed(2);
+        let label = 'Discount';
+        if (disc.type === 'percentage') label += ' (' + disc.value + '%)';
+        else if (disc.value > 0) label += ' (Flat Rs.' + parseFloat(disc.value).toFixed(0) + ')';
+        lines.push(this.padBetween(label + ':', '-' + discAmt, w));
+      }
+    } else if (billData.discount) {
       lines.push(this.padBetween('Discount:', '-' + billData.discount, w));
     }
 
-    lines.push(dash);
-
-    // Round off
     if (billData.roundOff && parseFloat(billData.roundOff) !== 0) {
-      lines.push(this.padBetween('Round Off', billData.roundOff, w));
-      lines.push(dash);
+      lines.push(this.padBetween('Round Off:', billData.roundOff, w));
     }
 
-    // NC (No Charge) breakdown - show when there are NC items
-    const hasNC = billData.ncAmount && parseFloat(billData.ncAmount) > 0;
-    if (hasNC) {
-      lines.push(cmd.BOLD_ON + '** NO CHARGE (NC) **' + cmd.BOLD_OFF);
-      lines.push(this.padBetween('NC Amount:', '-' + parseFloat(billData.ncAmount).toFixed(2), w));
-      lines.push(dash);
+    if (billData.ncAmount && parseFloat(billData.ncAmount) > 0) {
+      lines.push(cmd.BOLD_ON + this.padBetween('NO CHARGE (NC):', '-' + parseFloat(billData.ncAmount).toFixed(2), w) + cmd.BOLD_OFF);
     }
 
-    // Grand total (bold + double height, centered) — already includes NC deduction
-    // Use "Rs." instead of Unicode ₹ (\u20B9) for thermal printer compatibility
-    lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HEIGHT + 'Grand Total Rs.' + billData.grandTotal);
-    lines.push(cmd.NORMAL + cmd.BOLD_OFF + cmd.ALIGN_LEFT + dash);
+    // ── 6. GRAND TOTAL (center, bold, double height)
+    lines.push(dash);
+    lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HEIGHT + 'GRAND TOTAL Rs.' + billData.grandTotal);
+    // Restore FONT_B after DOUBLE_HEIGHT resets print mode
+    lines.push(cmd.NORMAL + cmd.BOLD_OFF + FONT_B + cmd.ALIGN_LEFT + dash);
 
-    // Due amount display (if partial payment with due)
+    // ── 7. PAYMENT (full width) ─────────────────
     if (billData.dueAmount && parseFloat(billData.dueAmount) > 0) {
-      const paidAmt = parseFloat(billData.paidAmount || 0).toFixed(2);
-      const dueAmt = parseFloat(billData.dueAmount).toFixed(2);
-      lines.push(cmd.BOLD_ON + this.padBetween('Paid Amount:', 'Rs.' + paidAmt, w) + cmd.BOLD_OFF);
-      lines.push(cmd.BOLD_ON + this.padBetween('DUE AMOUNT:', 'Rs.' + dueAmt, w) + cmd.BOLD_OFF);
+      lines.push(this.padBetween('PAID:', 'Rs.' + parseFloat(billData.paidAmount || 0).toFixed(2), w));
+      lines.push(this.padBetween('DUE:', 'Rs.' + parseFloat(billData.dueAmount).toFixed(2), w));
       lines.push(dash);
     }
 
-    // Payment mode
     if (billData.paymentMode) {
       if (billData.paymentMode === 'split' && billData.splitBreakdown && billData.splitBreakdown.length > 0) {
-        lines.push(cmd.ALIGN_CENTER + 'Paid: SPLIT PAYMENT');
-        lines.push(cmd.ALIGN_LEFT + dash);
+        lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + 'SPLIT PAYMENT' + cmd.BOLD_OFF + cmd.ALIGN_LEFT);
         for (const sp of billData.splitBreakdown) {
-          const modeName = (sp.paymentMode || 'Unknown').toUpperCase();
-          const amount = parseFloat(sp.amount || 0).toFixed(2);
-          lines.push(this.padBetween('  ' + modeName + ':', 'Rs.' + amount, w));
+          lines.push(this.padBetween(
+            (sp.paymentMode || '').toUpperCase(),
+            'Rs.' + parseFloat(sp.amount || 0).toFixed(2),
+            w
+          ));
         }
         lines.push(dash);
       } else {
-        lines.push(cmd.ALIGN_CENTER + 'Paid: ' + billData.paymentMode.toUpperCase());
+        lines.push(this.padBetween('Payment:', billData.paymentMode.toUpperCase(), w));
       }
     }
 
-    // Footer
-    lines.push(cmd.ALIGN_CENTER + 'THANKS VISIT AGAIN');
+    // ── 8. FOOTER ───────────────────────────────
+    lines.push(cmd.ALIGN_CENTER + 'THANK YOU! VISIT AGAIN');
 
     return lines.join('\n');
   },
@@ -1415,7 +1412,9 @@ const printerService = {
 
     // Add logo if provided (must be ESC/POS bitmap Buffer)
     if (options.logo && Buffer.isBuffer(options.logo)) {
+      parts.push(Buffer.from('\x1B\x61\x01', 'binary')); // Center align for logo
       parts.push(options.logo);
+      parts.push(Buffer.from('\x1B\x64\x01', 'binary')); // Feed only 1 line after logo
     }
 
     // Add text content

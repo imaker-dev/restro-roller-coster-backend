@@ -234,7 +234,30 @@ const itemService = {
     params.push(limit, offset);
 
     const [items] = await pool.query(query, params);
-    
+
+    // Batch-load variants for all returned items
+    const itemIds = items.map(i => i.id);
+    let variantMap = {};
+    if (itemIds.length > 0) {
+      const [allVariants] = await pool.query(
+        `SELECT v.*, tg.name as tax_group_name, tg.total_rate as tax_rate
+         FROM variants v
+         LEFT JOIN tax_groups tg ON v.tax_group_id = tg.id
+         WHERE v.item_id IN (${itemIds.map(() => '?').join(',')}) AND v.is_active = 1
+         ORDER BY v.display_order, v.name`,
+        itemIds
+      );
+      for (const v of allVariants) {
+        if (!variantMap[v.item_id]) variantMap[v.item_id] = [];
+        variantMap[v.item_id].push(v);
+      }
+    }
+
+    // Attach variants to each item
+    for (const item of items) {
+      item.variants = variantMap[item.id] || [];
+    }
+
     // Return with pagination metadata
     return {
       items,

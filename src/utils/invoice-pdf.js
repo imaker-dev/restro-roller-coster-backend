@@ -76,7 +76,7 @@ async function generateInvoicePDF(invoice, outlet = {}) {
   }
 
   function currency(amount) {
-    return `₹${parseFloat(amount || 0).toFixed(2)}`;
+    return `Rs.${parseFloat(amount || 0).toFixed(2)}`;
   }
 
   // ─── HEADER ───────────────────────────────────
@@ -206,71 +206,138 @@ async function generateInvoicePDF(invoice, outlet = {}) {
   drawThickLine(y);
   y += 8;
 
+  // ─── CONSOLIDATE ITEMS ─────────────────────────
+  // Merge same items (same name + variant + unitPrice) into single rows
+  const rawItems = invoice.items || [];
+  const itemMap = new Map();
+  for (const item of rawItems) {
+    const name = item.variantName ? `${item.name} (${item.variantName})` : (item.name || 'Item');
+    const price = parseFloat(item.unitPrice) || 0;
+    const isNC = !!(item.isNC || item.is_nc);
+    const key = `${name}|${price}|${isNC}`;
+    if (itemMap.has(key)) {
+      const existing = itemMap.get(key);
+      existing.quantity += parseInt(item.quantity) || 0;
+      existing.totalPrice += parseFloat(item.totalPrice) || 0;
+      existing.ncAmount += parseFloat(item.ncAmount || item.nc_amount || 0);
+    } else {
+      itemMap.set(key, {
+        name,
+        quantity: parseInt(item.quantity) || 0,
+        unitPrice: price,
+        totalPrice: parseFloat(item.totalPrice) || 0,
+        isNC,
+        ncAmount: parseFloat(item.ncAmount || item.nc_amount || 0)
+      });
+    }
+  }
+  const consolidatedItems = Array.from(itemMap.values());
+
   // ─── ITEMS TABLE HEADER ───────────────────────
   const colItem = leftMargin;
-  const colQty = 310;
-  const colRate = 380;
-  const colAmount = 470;
+  const colQty = 300;
+  const colRate = 370;
+  const colAmount = 460;
 
   doc.font('Helvetica-Bold').fontSize(8).fillColor('#333333');
   doc.text('#', colItem, y, { width: 20 });
-  doc.text('Item', colItem + 20, y, { width: 270 });
+  doc.text('Item Description', colItem + 20, y, { width: 260 });
   doc.text('Qty', colQty, y, { width: 50, align: 'right' });
   doc.text('Rate', colRate, y, { width: 70, align: 'right' });
-  doc.text('Amount', colAmount, y, { width: 85, align: 'right' });
+  doc.text('Amount', colAmount, y, { width: 95, align: 'right' });
   y += 14;
   drawLine(y);
   y += 6;
 
-  // ─── ITEMS ────────────────────────────────────
-  const items = invoice.items || [];
+  // ─── ITEMS (consolidated) ─────────────────────
   doc.font('Helvetica').fontSize(8).fillColor('#444444');
+  let totalQty = 0;
 
-  items.forEach((item, idx) => {
+  consolidatedItems.forEach((item, idx) => {
     if (y > 700) {
       doc.addPage();
       y = 40;
     }
 
-    const name = item.variantName ? `${item.name} (${item.variantName})` : (item.name || 'Item');
+    totalQty += item.quantity;
+    let displayName = item.name;
+    if (item.isNC) displayName += '  [NC]';
+
     doc.text(`${idx + 1}`, colItem, y, { width: 20 });
-    doc.text(name, colItem + 20, y, { width: 270 });
+    doc.text(displayName, colItem + 20, y, { width: 260 });
     doc.text(`${item.quantity}`, colQty, y, { width: 50, align: 'right' });
     doc.text(currency(item.unitPrice), colRate, y, { width: 70, align: 'right' });
-    doc.text(currency(item.totalPrice), colAmount, y, { width: 85, align: 'right' });
+    doc.text(currency(item.totalPrice), colAmount, y, { width: 95, align: 'right' });
     y += 16;
   });
 
+  // Total quantity row
   y += 4;
+  doc.font('Helvetica-Bold').fontSize(8).fillColor('#333333');
+  doc.text(`Total Items: ${consolidatedItems.length}`, colItem, y, { width: 200 });
+  doc.text(`Total Qty: ${totalQty}`, colQty - 50, y, { width: 100, align: 'right' });
+  y += 14;
+
   drawThickLine(y);
   y += 10;
 
-  // ─── TOTALS ───────────────────────────────────
-  const totalsX = 370;
-  const totalsLabelW = 100;
-  const totalsValW = 85;
+  // ─── TOTALS (aligned with Amount column) ─────
+  // Label ends at colAmount, value spans the Amount column width
+  const totalsLabelX = leftMargin;
+  const totalsLabelW = colAmount - leftMargin - 5;
+  const totalsValX = colAmount;
+  const totalsValW = 95;
 
   function totalRow(label, value, opts = {}) {
     if (y > 750) { doc.addPage(); y = 40; }
     doc.font(opts.bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(opts.fontSize || 9).fillColor(opts.color || '#444444');
-    doc.text(label, totalsX, y, { width: totalsLabelW, align: 'right' });
-    doc.text(value, totalsX + totalsLabelW + 10, y, { width: totalsValW, align: 'right' });
-    y += opts.spacing || 16;
+    doc.text(label, totalsLabelX, y, { width: totalsLabelW, align: 'right' });
+    doc.text(value, totalsValX, y, { width: totalsValW, align: 'right' });
+    y += opts.spacing || 15;
   }
 
   totalRow('Subtotal:', currency(invoice.subtotal));
 
-  if (invoice.discountAmount > 0) {
+  // Discount — show type breakdown with value
+  const discounts = invoice.discounts || [];
+  if (discounts.length > 0) {
+    for (const disc of discounts) {
+      let discLabel = 'Discount';
+      if (disc.discountType === 'percentage') {
+        discLabel += ` (${disc.discountValue}%)`;
+      } else if (disc.discountValue > 0) {
+        discLabel += ` (Flat Rs.${parseFloat(disc.discountValue).toFixed(0)})`;
+      }
+      totalRow(discLabel + ':', `-${currency(disc.discountAmount)}`, { color: '#e74c3c' });
+    }
+  } else if (invoice.discountAmount > 0) {
     totalRow('Discount:', `-${currency(invoice.discountAmount)}`, { color: '#e74c3c' });
+  }
+
+  // NC (No Charge) amount
+  const ncAmount = parseFloat(invoice.ncAmount || 0);
+  if (ncAmount > 0) {
+    totalRow('No Charge (NC):', `-${currency(ncAmount)}`, { bold: true, color: '#e67e22' });
   }
 
   totalRow('Taxable Amount:', currency(invoice.taxableAmount));
 
-  if (invoice.cgstAmount > 0) totalRow('CGST:', currency(invoice.cgstAmount));
-  if (invoice.sgstAmount > 0) totalRow('SGST:', currency(invoice.sgstAmount));
-  if (invoice.igstAmount > 0) totalRow('IGST:', currency(invoice.igstAmount));
-  if (invoice.vatAmount > 0) totalRow('VAT:', currency(invoice.vatAmount));
-  if (invoice.cessAmount > 0) totalRow('Cess:', currency(invoice.cessAmount));
+  // Taxes — use taxBreakup for detailed rates (e.g., "CGST @2.5%")
+  const taxBreakup = invoice.taxBreakup || {};
+  const taxEntries = Object.values(taxBreakup);
+  if (taxEntries.length > 0) {
+    for (const tax of taxEntries) {
+      const baseName = (tax.name || 'Tax').replace(/\s*[\d.]+%?/g, '').trim().toUpperCase();
+      const label = baseName + ' @' + (tax.rate || 0) + '%';
+      totalRow(label + ':', currency(tax.taxAmount));
+    }
+  } else {
+    if (invoice.cgstAmount > 0) totalRow('CGST:', currency(invoice.cgstAmount));
+    if (invoice.sgstAmount > 0) totalRow('SGST:', currency(invoice.sgstAmount));
+    if (invoice.igstAmount > 0) totalRow('IGST:', currency(invoice.igstAmount));
+    if (invoice.vatAmount > 0) totalRow('VAT:', currency(invoice.vatAmount));
+    if (invoice.cessAmount > 0) totalRow('Cess:', currency(invoice.cessAmount));
+  }
   if (invoice.serviceCharge > 0) totalRow('Service Charge:', currency(invoice.serviceCharge));
   if (invoice.packagingCharge > 0) totalRow('Packaging:', currency(invoice.packagingCharge));
   if (invoice.deliveryCharge > 0) totalRow('Delivery:', currency(invoice.deliveryCharge));
@@ -288,7 +355,7 @@ async function generateInvoicePDF(invoice, outlet = {}) {
 
   if (invoice.amountInWords) {
     doc.font('Helvetica').fontSize(7).fillColor('#888888');
-    doc.text(`(${invoice.amountInWords})`, totalsX - 100, y, { width: totalsLabelW + totalsValW + 110, align: 'right' });
+    doc.text(`(${invoice.amountInWords})`, totalsLabelX, y, { width: totalsLabelW + 5 + totalsValW, align: 'right' });
     y += 14;
   }
 

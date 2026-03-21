@@ -7,14 +7,20 @@
  * Flow:
  *   1. Order item added → load recipe → calculate ingredient qty × order qty
  *   2. Convert to base units → apply wastage/yield
- *   3. FIFO batch deduction → record inventory movements (type: 'sale')
- *   4. Update inventory_items.current_stock
+ *   3. FIFO batch deduction (with FOR UPDATE lock) → record 1 movement PER batch (type: 'sale')
+ *   4. Update inventory_items.current_stock (negative stock allowed)
  *   5. Mark order_item.stock_deducted = 1
  * 
  * Cancel Flow:
- *   1. Load movements for that order item (reference_type='order_item')
- *   2. Restore batches → record reversal movements (type: 'sale_reversal')
+ *   1. Load sale movements for that order item (each has specific batch_id)
+ *   2. Restore qty to SAME original batch → record reversal movements (type: 'sale_reversal')
  *   3. Update inventory_items.current_stock
+ * 
+ * Key Design Decisions:
+ *   - 1 movement per batch deducted (not 1 per ingredient) → enables exact reversal
+ *   - Reversal restores to SAME batch (no new REV- batches created)
+ *   - FOR UPDATE on both inventory_items AND batches → prevents concurrency races
+ *   - Negative stock allowed → orders are never blocked by insufficient stock
  * 
  * Golden Rule: ALL stock changes go through inventory_movements
  */
@@ -96,7 +102,7 @@ const stockDeductionService = {
 
         const inventoryItemId = ing.inventory_item_id;
 
-        // Lock inventory item for stock update
+        // Lock inventory item for stock update (concurrency safe)
         const [[item]] = await connection.query(
           'SELECT current_stock, average_price FROM inventory_items WHERE id = ? FOR UPDATE',
           [inventoryItemId]
@@ -107,16 +113,16 @@ const stockDeductionService = {
         }
 
         const currentStock = parseFloat(item.current_stock) || 0;
-        const avgPrice = parseFloat(item.average_price) || 0;
         const balanceBefore = currentStock;
+        // Allow negative stock — never block the order
         const balanceAfter = currentStock - totalEffectiveQty;
 
-        // FIFO batch deduction
+        // FIFO batch deduction (with FOR UPDATE lock on batches)
         const batchDeductionDetails = await this._deductFromBatchesFIFO(
           connection, inventoryItemId, totalEffectiveQty
         );
 
-        // Update inventory item stock
+        // Update inventory item stock (may go negative — that's OK)
         await connection.query(
           'UPDATE inventory_items SET current_stock = ? WHERE id = ?',
           [balanceAfter, inventoryItemId]
@@ -126,19 +132,45 @@ const stockDeductionService = {
         const deductionCost = batchDeductionDetails.totalCost;
         totalCostDeducted += deductionCost;
 
-        // Record inventory movement
-        await connection.query(
-          `INSERT INTO inventory_movements (
-            outlet_id, inventory_item_id, inventory_batch_id, movement_type,
-            quantity, quantity_in_base, unit_cost, total_cost,
-            balance_before, balance_after, reference_type, reference_id, notes, created_by
-          ) VALUES (?, ?, ?, 'sale', ?, ?, ?, ?, ?, ?, 'order_item', ?, ?, ?)`,
-          [outletId, inventoryItemId, batchDeductionDetails.firstBatchId,
-           -totalEffectiveQty, -totalEffectiveQty, avgPrice, deductionCost,
-           balanceBefore, balanceAfter, orderItemId,
-           `Order #${orderId}, ${ing.ingredient_name}: ${totalEffectiveQty.toFixed(2)} base units`,
-           userId]
-        );
+        // Record ONE movement PER batch deducted (enables exact reversal to same batch)
+        let runningBalance = balanceBefore;
+        for (const bd of batchDeductionDetails.batches) {
+          const batchBalanceBefore = runningBalance;
+          runningBalance -= bd.qtyDeducted;
+          await connection.query(
+            `INSERT INTO inventory_movements (
+              outlet_id, inventory_item_id, inventory_batch_id, movement_type,
+              quantity, quantity_in_base, unit_cost, total_cost,
+              balance_before, balance_after, reference_type, reference_id, notes, created_by
+            ) VALUES (?, ?, ?, 'sale', ?, ?, ?, ?, ?, ?, 'order_item', ?, ?, ?)`,
+            [outletId, inventoryItemId, bd.batchId,
+             -bd.qtyDeducted, -bd.qtyDeducted, bd.pricePerUnit, bd.cost,
+             batchBalanceBefore, runningBalance, orderItemId,
+             `Order #${orderId}, ${ing.ingredient_name}: ${bd.qtyDeducted.toFixed(4)} from batch #${bd.batchId}`,
+             userId]
+          );
+        }
+
+        // If there was unbatched quantity (stock went negative beyond batches), record it too
+        if (batchDeductionDetails.unbatchedQty > 0) {
+          const avgPrice = parseFloat(item.average_price) || 0;
+          const unbatchedCost = parseFloat((batchDeductionDetails.unbatchedQty * avgPrice).toFixed(2));
+          const ubBalanceBefore = runningBalance;
+          runningBalance -= batchDeductionDetails.unbatchedQty;
+          await connection.query(
+            `INSERT INTO inventory_movements (
+              outlet_id, inventory_item_id, inventory_batch_id, movement_type,
+              quantity, quantity_in_base, unit_cost, total_cost,
+              balance_before, balance_after, reference_type, reference_id, notes, created_by
+            ) VALUES (?, ?, NULL, 'sale', ?, ?, ?, ?, ?, ?, 'order_item', ?, ?, ?)`,
+            [outletId, inventoryItemId,
+             -batchDeductionDetails.unbatchedQty, -batchDeductionDetails.unbatchedQty,
+             avgPrice, unbatchedCost,
+             ubBalanceBefore, runningBalance, orderItemId,
+             `Order #${orderId}, ${ing.ingredient_name}: ${batchDeductionDetails.unbatchedQty.toFixed(4)} (no batch, negative stock)`,
+             userId]
+          );
+        }
 
         deductions.push({
           inventoryItemId,
@@ -174,83 +206,101 @@ const stockDeductionService = {
   },
 
   /**
-   * Reverse stock deduction for a single order item (on cancel)
+   * Reverse stock deduction for a single order item (on full cancel)
+   * Uses NET remaining (sale - previous reversals) so full cancel after partial cancels is safe
+   * Restores stock to the SAME original batches — no new batches created
    * @param {object} connection - MySQL transaction connection
    * @param {object} params - { orderItemId, outletId, userId, reason }
    */
   async reverseForOrderItem(connection, { orderItemId, outletId, userId, reason }) {
     try {
-      // Get all sale movements for this order item
-      const [movements] = await connection.query(
-        `SELECT im.*, ii.current_stock
-         FROM inventory_movements im
-         JOIN inventory_items ii ON im.inventory_item_id = ii.id
-         WHERE im.reference_type = 'order_item' AND im.reference_id = ? AND im.movement_type = 'sale'`,
+      // Get NET remaining deduction per (inventory_item, batch) accounting for previous partial reversals
+      const [netMovements] = await connection.query(
+        `SELECT inventory_item_id, inventory_batch_id,
+                SUM(CASE WHEN movement_type = 'sale' THEN ABS(quantity) ELSE 0 END) as total_deducted,
+                SUM(CASE WHEN movement_type = 'sale_reversal' THEN ABS(quantity) ELSE 0 END) as total_reversed,
+                AVG(CASE WHEN movement_type = 'sale' THEN ABS(unit_cost) ELSE NULL END) as unit_cost
+         FROM inventory_movements
+         WHERE reference_type = 'order_item' AND reference_id = ?
+           AND movement_type IN ('sale', 'sale_reversal')
+         GROUP BY inventory_item_id, inventory_batch_id`,
         [orderItemId]
       );
 
-      if (movements.length === 0) return null; // No stock was deducted
+      if (netMovements.length === 0) return null; // No stock was deducted
 
-      const restorations = [];
+      // Group movements by inventory_item_id for stock update
+      const itemRestorations = {}; // { inventoryItemId: totalQtyRestored }
 
-      for (const mov of movements) {
+      for (const mov of netMovements) {
         const inventoryItemId = mov.inventory_item_id;
-        const qtyToRestore = Math.abs(parseFloat(mov.quantity)); // movements stored as negative
+        const batchId = mov.inventory_batch_id; // the ORIGINAL batch
+        const qtyToRestore = parseFloat(mov.total_deducted) - parseFloat(mov.total_reversed);
+
+        if (qtyToRestore <= 0) continue; // Already fully reversed by previous partial cancels
+
         const unitCost = parseFloat(mov.unit_cost) || 0;
+        const totalCost = parseFloat((qtyToRestore * unitCost).toFixed(2));
 
-        // Lock inventory item
-        const [[item]] = await connection.query(
-          'SELECT current_stock, average_price FROM inventory_items WHERE id = ? FOR UPDATE',
-          [inventoryItemId]
-        );
-        if (!item) continue;
-
-        const currentStock = parseFloat(item.current_stock) || 0;
-        const balanceBefore = currentStock;
-        const balanceAfter = currentStock + qtyToRestore;
-
-        // Restore to batch — create a small restoration batch
-        const batchCode = `REV-ORD-${orderItemId}`;
-        const [batchResult] = await connection.query(
-          `INSERT INTO inventory_batches (
-            inventory_item_id, outlet_id, batch_code, quantity, remaining_quantity,
-            purchase_price, purchase_date, notes, is_active
-          ) VALUES (?, ?, ?, ?, ?, ?, CURDATE(), ?, 1)`,
-          [inventoryItemId, outletId, batchCode, qtyToRestore, qtyToRestore,
-           unitCost, `Restored: order item cancel (item ${orderItemId})`]
-        );
-
-        // Update stock
-        const oldAvg = parseFloat(item.average_price) || 0;
-        let newAvg = unitCost;
-        if (balanceAfter > 0 && balanceBefore > 0) {
-          newAvg = ((balanceBefore * oldAvg) + (qtyToRestore * unitCost)) / balanceAfter;
+        // Restore to the SAME original batch (if it exists)
+        if (batchId) {
+          await connection.query(
+            `UPDATE inventory_batches SET remaining_quantity = remaining_quantity + ?,
+             is_active = 1 WHERE id = ?`,
+            [qtyToRestore, batchId]
+          );
         }
-        newAvg = parseFloat(newAvg.toFixed(4));
+        // If batchId is NULL (unbatched/negative stock deduction), no batch to restore to — just restore stock
 
-        await connection.query(
-          'UPDATE inventory_items SET current_stock = ?, average_price = ? WHERE id = ?',
-          [balanceAfter, newAvg, inventoryItemId]
-        );
+        // Lock and get current stock for this inventory item
+        if (!itemRestorations[inventoryItemId]) {
+          const [[item]] = await connection.query(
+            'SELECT current_stock, average_price FROM inventory_items WHERE id = ? FOR UPDATE',
+            [inventoryItemId]
+          );
+          if (!item) continue;
+          itemRestorations[inventoryItemId] = {
+            currentStock: parseFloat(item.current_stock) || 0,
+            avgPrice: parseFloat(item.average_price) || 0,
+            totalRestored: 0,
+            balanceBefore: parseFloat(item.current_stock) || 0
+          };
+        }
 
-        // Record reversal movement
+        const ir = itemRestorations[inventoryItemId];
+        const balanceBefore = ir.currentStock + ir.totalRestored;
+        const balanceAfter = balanceBefore + qtyToRestore;
+        ir.totalRestored += qtyToRestore;
+
+        // Record reversal movement pointing to the SAME batch
         await connection.query(
           `INSERT INTO inventory_movements (
             outlet_id, inventory_item_id, inventory_batch_id, movement_type,
             quantity, quantity_in_base, unit_cost, total_cost,
             balance_before, balance_after, reference_type, reference_id, notes, created_by
           ) VALUES (?, ?, ?, 'sale_reversal', ?, ?, ?, ?, ?, ?, 'order_item', ?, ?, ?)`,
-          [outletId, inventoryItemId, batchResult.insertId,
-           qtyToRestore, qtyToRestore, unitCost, parseFloat(mov.total_cost) || 0,
+          [outletId, inventoryItemId, batchId,
+           qtyToRestore, qtyToRestore, unitCost, totalCost,
            balanceBefore, balanceAfter, orderItemId,
            `Cancel reversal: ${reason || 'Order item cancelled'}`,
            userId]
         );
+      }
+
+      // Update inventory_items stock for each affected item
+      const restorations = [];
+      for (const [inventoryItemId, ir] of Object.entries(itemRestorations)) {
+        const newStock = ir.currentStock + ir.totalRestored;
+        await connection.query(
+          'UPDATE inventory_items SET current_stock = ? WHERE id = ?',
+          [newStock, inventoryItemId]
+        );
 
         restorations.push({
-          inventoryItemId,
-          qtyRestored: parseFloat(qtyToRestore.toFixed(4)),
-          balanceAfter: parseFloat(balanceAfter.toFixed(4))
+          inventoryItemId: parseInt(inventoryItemId),
+          qtyRestored: parseFloat(ir.totalRestored.toFixed(4)),
+          balanceBefore: parseFloat(ir.balanceBefore.toFixed(4)),
+          balanceAfter: parseFloat(newStock.toFixed(4))
         });
       }
 
@@ -260,7 +310,7 @@ const stockDeductionService = {
         [orderItemId]
       );
 
-      logger.info(`Stock reversed for order_item ${orderItemId}: ${restorations.length} items restored`);
+      logger.info(`Stock reversed for order_item ${orderItemId}: ${restorations.length} items restored (net-based)`);
 
       return {
         orderItemId,
@@ -275,6 +325,7 @@ const stockDeductionService = {
 
   /**
    * Partial reverse: restore stock proportional to cancelled quantity
+   * Uses NET remaining deduction (sale - previous reversals) to handle repeated partial cancels correctly
    * @param {object} connection - MySQL transaction connection
    * @param {object} params - { orderItemId, outletId, userId, reason, cancelQuantity, originalQuantity }
    */
@@ -283,82 +334,95 @@ const stockDeductionService = {
       if (!cancelQuantity || !originalQuantity || cancelQuantity <= 0) return null;
       const ratio = cancelQuantity / originalQuantity;
 
-      // Get all sale movements for this order item
-      const [movements] = await connection.query(
-        `SELECT im.*, ii.current_stock
-         FROM inventory_movements im
-         JOIN inventory_items ii ON im.inventory_item_id = ii.id
-         WHERE im.reference_type = 'order_item' AND im.reference_id = ? AND im.movement_type = 'sale'`,
+      // Get NET remaining deduction per (inventory_item, batch) accounting for previous reversals
+      const [netMovements] = await connection.query(
+        `SELECT inventory_item_id, inventory_batch_id,
+                SUM(CASE WHEN movement_type = 'sale' THEN ABS(quantity) ELSE 0 END) as total_deducted,
+                SUM(CASE WHEN movement_type = 'sale_reversal' THEN ABS(quantity) ELSE 0 END) as total_reversed,
+                AVG(CASE WHEN movement_type = 'sale' THEN ABS(unit_cost) ELSE NULL END) as unit_cost
+         FROM inventory_movements
+         WHERE reference_type = 'order_item' AND reference_id = ?
+           AND movement_type IN ('sale', 'sale_reversal')
+         GROUP BY inventory_item_id, inventory_batch_id`,
         [orderItemId]
       );
 
-      if (movements.length === 0) return null;
+      if (netMovements.length === 0) return null;
 
-      const restorations = [];
+      const itemRestorations = {};
 
-      for (const mov of movements) {
+      for (const mov of netMovements) {
         const inventoryItemId = mov.inventory_item_id;
-        const fullQty = Math.abs(parseFloat(mov.quantity));
-        const qtyToRestore = parseFloat((fullQty * ratio).toFixed(4));
+        const batchId = mov.inventory_batch_id;
+        const netRemaining = parseFloat(mov.total_deducted) - parseFloat(mov.total_reversed);
+
+        if (netRemaining <= 0) continue; // Already fully reversed by previous partial cancels
+
+        const qtyToRestore = parseFloat((netRemaining * ratio).toFixed(4));
+        if (qtyToRestore <= 0) continue;
+
         const unitCost = parseFloat(mov.unit_cost) || 0;
-
-        const [[item]] = await connection.query(
-          'SELECT current_stock, average_price FROM inventory_items WHERE id = ? FOR UPDATE',
-          [inventoryItemId]
-        );
-        if (!item) continue;
-
-        const currentStock = parseFloat(item.current_stock) || 0;
-        const balanceBefore = currentStock;
-        const balanceAfter = currentStock + qtyToRestore;
-
-        // Restore to batch
-        const batchCode = `REV-PART-${orderItemId}`;
-        const [batchResult] = await connection.query(
-          `INSERT INTO inventory_batches (
-            inventory_item_id, outlet_id, batch_code, quantity, remaining_quantity,
-            purchase_price, purchase_date, notes, is_active
-          ) VALUES (?, ?, ?, ?, ?, ?, CURDATE(), ?, 1)`,
-          [inventoryItemId, outletId, batchCode, qtyToRestore, qtyToRestore,
-           unitCost, `Partial cancel reversal: ${cancelQuantity} of ${originalQuantity} (item ${orderItemId})`]
-        );
-
-        // Update stock
-        const oldAvg = parseFloat(item.average_price) || 0;
-        let newAvg = unitCost;
-        if (balanceAfter > 0 && balanceBefore > 0) {
-          newAvg = ((balanceBefore * oldAvg) + (qtyToRestore * unitCost)) / balanceAfter;
-        }
-        newAvg = parseFloat(newAvg.toFixed(4));
-
-        await connection.query(
-          'UPDATE inventory_items SET current_stock = ?, average_price = ? WHERE id = ?',
-          [balanceAfter, newAvg, inventoryItemId]
-        );
-
-        // Record partial reversal movement
         const totalCost = parseFloat((qtyToRestore * unitCost).toFixed(2));
+
+        // Restore proportional qty to the SAME original batch
+        if (batchId) {
+          await connection.query(
+            `UPDATE inventory_batches SET remaining_quantity = remaining_quantity + ?,
+             is_active = 1 WHERE id = ?`,
+            [qtyToRestore, batchId]
+          );
+        }
+
+        if (!itemRestorations[inventoryItemId]) {
+          const [[item]] = await connection.query(
+            'SELECT current_stock, average_price FROM inventory_items WHERE id = ? FOR UPDATE',
+            [inventoryItemId]
+          );
+          if (!item) continue;
+          itemRestorations[inventoryItemId] = {
+            currentStock: parseFloat(item.current_stock) || 0,
+            totalRestored: 0,
+            balanceBefore: parseFloat(item.current_stock) || 0
+          };
+        }
+
+        const ir = itemRestorations[inventoryItemId];
+        const balanceBefore = ir.currentStock + ir.totalRestored;
+        const balanceAfter = balanceBefore + qtyToRestore;
+        ir.totalRestored += qtyToRestore;
+
+        // Record partial reversal movement pointing to SAME batch
         await connection.query(
           `INSERT INTO inventory_movements (
             outlet_id, inventory_item_id, inventory_batch_id, movement_type,
             quantity, quantity_in_base, unit_cost, total_cost,
             balance_before, balance_after, reference_type, reference_id, notes, created_by
           ) VALUES (?, ?, ?, 'sale_reversal', ?, ?, ?, ?, ?, ?, 'order_item', ?, ?, ?)`,
-          [outletId, inventoryItemId, batchResult.insertId,
+          [outletId, inventoryItemId, batchId,
            qtyToRestore, qtyToRestore, unitCost, totalCost,
            balanceBefore, balanceAfter, orderItemId,
            `Partial cancel: ${cancelQuantity}/${originalQuantity} — ${reason || 'Quantity reduced'}`,
            userId]
         );
+      }
+
+      // Update inventory_items stock
+      const restorations = [];
+      for (const [inventoryItemId, ir] of Object.entries(itemRestorations)) {
+        const newStock = ir.currentStock + ir.totalRestored;
+        await connection.query(
+          'UPDATE inventory_items SET current_stock = ? WHERE id = ?',
+          [newStock, inventoryItemId]
+        );
 
         restorations.push({
-          inventoryItemId,
-          qtyRestored: qtyToRestore,
-          balanceAfter: parseFloat(balanceAfter.toFixed(4))
+          inventoryItemId: parseInt(inventoryItemId),
+          qtyRestored: parseFloat(ir.totalRestored.toFixed(4)),
+          balanceAfter: parseFloat(newStock.toFixed(4))
         });
       }
 
-      logger.info(`Partial stock reversed for order_item ${orderItemId}: ${cancelQuantity}/${originalQuantity}, ${restorations.length} ingredients`);
+      logger.info(`Partial stock reversed for order_item ${orderItemId}: ${cancelQuantity}/${originalQuantity}, ${restorations.length} ingredients (net-based)`);
 
       return {
         orderItemId,
@@ -368,6 +432,274 @@ const stockDeductionService = {
       };
     } catch (error) {
       logger.error(`Partial stock reversal failed for order_item ${orderItemId}:`, error);
+      return null;
+    }
+  },
+
+  /**
+   * Determine whether a cancelled item should get stock reversal or wastage (spoilage).
+   *
+   * Logic:
+   *   1. If user explicitly chose (stockAction = 'reverse' or 'wastage') → use that
+   *   2. Otherwise auto-decide based on configurable time window only:
+   *      - Cancel within window → REVERSE (stock restored)
+   *      - Cancel after window  → WASTAGE / SPOILAGE (stock stays deducted)
+   *
+   * @param {object} connection - MySQL connection (or pool)
+   * @param {object} item - order_item row (needs: created_at, outlet_id)
+   * @param {string|null} userChoice - 'reverse', 'wastage', or null (auto)
+   * @returns {{ action: 'reverse'|'wastage', auto: boolean, reason: string }}
+   */
+  async determineCancelStockAction(connection, item, userChoice = null) {
+    // If user explicitly chose, honour it
+    if (userChoice === 'reverse' || userChoice === 'wastage') {
+      return { action: userChoice, auto: false, reason: `User chose: ${userChoice}` };
+    }
+
+    // Load configurable window from settings
+    const settingsService = require('./settings.service');
+    const windowMinutes = (await settingsService.get('cancel_reversal_window_minutes', item.outlet_id))?.value ?? 5;
+
+    // Auto-decide based on time elapsed since item creation
+    const createdAt = new Date(item.created_at);
+    const now = new Date();
+    const elapsedMinutes = (now - createdAt) / 60000;
+
+    if (elapsedMinutes <= windowMinutes) {
+      return {
+        action: 'reverse',
+        auto: true,
+        reason: `Within ${windowMinutes}min window (${elapsedMinutes.toFixed(1)}min elapsed)`
+      };
+    }
+
+    return {
+      action: 'wastage',
+      auto: true,
+      reason: `${elapsedMinutes.toFixed(1)}min elapsed > ${windowMinutes}min window → spoilage`
+    };
+  },
+
+  /**
+   * Record wastage/spoilage for a cancelled order item (stock NOT reversed).
+   * Uses the existing sale movements to know exactly what was deducted per ingredient,
+   * then records wastage_logs + wastage movements for each.
+   * Stock stays deducted — it becomes a loss.
+   */
+  async recordWastageForCancelledItem(connection, { orderItemId, orderId, outletId, userId, reason }) {
+    try {
+      // Get all sale movements for this order item
+      const [movements] = await connection.query(
+        `SELECT * FROM inventory_movements
+         WHERE reference_type = 'order_item' AND reference_id = ? AND movement_type = 'sale'`,
+        [orderItemId]
+      );
+
+      if (movements.length === 0) return null;
+
+      const wastageRecords = [];
+      const itemStocks = {}; // cache current stock per inventory item
+
+      for (const mov of movements) {
+        const inventoryItemId = mov.inventory_item_id;
+        const batchId = mov.inventory_batch_id;
+        const qtyWasted = Math.abs(parseFloat(mov.quantity));
+        const unitCost = parseFloat(mov.unit_cost) || 0;
+        const totalCost = Math.abs(parseFloat(mov.total_cost)) || 0;
+
+        // Insert wastage_log entry with order reference
+        const [logResult] = await connection.query(
+          `INSERT INTO wastage_logs (
+            outlet_id, inventory_item_id, inventory_batch_id, quantity, quantity_in_base,
+            unit_id, unit_cost, total_cost, wastage_type, reason, reason_notes,
+            reported_by, approved_by, order_id, order_item_id, wastage_date
+          ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, 'spoilage', 'order_cancel', ?, ?, NULL, ?, ?, CURDATE())`,
+          [outletId, inventoryItemId, batchId,
+           qtyWasted, qtyWasted, unitCost, totalCost,
+           reason || 'Item cancelled (beyond reversal window)',
+           userId, orderId, orderItemId]
+        );
+
+        // Get current stock for balance fields (cache per item)
+        if (itemStocks[inventoryItemId] === undefined) {
+          const [[item]] = await connection.query(
+            'SELECT current_stock FROM inventory_items WHERE id = ?',
+            [inventoryItemId]
+          );
+          itemStocks[inventoryItemId] = parseFloat(item?.current_stock) || 0;
+        }
+        const currentStock = itemStocks[inventoryItemId];
+
+        // Record sale_reversal movement (conceptual: undo the sale)
+        // Stock doesn't actually change — this is a reclassification pair
+        await connection.query(
+          `INSERT INTO inventory_movements (
+            outlet_id, inventory_item_id, inventory_batch_id, movement_type,
+            quantity, quantity_in_base, unit_cost, total_cost,
+            balance_before, balance_after, reference_type, reference_id, notes, created_by
+          ) VALUES (?, ?, ?, 'sale_reversal', ?, ?, ?, ?, ?, ?, 'order_cancel', ?, ?, ?)`,
+          [outletId, inventoryItemId, batchId,
+           qtyWasted, qtyWasted, unitCost, totalCost,
+           currentStock, currentStock + qtyWasted,
+           orderItemId,
+           `Cancel reversal (spoilage reclassification): ${reason || 'Item cancelled'}`,
+           userId]
+        );
+
+        // Record wastage movement (reclassify the deducted stock as spoilage)
+        await connection.query(
+          `INSERT INTO inventory_movements (
+            outlet_id, inventory_item_id, inventory_batch_id, movement_type,
+            quantity, quantity_in_base, unit_cost, total_cost,
+            balance_before, balance_after, reference_type, reference_id, notes, created_by
+          ) VALUES (?, ?, ?, 'wastage', ?, ?, ?, ?, ?, ?, 'order_cancel', ?, ?, ?)`,
+          [outletId, inventoryItemId, batchId,
+           -qtyWasted, -qtyWasted, unitCost, totalCost,
+           currentStock + qtyWasted, currentStock,
+           orderItemId,
+           `Spoilage: Order cancel — ${reason || 'Item cancelled (beyond reversal window)'}`,
+           userId]
+        );
+
+        wastageRecords.push({
+          wastageLogId: logResult.insertId,
+          inventoryItemId,
+          batchId,
+          qtyWasted,
+          unitCost,
+          totalCost
+        });
+      }
+
+      // Mark stock_deducted remains 1 (stock stays deducted, now counted as wastage)
+      logger.info(
+        `Wastage recorded for order_item ${orderItemId}: ${wastageRecords.length} ingredients, ` +
+        `total cost ₹${wastageRecords.reduce((s, w) => s + w.totalCost, 0).toFixed(2)}`
+      );
+
+      return {
+        orderItemId,
+        action: 'wastage',
+        wastageCount: wastageRecords.length,
+        totalCost: parseFloat(wastageRecords.reduce((s, w) => s + w.totalCost, 0).toFixed(2)),
+        records: wastageRecords
+      };
+    } catch (error) {
+      logger.error(`Wastage recording failed for order_item ${orderItemId}:`, error);
+      return null;
+    }
+  },
+
+  /**
+   * Record wastage for a partial cancel (proportional to cancelled qty).
+   * Uses NET remaining deduction (sale - previous reversals) to handle repeated partial cancels correctly.
+   */
+  async recordWastageForPartialCancel(connection, { orderItemId, orderId, outletId, userId, reason, cancelQuantity, originalQuantity }) {
+    try {
+      if (!cancelQuantity || !originalQuantity || cancelQuantity <= 0) return null;
+      const ratio = cancelQuantity / originalQuantity;
+
+      // Get NET remaining deduction per (inventory_item, batch) accounting for previous reversals
+      const [movements] = await connection.query(
+        `SELECT inventory_item_id, inventory_batch_id,
+                SUM(CASE WHEN movement_type = 'sale' THEN ABS(quantity) ELSE 0 END) as total_deducted,
+                SUM(CASE WHEN movement_type = 'sale_reversal' THEN ABS(quantity) ELSE 0 END) as total_reversed,
+                AVG(CASE WHEN movement_type = 'sale' THEN ABS(unit_cost) ELSE NULL END) as unit_cost
+         FROM inventory_movements
+         WHERE reference_type = 'order_item' AND reference_id = ?
+           AND movement_type IN ('sale', 'sale_reversal')
+         GROUP BY inventory_item_id, inventory_batch_id`,
+        [orderItemId]
+      );
+
+      if (movements.length === 0) return null;
+
+      const wastageRecords = [];
+      const itemStocks = {}; // cache current stock per inventory item
+
+      for (const mov of movements) {
+        const inventoryItemId = mov.inventory_item_id;
+        const batchId = mov.inventory_batch_id;
+        const netRemaining = parseFloat(mov.total_deducted) - parseFloat(mov.total_reversed);
+        if (netRemaining <= 0) continue; // Already fully reversed
+        const qtyWasted = parseFloat((netRemaining * ratio).toFixed(4));
+        if (qtyWasted <= 0) continue;
+        const unitCost = parseFloat(mov.unit_cost) || 0;
+        const totalCost = parseFloat((qtyWasted * unitCost).toFixed(2));
+
+        const [logResult] = await connection.query(
+          `INSERT INTO wastage_logs (
+            outlet_id, inventory_item_id, inventory_batch_id, quantity, quantity_in_base,
+            unit_id, unit_cost, total_cost, wastage_type, reason, reason_notes,
+            reported_by, approved_by, order_id, order_item_id, wastage_date
+          ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, 'spoilage', 'order_cancel', ?, ?, NULL, ?, ?, CURDATE())`,
+          [outletId, inventoryItemId, batchId,
+           qtyWasted, qtyWasted, unitCost, totalCost,
+           reason || 'Partial cancel (beyond reversal window)',
+           userId, orderId, orderItemId]
+        );
+
+        // Get current stock for balance fields (cache per item)
+        if (itemStocks[inventoryItemId] === undefined) {
+          const [[item]] = await connection.query(
+            'SELECT current_stock FROM inventory_items WHERE id = ?',
+            [inventoryItemId]
+          );
+          itemStocks[inventoryItemId] = parseFloat(item?.current_stock) || 0;
+        }
+        const currentStock = itemStocks[inventoryItemId];
+
+        // Record sale_reversal movement (conceptual: undo the sale portion)
+        await connection.query(
+          `INSERT INTO inventory_movements (
+            outlet_id, inventory_item_id, inventory_batch_id, movement_type,
+            quantity, quantity_in_base, unit_cost, total_cost,
+            balance_before, balance_after, reference_type, reference_id, notes, created_by
+          ) VALUES (?, ?, ?, 'sale_reversal', ?, ?, ?, ?, ?, ?, 'order_cancel', ?, ?, ?)`,
+          [outletId, inventoryItemId, batchId,
+           qtyWasted, qtyWasted, unitCost, totalCost,
+           currentStock, currentStock + qtyWasted,
+           orderItemId,
+           `Partial cancel reversal (spoilage reclassification ${cancelQuantity}/${originalQuantity}): ${reason || 'Quantity reduced'}`,
+           userId]
+        );
+
+        // Record wastage movement (reclassify as spoilage)
+        await connection.query(
+          `INSERT INTO inventory_movements (
+            outlet_id, inventory_item_id, inventory_batch_id, movement_type,
+            quantity, quantity_in_base, unit_cost, total_cost,
+            balance_before, balance_after, reference_type, reference_id, notes, created_by
+          ) VALUES (?, ?, ?, 'wastage', ?, ?, ?, ?, ?, ?, 'order_cancel', ?, ?, ?)`,
+          [outletId, inventoryItemId, batchId,
+           -qtyWasted, -qtyWasted, unitCost, totalCost,
+           currentStock + qtyWasted, currentStock,
+           orderItemId,
+           `Spoilage: Partial cancel (${cancelQuantity}/${originalQuantity}) — ${reason || 'Quantity reduced (beyond reversal window)'}`,
+           userId]
+        );
+
+        wastageRecords.push({
+          wastageLogId: logResult.insertId,
+          inventoryItemId, batchId, qtyWasted, unitCost, totalCost
+        });
+      }
+
+      logger.info(
+        `Partial wastage recorded for order_item ${orderItemId}: ${cancelQuantity}/${originalQuantity}, ` +
+        `${wastageRecords.length} ingredients`
+      );
+
+      return {
+        orderItemId,
+        action: 'wastage',
+        ratio,
+        wastageCount: wastageRecords.length,
+        totalCost: parseFloat(wastageRecords.reduce((s, w) => s + w.totalCost, 0).toFixed(2)),
+        records: wastageRecords
+      };
+    } catch (error) {
+      logger.error(`Partial wastage recording failed for order_item ${orderItemId}:`, error);
       return null;
     }
   },
@@ -406,19 +738,21 @@ const stockDeductionService = {
   },
 
   /**
-   * FIFO batch deduction with cost tracking
-   * Returns detailed batch breakdown for cost snapshot
+   * FIFO batch deduction with cost tracking and concurrency locks
+   * Locks batches with FOR UPDATE to prevent race conditions
+   * Returns detailed per-batch breakdown for movement records
    */
   async _deductFromBatchesFIFO(connection, inventoryItemId, quantity) {
+    // Lock ALL active batches for this item (prevents concurrent deduction races)
     const [batches] = await connection.query(
       `SELECT id, remaining_quantity, purchase_price FROM inventory_batches
        WHERE inventory_item_id = ? AND remaining_quantity > 0 AND is_active = 1
-       ORDER BY purchase_date ASC, id ASC`,
+       ORDER BY purchase_date ASC, id ASC
+       FOR UPDATE`,
       [inventoryItemId]
     );
 
     let remaining = quantity;
-    let firstBatchId = null;
     let totalCost = 0;
     const batchDetails = [];
 
@@ -428,8 +762,6 @@ const stockDeductionService = {
       const batchQty = parseFloat(batch.remaining_quantity);
       const batchPrice = parseFloat(batch.purchase_price);
       const deduct = Math.min(remaining, batchQty);
-
-      if (!firstBatchId) firstBatchId = batch.id;
 
       await connection.query(
         'UPDATE inventory_batches SET remaining_quantity = remaining_quantity - ? WHERE id = ?',
@@ -449,23 +781,24 @@ const stockDeductionService = {
       remaining -= deduct;
     }
 
-    // If remaining > 0, stock insufficient in batches but we still deduct from item
-    // (may happen with manual adjustments that don't create batches)
+    // If remaining > 0, stock insufficient in batches — allow negative stock
+    // Use average price for the unbatched portion (no batch to deduct from)
+    let unbatchedQty = 0;
     if (remaining > 0) {
-      // Use average price for the un-batched portion
+      unbatchedQty = parseFloat(remaining.toFixed(4));
       const [[item]] = await connection.query(
         'SELECT average_price FROM inventory_items WHERE id = ?',
         [inventoryItemId]
       );
       const avgPrice = parseFloat(item?.average_price) || 0;
       totalCost += remaining * avgPrice;
+      logger.info(`Stock deduction: item ${inventoryItemId} went negative by ${remaining.toFixed(4)} units (batches exhausted)`);
     }
 
     return {
-      firstBatchId,
       totalCost: parseFloat(totalCost.toFixed(2)),
       batches: batchDetails,
-      unbatchedQty: remaining > 0 ? parseFloat(remaining.toFixed(4)) : 0
+      unbatchedQty
     };
   }
 };

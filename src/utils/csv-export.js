@@ -256,6 +256,9 @@ function dailySalesDetailCSV(data, filters) {
     { key: 'paidAmount', header: 'Paid (₹)', type: 'currency' },
     { key: 'dueAmount', header: 'Due (₹)', type: 'currency' },
     { key: 'paymentStatus', header: 'Payment Status' },
+    { key: 'makingCost', header: 'Making Cost (₹)', type: 'currency' },
+    { key: 'profit', header: 'Profit (₹)', type: 'currency' },
+    { key: 'foodCostPercentage', header: 'Food Cost %', format: (v) => v ? `${parseFloat(v).toFixed(2)}%` : '0%' },
     { key: 'status', header: 'Order Status' }
   ];
   
@@ -274,7 +277,12 @@ function dailySalesDetailCSV(data, filters) {
       'Net Sales': formatCurrency(data.summary.netSales),
       'NC Orders': data.summary.ncOrders || 0,
       'NC Amount': formatCurrency(data.summary.ncAmount),
-      'Total Paid': formatCurrency(data.summary.totalPaid)
+      'Total Paid': formatCurrency(data.summary.totalPaid),
+      'Making Cost': formatCurrency(data.summary.makingCost),
+      'Profit': formatCurrency(data.summary.profit),
+      'Food Cost %': data.summary.foodCostPercentage ? `${data.summary.foodCostPercentage}%` : '0%',
+      'Wastage Count': data.summary.wastageCount || 0,
+      'Wastage Cost': formatCurrency(data.summary.wastageCost)
     } : {}
   });
 }
@@ -327,6 +335,56 @@ function itemSalesCSV(data, filters) {
       'Profit': formatCurrency(summary.profit),
       'Food Cost %': summary.food_cost_percentage ? `${summary.food_cost_percentage}%` : '0%',
       'Top Seller': summary.top_seller
+    }
+  });
+}
+
+/**
+ * Item Sales Detail Report CSV
+ */
+function itemSalesDetailCSV(data, filters) {
+  const columns = [
+    { key: 'itemName', header: 'Item Name' },
+    { key: 'variantName', header: 'Variant' },
+    { key: 'categoryName', header: 'Category' },
+    { key: 'stationName', header: 'Station' },
+    { key: 'totalQuantity', header: 'Qty Sold', type: 'number' },
+    { key: 'cancelledQuantity', header: 'Cancelled Qty', type: 'number' },
+    { key: 'grossRevenue', header: 'Gross Revenue (₹)', type: 'currency' },
+    { key: 'discountAmount', header: 'Discount (₹)', type: 'currency' },
+    { key: 'taxAmount', header: 'Tax (₹)', type: 'currency' },
+    { key: 'netRevenue', header: 'Net Revenue (₹)', type: 'currency' },
+    { key: 'makingCost', header: 'Making Cost (₹)', type: 'currency' },
+    { key: 'profit', header: 'Profit (₹)', type: 'currency' },
+    { key: 'foodCostPercentage', header: 'Food Cost %', format: (v) => v ? `${parseFloat(v).toFixed(2)}%` : '0%' },
+    { key: 'avgUnitPrice', header: 'Avg Price (₹)', type: 'currency' },
+    { key: 'orderCount', header: 'Orders', type: 'number' },
+    { key: 'ncCount', header: 'NC Count', type: 'number' },
+    { key: 'ncAmount', header: 'NC Amount (₹)', type: 'currency' },
+    { key: 'occurrenceCount', header: 'Occurrences', type: 'number' }
+  ];
+  
+  const rows = data.items || data.data || [];
+  const summary = data.summary || {};
+  
+  return toCSV(rows, columns, {
+    title: 'Item Sales Detail Report',
+    filters: {
+      'Start Date': filters.startDate,
+      'End Date': filters.endDate,
+      'Outlet': filters.outletName || filters.outletId
+    },
+    summary: {
+      'Unique Items': summary.totalUniqueItems,
+      'Total Quantity': summary.totalQuantitySold,
+      'Cancelled Quantity': summary.totalCancelledQuantity,
+      'Gross Revenue': formatCurrency(summary.grossRevenue),
+      'Net Revenue': formatCurrency(summary.netRevenue),
+      'Making Cost': formatCurrency(summary.makingCost),
+      'Profit': formatCurrency(summary.profit),
+      'Food Cost %': summary.foodCostPercentage ? `${summary.foodCostPercentage}%` : '0%',
+      'NC Count': summary.ncCount || 0,
+      'NC Amount': formatCurrency(summary.ncAmount)
     }
   });
 }
@@ -1107,6 +1165,11 @@ function dayEndSummaryDetailCSV(data, filters) {
   lines.push(`NC Orders,${summary.ncOrders || 0}`);
   lines.push(`NC Amount,${formatCurrency(summary.ncAmount)}`);
   lines.push(`Net Sales,${formatCurrency(summary.netSales || summary.totalSales)}`);
+  lines.push(`Making Cost,${formatCurrency(summary.makingCost)}`);
+  lines.push(`Profit,${formatCurrency(summary.profit)}`);
+  lines.push(`Food Cost %,${summary.foodCostPercentage ? summary.foodCostPercentage + '%' : '0%'}`);
+  lines.push(`Wastage Count,${summary.wastageCount || 0}`);
+  lines.push(`Wastage Cost,${formatCurrency(summary.wastageCost)}`);
   lines.push(`Avg Order Value,${formatCurrency(summary.avgOrderValue)}`);
   lines.push('');
   
@@ -1573,6 +1636,7 @@ module.exports = {
   dailySalesCSV,
   dailySalesDetailCSV,
   itemSalesCSV,
+  itemSalesDetailCSV,
   categorySalesCSV,
   staffReportCSV,
   paymentModeCSV,

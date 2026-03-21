@@ -229,7 +229,7 @@ const purchaseService = {
           'SELECT conversion_factor FROM units WHERE id = ?', [item.unitId]
         );
         const conversionFactor = parseFloat(unitRows[0]?.conversion_factor) || 1;
-        const pricePerBaseUnit = parseFloat((item.pricePerUnit / conversionFactor).toFixed(4));
+        const pricePerBaseUnit = parseFloat((item.pricePerUnit / conversionFactor).toFixed(6));
 
         const itemTax = parseFloat(item.taxAmount) || 0;
         const itemDiscount = parseFloat(item.discountAmount) || 0;
@@ -549,7 +549,7 @@ const purchaseService = {
 
     const totalQty = parseFloat(result.total_qty) || 0;
     const totalValue = parseFloat(result.total_value) || 0;
-    const newAvg = totalQty > 0 ? parseFloat((totalValue / totalQty).toFixed(4)) : 0;
+    const newAvg = totalQty > 0 ? parseFloat((totalValue / totalQty).toFixed(6)) : 0;
 
     // Get latest price from most recent active batch
     const [[latestBatch]] = await connection.query(

@@ -61,18 +61,18 @@ function formatDiscount(discount) {
   if (!discount) return null;
   return {
     id: discount.id,
-    orderId: discount.order_id,
-    orderItemId: discount.order_item_id || null,
-    discountId: discount.discount_id || null,
-    discountCode: discount.discount_code || null,
-    discountName: discount.discount_name,
-    discountType: discount.discount_type,
-    discountValue: parseFloat(discount.discount_value) || 0,
-    discountAmount: parseFloat(discount.discount_amount) || 0,
-    appliedOn: discount.applied_on || 'subtotal',
-    approvedBy: discount.approved_by || null,
-    createdBy: discount.created_by || null,
-    createdAt: discount.created_at || null,
+    orderId: discount.order_id || discount.orderId,
+    orderItemId: discount.order_item_id || discount.orderItemId || null,
+    discountId: discount.discount_id || discount.discountId || null,
+    discountCode: discount.discount_code || discount.discountCode || null,
+    discountName: discount.discount_name || discount.discountName,
+    discountType: discount.discount_type || discount.discountType,
+    discountValue: parseFloat(discount.discount_value || discount.discountValue) || 0,
+    discountAmount: parseFloat(discount.discount_amount || discount.discountAmount) || 0,
+    appliedOn: discount.applied_on || discount.appliedOn || 'subtotal',
+    approvedBy: discount.approved_by || discount.approvedBy || null,
+    createdBy: discount.created_by || discount.createdBy || null,
+    createdAt: discount.created_at || discount.createdAt || null,
   };
 }
 
@@ -367,14 +367,15 @@ const billingService = {
       customerGstState: invoice.customerGstState || order.customer_gst_state || null,
       customerGstStateCode: invoice.customerGstStateCode || order.customer_gst_state_code || null,
       isInterstate: invoice.isInterstate || order.is_interstate || false,
-      items: (invoice.items || []).filter(i => i.status !== 'cancelled').map(item => ({
+      items: this._consolidateItems((invoice.items || []).filter(i => i.status !== 'cancelled').map(item => ({
         itemName: item.name || item.item_name || item.itemName,
-        quantity: item.quantity,
-        unitPrice: parseFloat(item.unitPrice || item.unit_price || 0).toFixed(2),
-        totalPrice: parseFloat(item.totalPrice || item.total_price || 0).toFixed(2),
+        variantName: item.variantName || item.variant_name || null,
+        quantity: parseInt(item.quantity) || 0,
+        unitPrice: parseFloat(item.unitPrice || item.unit_price || 0),
+        totalPrice: parseFloat(item.totalPrice || item.total_price || 0),
         isNC: !!(item.isNC || item.is_nc),
         ncAmount: parseFloat(item.ncAmount || item.nc_amount || 0)
-      })),
+      }))),
       subtotal: parseFloat(invoice.subtotal || 0).toFixed(2),
       taxes: Object.values(invoice.taxBreakup || {}).map(t => ({
         name: t.name || 'Tax',
@@ -383,6 +384,12 @@ const billingService = {
       })),
       serviceCharge: parseFloat(invoice.serviceCharge || 0) > 0 ? parseFloat(invoice.serviceCharge).toFixed(2) : null,
       discount: parseFloat(invoice.discountAmount || 0) > 0 ? parseFloat(invoice.discountAmount).toFixed(2) : null,
+      discounts: (invoice.discounts || []).map(d => ({
+        name: d.discountName || 'Discount',
+        type: d.discountType || 'flat',
+        value: parseFloat(d.discountValue) || 0,
+        amount: parseFloat(d.discountAmount) || 0
+      })),
       roundOff: invoice.roundOff !== undefined ? parseFloat(invoice.roundOff).toFixed(2) : null,
       grandTotal: parseFloat(invoice.grandTotal || 0).toFixed(2),
       // NC (No Charge) fields for print
@@ -417,6 +424,30 @@ const billingService = {
     // Fallback: create print job for bridge polling
     await printerService.printBill(billPrintData, userId);
     logger.info(`Bill ${invoice.invoiceNumber} queued for bridge printing`);
+  },
+
+  /**
+   * Consolidate same items into single lines (e.g., 4x Chilli Fish Dry → 1 line qty 4)
+   * Groups by itemName + variantName + unitPrice + isNC
+   */
+  _consolidateItems(items) {
+    const map = new Map();
+    for (const item of items) {
+      const key = `${item.itemName}|${item.variantName || ''}|${item.unitPrice}|${item.isNC}`;
+      if (map.has(key)) {
+        const existing = map.get(key);
+        existing.quantity += item.quantity;
+        existing.totalPrice += item.totalPrice;
+        existing.ncAmount += item.ncAmount;
+      } else {
+        map.set(key, { ...item });
+      }
+    }
+    return Array.from(map.values()).map(item => ({
+      ...item,
+      unitPrice: parseFloat(item.unitPrice).toFixed(2),
+      totalPrice: parseFloat(item.totalPrice).toFixed(2)
+    }));
   },
 
   // ========================
@@ -1067,8 +1098,8 @@ const billingService = {
   async getOutletInfo(outletId) {
     const pool = getPool();
     const [rows] = await pool.query(
-      `SELECT name, CONCAT_WS(', ', address_line1, address_line2, city, state, postal_code) as address,
-        phone, email, gstin, logo_url
+      `SELECT name, CONCAT_WS(', ', NULLIF(address_line1,''), NULLIF(address_line2,''), NULLIF(city,''), NULLIF(state,''), NULLIF(postal_code,'')) as address,
+        phone, email, gstin, logo_url, print_logo_url, print_logo_enabled
        FROM outlets WHERE id = ?`,
       [outletId]
     );
@@ -1096,10 +1127,13 @@ const billingService = {
     const invoice = await this.resolveInvoice(id);
 
     const outletData = await this.getOutletInfo(invoice.outletId);
-    // Map logo_url to logoUrl for invoice-pdf.js
+    // Map logo_url to logoUrl for invoice-pdf.js — prefer print_logo_url if enabled
+    const logoUrl = outletData.print_logo_enabled
+      ? (outletData.print_logo_url || outletData.logo_url)
+      : outletData.logo_url;
     const outlet = {
       ...outletData,
-      logoUrl: outletData.logo_url
+      logoUrl
     };
     const { generateInvoicePDF } = require('../utils/invoice-pdf');
 

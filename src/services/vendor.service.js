@@ -221,6 +221,272 @@ const vendorService = {
     };
   },
 
+  /**
+   * Comprehensive vendor detail — full purchase history, payments, items supplied, financial summary
+   */
+  async getVendorDetail(vendorId, options = {}) {
+    const pool = getPool();
+    const {
+      purchasePage = 1, purchaseLimit = 20,
+      startDate, endDate, paymentStatus
+    } = options;
+
+    // 1. Vendor info
+    const vendor = await this.getById(vendorId);
+    if (!vendor) return null;
+
+    // 2. Financial summary
+    let summaryWhere = 'WHERE p.vendor_id = ? AND p.status != ?';
+    const summaryParams = [vendorId, 'cancelled'];
+    if (startDate) { summaryWhere += ' AND p.purchase_date >= ?'; summaryParams.push(startDate); }
+    if (endDate) { summaryWhere += ' AND p.purchase_date <= ?'; summaryParams.push(endDate); }
+
+    const [[financial]] = await pool.query(
+      `SELECT
+        COUNT(*) as total_purchases,
+        COALESCE(SUM(p.total_amount), 0) as total_purchase_amount,
+        COALESCE(SUM(p.paid_amount), 0) as total_paid_amount,
+        COALESCE(SUM(p.due_amount), 0) as total_due_amount,
+        COALESCE(AVG(p.total_amount), 0) as avg_purchase_value,
+        COALESCE(MAX(p.total_amount), 0) as max_purchase_value,
+        COALESCE(MIN(p.total_amount), 0) as min_purchase_value,
+        MAX(p.purchase_date) as last_purchase_date,
+        MIN(p.purchase_date) as first_purchase_date,
+        COUNT(CASE WHEN p.payment_status = 'paid' THEN 1 END) as fully_paid_count,
+        COUNT(CASE WHEN p.payment_status = 'partial' THEN 1 END) as partial_paid_count,
+        COUNT(CASE WHEN p.payment_status = 'unpaid' THEN 1 END) as unpaid_count
+       FROM purchases p ${summaryWhere}`,
+      summaryParams
+    );
+
+    const financialSummary = {
+      totalPurchases: parseInt(financial.total_purchases) || 0,
+      totalPurchaseAmount: parseFloat(parseFloat(financial.total_purchase_amount).toFixed(2)) || 0,
+      totalPaidAmount: parseFloat(parseFloat(financial.total_paid_amount).toFixed(2)) || 0,
+      totalDueAmount: parseFloat(parseFloat(financial.total_due_amount).toFixed(2)) || 0,
+      avgPurchaseValue: parseFloat(parseFloat(financial.avg_purchase_value).toFixed(2)) || 0,
+      maxPurchaseValue: parseFloat(parseFloat(financial.max_purchase_value).toFixed(2)) || 0,
+      minPurchaseValue: parseFloat(parseFloat(financial.min_purchase_value).toFixed(2)) || 0,
+      firstPurchaseDate: financial.first_purchase_date || null,
+      lastPurchaseDate: financial.last_purchase_date || null,
+      paymentBreakdown: {
+        fullyPaid: parseInt(financial.fully_paid_count) || 0,
+        partialPaid: parseInt(financial.partial_paid_count) || 0,
+        unpaid: parseInt(financial.unpaid_count) || 0
+      }
+    };
+
+    // 3. Paginated purchase history with items
+    let purchaseWhere = 'WHERE p.vendor_id = ? AND p.status != ?';
+    const purchaseParams = [vendorId, 'cancelled'];
+    if (startDate) { purchaseWhere += ' AND p.purchase_date >= ?'; purchaseParams.push(startDate); }
+    if (endDate) { purchaseWhere += ' AND p.purchase_date <= ?'; purchaseParams.push(endDate); }
+    if (paymentStatus) { purchaseWhere += ' AND p.payment_status = ?'; purchaseParams.push(paymentStatus); }
+
+    const safePage = Math.max(1, parseInt(purchasePage) || 1);
+    const safeLimit = Math.min(100, Math.max(1, parseInt(purchaseLimit) || 20));
+    const offset = (safePage - 1) * safeLimit;
+
+    const [[{ total: purchaseTotal }]] = await pool.query(
+      `SELECT COUNT(*) as total FROM purchases p ${purchaseWhere}`, purchaseParams
+    );
+
+    const [purchaseRows] = await pool.query(
+      `SELECT p.*, u.name as created_by_name,
+        (SELECT COUNT(*) FROM purchase_items pi WHERE pi.purchase_id = p.id) as item_count
+       FROM purchases p
+       LEFT JOIN users u ON p.created_by = u.id
+       ${purchaseWhere}
+       ORDER BY p.purchase_date DESC, p.id DESC
+       LIMIT ? OFFSET ?`,
+      [...purchaseParams, safeLimit, offset]
+    );
+
+    // Get items for each purchase
+    const purchaseIds = purchaseRows.map(p => p.id);
+    let itemsByPurchase = {};
+    if (purchaseIds.length > 0) {
+      const [allItems] = await pool.query(
+        `SELECT pi.*, ii.name as item_name, ii.sku as item_sku,
+          u.name as unit_name, u.abbreviation as unit_abbreviation,
+          ic.name as category_name
+         FROM purchase_items pi
+         JOIN inventory_items ii ON pi.inventory_item_id = ii.id
+         LEFT JOIN units u ON pi.unit_id = u.id
+         LEFT JOIN inventory_categories ic ON ii.category_id = ic.id
+         WHERE pi.purchase_id IN (${purchaseIds.map(() => '?').join(',')})
+         ORDER BY pi.id`,
+        purchaseIds
+      );
+      for (const item of allItems) {
+        if (!itemsByPurchase[item.purchase_id]) itemsByPurchase[item.purchase_id] = [];
+        itemsByPurchase[item.purchase_id].push({
+          id: item.id,
+          inventoryItemId: item.inventory_item_id,
+          itemName: item.item_name,
+          itemSku: item.item_sku,
+          categoryName: item.category_name || null,
+          quantity: parseFloat(item.quantity) || 0,
+          unitName: item.unit_name || null,
+          unitAbbreviation: item.unit_abbreviation || null,
+          pricePerUnit: parseFloat(item.price_per_unit) || 0,
+          taxAmount: parseFloat(item.tax_amount) || 0,
+          discountAmount: parseFloat(item.discount_amount) || 0,
+          totalCost: parseFloat(item.total_cost) || 0,
+          batchCode: item.batch_code || null,
+          expiryDate: item.expiry_date || null
+        });
+      }
+    }
+
+    const purchases = purchaseRows.map(p => ({
+      id: p.id,
+      purchaseNumber: p.purchase_number,
+      invoiceNumber: p.invoice_number || null,
+      purchaseDate: p.purchase_date,
+      subtotal: parseFloat(p.subtotal) || 0,
+      taxAmount: parseFloat(p.tax_amount) || 0,
+      discountAmount: parseFloat(p.discount_amount) || 0,
+      totalAmount: parseFloat(p.total_amount) || 0,
+      paidAmount: parseFloat(p.paid_amount) || 0,
+      dueAmount: parseFloat(p.due_amount) || 0,
+      paymentStatus: p.payment_status,
+      status: p.status,
+      notes: p.notes || null,
+      itemCount: parseInt(p.item_count) || 0,
+      createdByName: p.created_by_name || null,
+      createdAt: p.created_at,
+      items: itemsByPurchase[p.id] || []
+    }));
+
+    // 4. Items supplied — which inventory items this vendor provides
+    const [suppliedItems] = await pool.query(
+      `SELECT ii.id as inventory_item_id, ii.name as item_name, ii.sku,
+        ic.name as category_name,
+        bu.abbreviation as base_unit,
+        COUNT(DISTINCT pi.purchase_id) as purchase_count,
+        SUM(pi.quantity) as total_quantity_purchased,
+        COALESCE(SUM(pi.total_cost), 0) as total_spent,
+        AVG(pi.price_per_unit) as avg_price_per_unit,
+        MAX(pi.price_per_unit) as max_price_per_unit,
+        MIN(pi.price_per_unit) as min_price_per_unit,
+        MAX(p.purchase_date) as last_purchased_date
+       FROM purchase_items pi
+       JOIN purchases p ON pi.purchase_id = p.id
+       JOIN inventory_items ii ON pi.inventory_item_id = ii.id
+       LEFT JOIN inventory_categories ic ON ii.category_id = ic.id
+       LEFT JOIN units bu ON ii.base_unit_id = bu.id
+       WHERE p.vendor_id = ? AND p.status != 'cancelled'
+       GROUP BY ii.id, ii.name, ii.sku, ic.name, bu.abbreviation
+       ORDER BY total_spent DESC`,
+      [vendorId]
+    );
+
+    const itemsSupplied = suppliedItems.map(i => ({
+      inventoryItemId: i.inventory_item_id,
+      itemName: i.item_name,
+      sku: i.sku || null,
+      categoryName: i.category_name || null,
+      baseUnit: i.base_unit || null,
+      purchaseCount: parseInt(i.purchase_count) || 0,
+      totalQuantityPurchased: parseFloat(parseFloat(i.total_quantity_purchased).toFixed(3)) || 0,
+      totalSpent: parseFloat(parseFloat(i.total_spent).toFixed(2)) || 0,
+      avgPricePerUnit: parseFloat(parseFloat(i.avg_price_per_unit).toFixed(2)) || 0,
+      maxPricePerUnit: parseFloat(parseFloat(i.max_price_per_unit).toFixed(2)) || 0,
+      minPricePerUnit: parseFloat(parseFloat(i.min_price_per_unit).toFixed(2)) || 0,
+      lastPurchasedDate: i.last_purchased_date || null
+    }));
+
+    // 5. Payment history (all payments across all purchases for this vendor)
+    const [paymentRows] = await pool.query(
+      `SELECT pp.*, p.purchase_number, p.invoice_number, u.name as created_by_name
+       FROM purchase_payments pp
+       JOIN purchases p ON pp.purchase_id = p.id
+       LEFT JOIN users u ON pp.created_by = u.id
+       WHERE p.vendor_id = ? AND p.status != 'cancelled'
+       ORDER BY pp.payment_date DESC, pp.id DESC
+       LIMIT 100`,
+      [vendorId]
+    );
+
+    const paymentHistory = paymentRows.map(p => ({
+      id: p.id,
+      purchaseId: p.purchase_id,
+      purchaseNumber: p.purchase_number,
+      invoiceNumber: p.invoice_number || null,
+      amount: parseFloat(p.amount) || 0,
+      paymentMethod: p.payment_method,
+      paymentReference: p.payment_reference || null,
+      paymentDate: p.payment_date,
+      notes: p.notes || null,
+      createdByName: p.created_by_name || null,
+      createdAt: p.created_at
+    }));
+
+    // 6. Monthly purchase trend (last 12 months)
+    const [monthlyRows] = await pool.query(
+      `SELECT
+        DATE_FORMAT(p.purchase_date, '%Y-%m') as month,
+        COUNT(*) as purchase_count,
+        COALESCE(SUM(p.total_amount), 0) as total_amount,
+        COALESCE(SUM(p.paid_amount), 0) as paid_amount,
+        COALESCE(SUM(p.due_amount), 0) as due_amount
+       FROM purchases p
+       WHERE p.vendor_id = ? AND p.status != 'cancelled'
+         AND p.purchase_date >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
+       GROUP BY DATE_FORMAT(p.purchase_date, '%Y-%m')
+       ORDER BY month DESC`,
+      [vendorId]
+    );
+
+    const monthlyTrend = monthlyRows.map(m => ({
+      month: m.month,
+      purchaseCount: parseInt(m.purchase_count) || 0,
+      totalAmount: parseFloat(parseFloat(m.total_amount).toFixed(2)) || 0,
+      paidAmount: parseFloat(parseFloat(m.paid_amount).toFixed(2)) || 0,
+      dueAmount: parseFloat(parseFloat(m.due_amount).toFixed(2)) || 0
+    }));
+
+    // 7. Outstanding (unpaid/partial) purchases
+    const [outstandingRows] = await pool.query(
+      `SELECT p.id, p.purchase_number, p.invoice_number, p.purchase_date,
+        p.total_amount, p.paid_amount, p.due_amount, p.payment_status
+       FROM purchases p
+       WHERE p.vendor_id = ? AND p.status != 'cancelled' AND p.payment_status IN ('unpaid', 'partial')
+       ORDER BY p.due_amount DESC`,
+      [vendorId]
+    );
+
+    const outstandingPurchases = outstandingRows.map(p => ({
+      id: p.id,
+      purchaseNumber: p.purchase_number,
+      invoiceNumber: p.invoice_number || null,
+      purchaseDate: p.purchase_date,
+      totalAmount: parseFloat(p.total_amount) || 0,
+      paidAmount: parseFloat(p.paid_amount) || 0,
+      dueAmount: parseFloat(p.due_amount) || 0,
+      paymentStatus: p.payment_status
+    }));
+
+    return {
+      vendor,
+      financialSummary,
+      purchases: {
+        data: purchases,
+        pagination: {
+          page: safePage,
+          limit: safeLimit,
+          total: purchaseTotal,
+          totalPages: Math.ceil(purchaseTotal / safeLimit)
+        }
+      },
+      itemsSupplied,
+      paymentHistory,
+      monthlyTrend,
+      outstandingPurchases
+    };
+  },
+
   // ========================
   // FORMAT
   // ========================

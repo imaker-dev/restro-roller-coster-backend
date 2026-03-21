@@ -34,7 +34,12 @@ router.put('/units/:id', admin, inventoryController.updateUnit);
 router.get('/:outletId/vendors', admin, inventoryController.listVendors);
 
 /** GET  /vendors/:id                — Vendor detail */
-router.get('/vendors/:id', admin, inventoryController.getVendor);
+// router.get('/vendors/:id', admin, inventoryController.getVendor);
+router.get('/vendors/:id', admin, inventoryController.getVendorDetail);
+
+
+/** GET  /vendors/:id/detail         — Comprehensive vendor detail with purchases, payments, items, trends */
+// router.get('/vendors/:id/detail', admin, inventoryController.getVendorDetail);
 
 /** POST /:outletId/vendors          — Create vendor */
 router.post('/:outletId/vendors', admin, inventoryController.createVendor);

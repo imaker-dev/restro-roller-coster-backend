@@ -551,7 +551,7 @@ const inventoryService = {
     if (newTotalQty > 0 && balanceBefore > 0) {
       newAvgPrice = ((balanceBefore * oldAvgPrice) + (quantity * purchasePrice)) / newTotalQty;
     }
-    newAvgPrice = parseFloat(newAvgPrice.toFixed(4));
+    newAvgPrice = parseFloat(newAvgPrice.toFixed(6));
 
     const balanceAfter = balanceBefore + quantity;
 
@@ -862,7 +862,8 @@ const inventoryService = {
     const [batches] = await connection.query(
       `SELECT id, remaining_quantity FROM inventory_batches
        WHERE inventory_item_id = ? AND remaining_quantity > 0 AND is_active = 1
-       ORDER BY purchase_date ASC, id ASC`,
+       ORDER BY purchase_date ASC, id ASC
+       FOR UPDATE`,
       [inventoryItemId]
     );
 
@@ -1073,8 +1074,8 @@ const inventoryService = {
 
     // Convert base → purchase unit for display
     const displayStock = parseFloat((rawStock / cf).toFixed(4));
-    const displayAvgPrice = parseFloat((rawAvgPrice * cf).toFixed(4));
-    const displayLatestPrice = parseFloat((rawLatestPrice * cf).toFixed(4));
+    const displayAvgPrice = parseFloat((rawAvgPrice * cf).toFixed(2));
+    const displayLatestPrice = parseFloat((rawLatestPrice * cf).toFixed(2));
 
     return {
       id: row.id,
@@ -1117,7 +1118,7 @@ const inventoryService = {
       batchCode: row.batch_code,
       quantity: parseFloat((rawQty / cf).toFixed(4)),
       remainingQuantity: parseFloat((rawRemaining / cf).toFixed(4)),
-      purchasePrice: parseFloat((rawPrice * cf).toFixed(4)),
+      purchasePrice: parseFloat((rawPrice * cf).toFixed(2)),
       purchaseDate: row.purchase_date,
       expiryDate: row.expiry_date || null,
       vendorId: row.vendor_id || null,
@@ -1151,7 +1152,7 @@ const inventoryService = {
       movementType: row.movement_type,
       quantity: parseFloat((rawQty / cf).toFixed(4)),
       unitAbbreviation: row.purchase_unit_abbreviation || row.unit_abbreviation || null,
-      unitCost: parseFloat((rawUnitCost * cf).toFixed(4)),
+      unitCost: parseFloat((rawUnitCost * cf).toFixed(2)),
       totalCost: parseFloat(row.total_cost) || 0,
       balanceBefore: parseFloat((rawBefore / cf).toFixed(4)),
       balanceAfter: parseFloat((rawAfter / cf).toFixed(4)),

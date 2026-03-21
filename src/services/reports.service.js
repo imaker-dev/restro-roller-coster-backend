@@ -2552,6 +2552,36 @@ const reportsService = {
     );
     const ncSr = ncSummaryRows[0] || {};
 
+    // Cost/Profit aggregates from order_item_costs
+    const [costSummaryRows] = await pool.query(
+      `SELECT COALESCE(SUM(oic.making_cost), 0) as making_cost,
+              COALESCE(SUM(oic.profit), 0) as profit
+       FROM order_item_costs oic
+       JOIN orders o ON oic.order_id = o.id
+       LEFT JOIN tables t ON o.table_id = t.id
+       LEFT JOIN floors f ON o.floor_id = f.id
+       LEFT JOIN users u_captain ON o.created_by = u_captain.id
+       LEFT JOIN users u_biller ON o.billed_by = u_biller.id
+       LEFT JOIN users u_cancel ON o.cancelled_by = u_cancel.id
+       ${whereClause} AND o.status IN ('paid','completed')`,
+      params
+    );
+    const costSr = costSummaryRows[0] || {};
+    const totalMakingCost = parseFloat(costSr.making_cost) || 0;
+    const totalProfit = parseFloat(costSr.profit) || 0;
+    const foodCostPct = netSales > 0 ? parseFloat(((totalMakingCost / netSales) * 100).toFixed(2)) : 0;
+
+    // Wastage aggregates from wastage_logs
+    const [wastageSummaryRows] = await pool.query(
+      `SELECT COUNT(*) as wastage_count, COALESCE(SUM(wl.total_cost), 0) as wastage_cost
+       FROM wastage_logs wl
+       WHERE wl.outlet_id = ? AND wl.wastage_date BETWEEN ? AND ?`,
+      [outletId, start, end]
+    );
+    const wastageSr = wastageSummaryRows[0] || {};
+    const totalWastageCount = parseInt(wastageSr.wastage_count) || 0;
+    const totalWastageCost = parseFloat(wastageSr.wastage_cost) || 0;
+
     const summary = {
       dateRange: { start, end },
       totalOrders: parseInt(sr.total_orders) || 0,
@@ -2571,6 +2601,11 @@ const reportsService = {
       ncAmount: parseFloat((parseFloat(ncSr.nc_amount) || 0).toFixed(2)),
       totalPaid: parseFloat(totalPaidAll.toFixed(2)),
       totalTips: parseFloat(totalTipsAll.toFixed(2)),
+      makingCost: parseFloat(totalMakingCost.toFixed(2)),
+      profit: parseFloat(totalProfit.toFixed(2)),
+      foodCostPercentage: foodCostPct,
+      wastageCount: totalWastageCount,
+      wastageCost: parseFloat(totalWastageCost.toFixed(2)),
       averageOrderValue: completedCount > 0 ? parseFloat((netSales / completedCount).toFixed(2)) : 0,
       paymentModeBreakdown
     };
@@ -3092,6 +3127,7 @@ const reportsService = {
     let globalDiscount = 0, globalTax = 0, globalNetRevenue = 0;
     let globalAddonRevenue = 0, globalComplimentaryCount = 0;
     let globalNcCount = 0, globalNcQuantity = 0, globalNcAmount = 0;
+    let globalMakingCost = 0, globalProfit = 0;
     const globalCategoryBreakdown = {};
     const globalTypeBreakdown = {};
 
@@ -3240,6 +3276,8 @@ const reportsService = {
         globalTax += ta;
         globalNetRevenue += (tp - da);
         globalAddonRevenue += addonTotal;
+        globalMakingCost += parseFloat(r.oic_making_cost) || 0;
+        globalProfit += parseFloat(r.oic_profit) || 0;
 
         if (r.is_complimentary) {
           item.complimentaryCount++;
@@ -3367,6 +3405,9 @@ const reportsService = {
       ncCount: globalNcCount,
       ncQuantity: parseFloat(globalNcQuantity.toFixed(3)),
       ncAmount: parseFloat(globalNcAmount.toFixed(2)),
+      makingCost: parseFloat(globalMakingCost.toFixed(2)),
+      profit: parseFloat(globalProfit.toFixed(2)),
+      foodCostPercentage: globalNetRevenue > 0 ? parseFloat(((globalMakingCost / globalNetRevenue) * 100).toFixed(2)) : 0,
       avgRevenuePerItem: itemsArray.length > 0
         ? parseFloat((globalNetRevenue / itemsArray.length).toFixed(2))
         : 0,
@@ -4760,7 +4801,10 @@ const reportsService = {
       totalUniqueItems: 0, totalItemsShown: 0,
       totalQuantitySold: 0, totalCancelledQuantity: 0,
       grossRevenue: 0, totalDiscount: 0, totalTax: 0, netRevenue: 0,
-      addonRevenue: 0, complimentaryCount: 0, avgRevenuePerItem: 0,
+      addonRevenue: 0, complimentaryCount: 0,
+      ncCount: 0, ncQuantity: 0, ncAmount: 0,
+      makingCost: 0, profit: 0, foodCostPercentage: 0,
+      avgRevenuePerItem: 0,
       itemTypeBreakdown: [], categoryBreakdown: []
     };
   },
@@ -4772,7 +4816,10 @@ const reportsService = {
       orderTypeBreakdown: { dine_in: 0, takeaway: 0, delivery: 0 },
       grossSales: 0, totalDiscount: 0, totalTax: 0, netSales: 0,
       ncOrders: 0, ncAmount: 0,
-      totalPaid: 0, totalTips: 0, averageOrderValue: 0,
+      totalPaid: 0, totalTips: 0,
+      makingCost: 0, profit: 0, foodCostPercentage: 0,
+      wastageCount: 0, wastageCost: 0,
+      averageOrderValue: 0,
       paymentModeBreakdown: {}
     };
   },
@@ -5475,6 +5522,31 @@ const reportsService = {
     const totalRefunds = refunds.reduce((sum, r) => sum + r.refundAmount, 0);
     const totalDiscounts = discountsApplied.reduce((sum, d) => sum + d.totalAmount, 0);
 
+    // Cost/Profit data from order_item_costs for this date
+    const [detailCostRows] = await pool.query(
+      `SELECT COALESCE(SUM(oic.making_cost), 0) as making_cost,
+              COALESCE(SUM(oic.profit), 0) as profit
+       FROM order_item_costs oic
+       JOIN orders o ON oic.order_id = o.id
+       ${whereClause} AND o.status IN ('paid','completed')`,
+      params
+    );
+    const detailMakingCost = parseFloat(detailCostRows[0]?.making_cost) || 0;
+    const detailProfit = parseFloat(detailCostRows[0]?.profit) || 0;
+    const detailTotalSales = parseFloat(summary.total_sales) || 0;
+    const detailFoodCostPct = detailTotalSales > 0
+      ? parseFloat(((detailMakingCost / detailTotalSales) * 100).toFixed(2)) : 0;
+
+    // Wastage data for this date
+    const [detailWastageRows] = await pool.query(
+      `SELECT COUNT(*) as wastage_count, COALESCE(SUM(wl.total_cost), 0) as wastage_cost
+       FROM wastage_logs wl
+       WHERE wl.outlet_id = ? AND wl.wastage_date = ?`,
+      [outletId, targetDate]
+    );
+    const detailWastageCount = parseInt(detailWastageRows[0]?.wastage_count) || 0;
+    const detailWastageCost = parseFloat(detailWastageRows[0]?.wastage_cost) || 0;
+
     return {
       date: targetDate,
       summary: {
@@ -5486,17 +5558,22 @@ const reportsService = {
           takeaway: parseInt(summary.takeaway_orders) || 0,
           delivery: parseInt(summary.delivery_orders) || 0
         },
-        totalSales: parseFloat(summary.total_sales) || 0,
+        totalSales: detailTotalSales,
         grossSales: parseFloat(summary.gross_sales) || 0,
         totalDiscount: parseFloat(summary.total_discount) || 0,
         totalTax: parseFloat(summary.total_tax) || 0,
         totalServiceCharge: parseFloat(summary.total_service_charge) || 0,
-        netSales: (parseFloat(summary.total_sales) || 0) - totalRefunds,
+        netSales: detailTotalSales - totalRefunds,
         totalGuests: parseInt(summary.total_guests) || 0,
         ncOrders: parseInt(summary.nc_orders) || 0,
         ncAmount: parseFloat(summary.nc_amount) || 0,
         dueAmount: parseFloat(summary.due_amount) || 0,
         paidAmount: parseFloat(summary.paid_amount) || 0,
+        makingCost: detailMakingCost,
+        profit: detailProfit,
+        foodCostPercentage: detailFoodCostPct,
+        wastageCount: detailWastageCount,
+        wastageCost: detailWastageCost,
         avgOrderValue: parseFloat(summary.avg_order_value) || 0,
         maxOrderValue: parseFloat(summary.max_order_value) || 0,
         minOrderValue: parseFloat(summary.min_order_value) || 0,
