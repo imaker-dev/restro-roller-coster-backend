@@ -1166,11 +1166,11 @@ const printerService = {
 
   formatBillContent(billData) {
     const lines = [];
-    const w = 56; // 56-char width for TVS RP3230 80mm with Font B at 180 DPI
+    const w = 64; // 64-char width for TVS RP3230 80mm with Font B at 203 DPI
     const dash = '-'.repeat(w);
     const cmd = this.getEscPosCommands();
-    const FONT_B = '\x1B\x4D\x01'; // Condensed font (9x17, 56 chars/line on 80mm)
-    const LS_TIGHT = '\x1B\x33\x16'; // Tight line spacing for header area
+    const FONT_B = '\x1B\x4D\x01'; // Condensed font (9x17, 64 chars/line on 80mm)
+    const LS_TIGHT = '\x1B\x33\x12'; // 18-dot line spacing — tight for entire bill
 
     // ── 1. HEADER ───────────────────────────────
     if (billData.isDuplicate) {
@@ -1181,13 +1181,11 @@ const printerService = {
 
     // Restaurant name (double height, bold, centered)
     lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HEIGHT + (billData.outletName || 'Restaurant'));
-    // Switch to FONT_B with tight spacing for address block
+    // Switch to FONT_B + tight line spacing — stays for entire bill body
     lines.push(cmd.NORMAL + cmd.BOLD_OFF + FONT_B + LS_TIGHT);
     if (billData.outletAddress) lines.push(billData.outletAddress);
     if (billData.outletPhone) lines.push('Ph: ' + billData.outletPhone);
     if (billData.outletGstin) lines.push('GSTIN: ' + billData.outletGstin);
-    // Reset to default line spacing after header
-    lines.push('\x1B\x32');
 
     // ── 2. BILL META (left + right, full width) ─
     lines.push(cmd.ALIGN_LEFT + dash);
@@ -1240,9 +1238,9 @@ const printerService = {
     }
 
     // ── 4. ITEM TABLE (full width fixed grid) ───
-    // ITEM=30  QTY=5  RATE=10  AMT=11  = 56
+    // ITEM=34  QTY=6  RATE=11  AMT=13  = 64
     lines.push(dash);
-    const cN = 30, cQ = 5, cP = 10, cA = 11;
+    const cN = 34, cQ = 6, cP = 11, cA = 13;
     lines.push(cmd.BOLD_ON +
       'ITEM'.padEnd(cN) +
       this.rAlign('QTY', cQ) +
@@ -1312,8 +1310,8 @@ const printerService = {
     // ── 6. GRAND TOTAL (center, bold, double height)
     lines.push(dash);
     lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HEIGHT + 'GRAND TOTAL Rs.' + billData.grandTotal);
-    // Restore FONT_B after DOUBLE_HEIGHT resets print mode
-    lines.push(cmd.NORMAL + cmd.BOLD_OFF + FONT_B + cmd.ALIGN_LEFT + dash);
+    // Restore FONT_B + tight spacing after DOUBLE_HEIGHT resets print mode
+    lines.push(cmd.NORMAL + cmd.BOLD_OFF + FONT_B + LS_TIGHT + cmd.ALIGN_LEFT + dash);
 
     // ── 7. PAYMENT (full width) ─────────────────
     if (billData.dueAmount && parseFloat(billData.dueAmount) > 0) {
@@ -1324,7 +1322,8 @@ const printerService = {
 
     if (billData.paymentMode) {
       if (billData.paymentMode === 'split' && billData.splitBreakdown && billData.splitBreakdown.length > 0) {
-        lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + 'SPLIT PAYMENT' + cmd.BOLD_OFF + cmd.ALIGN_LEFT);
+        lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + 'SPLIT PAYMENT' + cmd.BOLD_OFF);
+        lines.push(cmd.ALIGN_LEFT);
         for (const sp of billData.splitBreakdown) {
           lines.push(this.padBetween(
             (sp.paymentMode || '').toUpperCase(),
@@ -1392,7 +1391,7 @@ const printerService = {
       ALIGN_RIGHT: '\x1B\x61\x02',  // Align right
       DOUBLE_HEIGHT: '\x1B\x21\x10', // Double height
       NORMAL: '\x1B\x21\x00',        // Normal text
-      FEED_LINES: '\x1B\x64\x05',    // Feed 5 lines
+      FEED_LINES: '\x1B\x64\x05',    // Feed 8 lines
       CUT: '\x1D\x56\x00',           // Full cut
       PARTIAL_CUT: '\x1D\x56\x01',   // Partial cut
       OPEN_DRAWER: '\x1B\x70\x00\x19\xFA', // Open cash drawer
@@ -1405,6 +1404,8 @@ const printerService = {
     const parts = [];
     
     parts.push(Buffer.from(cmd.INIT, 'binary'));
+    // Set tight line spacing immediately after init to reduce top gap
+    parts.push(Buffer.from('\x1B\x33\x00', 'binary')); // Zero line spacing before logo
 
     if (options.beep) {
       parts.push(Buffer.from(cmd.BEEP, 'binary'));
@@ -1414,11 +1415,13 @@ const printerService = {
     if (options.logo && Buffer.isBuffer(options.logo)) {
       parts.push(Buffer.from('\x1B\x61\x01', 'binary')); // Center align for logo
       parts.push(options.logo);
-      parts.push(Buffer.from('\x1B\x64\x01', 'binary')); // Feed only 1 line after logo
+      // No extra feed after logo — text follows immediately
     }
 
     // Add text content
     parts.push(Buffer.from(content, 'binary'));
+    // Reset to default line spacing before feed — tight spacing makes feed too short for cutter offset
+    parts.push(Buffer.from('\x1B\x32', 'binary'));
     parts.push(Buffer.from(cmd.FEED_LINES, 'binary'));
 
     if (options.cut !== false) {

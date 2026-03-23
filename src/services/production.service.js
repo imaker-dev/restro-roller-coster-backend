@@ -68,9 +68,36 @@ const productionService = {
       [...params, safeLimit, offset]
     );
 
+    // Summary stats — computed from ALL production recipes in this outlet
+    const oid = parseInt(outletId);
+    const [[prodSummary]] = await pool.query(
+      `SELECT
+        COUNT(*) as totalRecipes,
+        COALESCE(SUM(CASE WHEN pr.is_active = 1 THEN 1 ELSE 0 END), 0) as activeRecipes,
+        COALESCE(SUM(CASE WHEN pr.is_active = 0 THEN 1 ELSE 0 END), 0) as inactiveRecipes
+       FROM production_recipes pr
+       WHERE pr.outlet_id = ?`,
+      [oid]
+    );
+    const [[prodRuns]] = await pool.query(
+      `SELECT
+        COUNT(*) as totalProductionRuns,
+        COUNT(DISTINCT production_recipe_id) as recipesUsedInProduction
+       FROM productions
+       WHERE outlet_id = ? AND status = 'completed'`,
+      [oid]
+    );
+
     return {
       recipes: rows.map(r => this._formatRecipe(r)),
-      pagination: { page: safePage, limit: safeLimit, total, totalPages: Math.ceil(total / safeLimit) }
+      pagination: { page: safePage, limit: safeLimit, total, totalPages: Math.ceil(total / safeLimit) },
+      summary: {
+        totalRecipes: parseInt(prodSummary.totalRecipes) || 0,
+        activeRecipes: parseInt(prodSummary.activeRecipes) || 0,
+        inactiveRecipes: parseInt(prodSummary.inactiveRecipes) || 0,
+        totalProductionRuns: parseInt(prodRuns.totalProductionRuns) || 0,
+        recipesUsedInProduction: parseInt(prodRuns.recipesUsedInProduction) || 0
+      }
     };
   },
 

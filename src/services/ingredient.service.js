@@ -82,9 +82,43 @@ const ingredientService = {
       [...params, safeLimit, offset]
     );
 
+    // Summary stats — computed from ALL ingredients in this outlet
+    // Use LEFT JOIN + COUNT(DISTINCT) instead of correlated EXISTS subqueries for accuracy
+    const [[ingSummary]] = await pool.query(
+      `SELECT
+        COUNT(*) as totalIngredients,
+        COALESCE(SUM(CASE WHEN ing.is_active = 1 THEN 1 ELSE 0 END), 0) as activeIngredients,
+        COALESCE(SUM(CASE WHEN ing.is_active = 0 THEN 1 ELSE 0 END), 0) as inactiveIngredients,
+        COALESCE(SUM(CASE WHEN ing.inventory_item_id IS NOT NULL THEN 1 ELSE 0 END), 0) as mappedToInventory,
+        COALESCE(SUM(CASE WHEN ing.inventory_item_id IS NULL THEN 1 ELSE 0 END), 0) as unmappedToInventory
+       FROM ingredients ing
+       WHERE ing.outlet_id = ?`,
+      [outletId]
+    );
+    // Separate query for recipe linkage (avoids double-counting from JOINs)
+    const [[recipeLinkage]] = await pool.query(
+      `SELECT
+        COUNT(DISTINCT ri.ingredient_id) as linkedToRecipes
+       FROM recipe_ingredients ri
+       JOIN ingredients ing ON ri.ingredient_id = ing.id
+       WHERE ing.outlet_id = ?`,
+      [outletId]
+    );
+    const totalIng = parseInt(ingSummary.totalIngredients) || 0;
+    const linked = parseInt(recipeLinkage.linkedToRecipes) || 0;
+
     return {
       ingredients: rows.map(r => this.format(r)),
-      pagination: { page: safePage, limit: safeLimit, total, totalPages: Math.ceil(total / safeLimit) }
+      pagination: { page: safePage, limit: safeLimit, total, totalPages: Math.ceil(total / safeLimit) },
+      summary: {
+        totalIngredients: totalIng,
+        activeIngredients: parseInt(ingSummary.activeIngredients) || 0,
+        inactiveIngredients: parseInt(ingSummary.inactiveIngredients) || 0,
+        linkedToRecipes: linked,
+        notLinkedToRecipes: totalIng - linked,
+        mappedToInventory: parseInt(ingSummary.mappedToInventory) || 0,
+        unmappedToInventory: parseInt(ingSummary.unmappedToInventory) || 0
+      }
     };
   },
 

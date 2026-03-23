@@ -88,9 +88,43 @@ const purchaseService = {
       [...params, safeLimit, offset]
     );
 
+    // Summary stats — computed from ALL purchases in this outlet
+    // purchases.status ENUM: 'draft', 'confirmed', 'cancelled'
+    // purchases.payment_status ENUM: 'unpaid', 'partial', 'paid'
+    const [[purchaseSummary]] = await pool.query(
+      `SELECT
+        COUNT(*) as totalPurchases,
+        COALESCE(SUM(CASE WHEN p.status = 'draft' THEN 1 ELSE 0 END), 0) as draftCount,
+        COALESCE(SUM(CASE WHEN p.status = 'confirmed' THEN 1 ELSE 0 END), 0) as confirmedCount,
+        COALESCE(SUM(CASE WHEN p.status = 'cancelled' THEN 1 ELSE 0 END), 0) as cancelledCount,
+        COALESCE(SUM(CASE WHEN p.status != 'cancelled' THEN 1 ELSE 0 END), 0) as activeCount,
+        COALESCE(SUM(CASE WHEN p.status != 'cancelled' THEN p.total_amount ELSE 0 END), 0) as totalAmount,
+        COALESCE(SUM(CASE WHEN p.status != 'cancelled' THEN p.paid_amount ELSE 0 END), 0) as totalPaid,
+        COALESCE(SUM(CASE WHEN p.status != 'cancelled' THEN p.due_amount ELSE 0 END), 0) as totalDue,
+        COALESCE(SUM(CASE WHEN p.payment_status = 'paid' AND p.status != 'cancelled' THEN 1 ELSE 0 END), 0) as paidCount,
+        COALESCE(SUM(CASE WHEN p.payment_status = 'partial' AND p.status != 'cancelled' THEN 1 ELSE 0 END), 0) as partialCount,
+        COALESCE(SUM(CASE WHEN p.payment_status = 'unpaid' AND p.status != 'cancelled' THEN 1 ELSE 0 END), 0) as unpaidCount
+       FROM purchases p
+       WHERE p.outlet_id = ?`,
+      [outletId]
+    );
+
     return {
       purchases: rows.map(r => this.formatPurchase(r)),
-      pagination: { page: safePage, limit: safeLimit, total, totalPages: Math.ceil(total / safeLimit) }
+      pagination: { page: safePage, limit: safeLimit, total, totalPages: Math.ceil(total / safeLimit) },
+      summary: {
+        totalPurchases: parseInt(purchaseSummary.totalPurchases) || 0,
+        activeCount: parseInt(purchaseSummary.activeCount) || 0,
+        draftCount: parseInt(purchaseSummary.draftCount) || 0,
+        confirmedCount: parseInt(purchaseSummary.confirmedCount) || 0,
+        cancelledCount: parseInt(purchaseSummary.cancelledCount) || 0,
+        totalAmount: parseFloat(parseFloat(purchaseSummary.totalAmount).toFixed(2)) || 0,
+        totalPaid: parseFloat(parseFloat(purchaseSummary.totalPaid).toFixed(2)) || 0,
+        totalDue: parseFloat(parseFloat(purchaseSummary.totalDue).toFixed(2)) || 0,
+        paidCount: parseInt(purchaseSummary.paidCount) || 0,
+        partialCount: parseInt(purchaseSummary.partialCount) || 0,
+        unpaidCount: parseInt(purchaseSummary.unpaidCount) || 0
+      }
     };
   },
 

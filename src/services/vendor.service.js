@@ -72,6 +72,29 @@ const vendorService = {
       [...params, safeLimit, offset]
     );
 
+    // Summary stats — two separate queries for accuracy
+    // 1. Vendor counts
+    const [[vendorCounts]] = await pool.query(
+      `SELECT
+        COUNT(*) as totalVendors,
+        COALESCE(SUM(CASE WHEN v.is_active = 1 THEN 1 ELSE 0 END), 0) as activeVendors,
+        COALESCE(SUM(CASE WHEN v.is_active = 0 THEN 1 ELSE 0 END), 0) as inactiveVendors
+       FROM vendors v
+       WHERE v.outlet_id = ?`,
+      [outletId]
+    );
+    // 2. Purchase aggregates (from purchases table directly — avoids correlated subquery issues)
+    const [[purchaseAgg]] = await pool.query(
+      `SELECT
+        COUNT(DISTINCT p.vendor_id) as vendorsWithPurchases,
+        COUNT(*) as totalPurchaseOrders,
+        COALESCE(SUM(p.total_amount), 0) as totalPurchaseValue,
+        COALESCE(SUM(p.due_amount), 0) as totalOutstanding
+       FROM purchases p
+       WHERE p.outlet_id = ? AND p.status != 'cancelled'`,
+      [outletId]
+    );
+
     return {
       vendors: rows.map(r => this.format(r)),
       pagination: {
@@ -79,6 +102,15 @@ const vendorService = {
         limit: safeLimit,
         total,
         totalPages: Math.ceil(total / safeLimit)
+      },
+      summary: {
+        totalVendors: parseInt(vendorCounts.totalVendors) || 0,
+        activeVendors: parseInt(vendorCounts.activeVendors) || 0,
+        inactiveVendors: parseInt(vendorCounts.inactiveVendors) || 0,
+        vendorsWithPurchases: parseInt(purchaseAgg.vendorsWithPurchases) || 0,
+        totalPurchaseOrders: parseInt(purchaseAgg.totalPurchaseOrders) || 0,
+        totalPurchaseValue: parseFloat(parseFloat(purchaseAgg.totalPurchaseValue).toFixed(2)) || 0,
+        totalOutstanding: parseFloat(parseFloat(purchaseAgg.totalOutstanding).toFixed(2)) || 0
       }
     };
   },

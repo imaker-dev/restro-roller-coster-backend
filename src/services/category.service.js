@@ -76,44 +76,35 @@ const categoryService = {
   },
 
   async getByOutlet(outletId, filters = {}) {
-    // const includeInactive = filters.includeInactive || false;
     const pool = getPool();
     
-    // Base count query
-    let countQuery = `
-      SELECT COUNT(*) as total
-      FROM categories c
-      WHERE c.outlet_id = ? AND c.deleted_at IS NULL
-    `;
-    const countParams = [outletId];
-    
-    // Base data query
+    // Base data query — includes subquery counts for filtering & display
     let query = `
       SELECT c.*,
         pc.name as parent_name,
-        (SELECT COUNT(*) FROM items i WHERE i.category_id = c.id AND i.is_active = 1 AND i.deleted_at IS NULL) as item_count
+        (SELECT COUNT(*) FROM items i WHERE i.category_id = c.id AND i.is_active = 1 AND i.deleted_at IS NULL) as item_count,
+        (SELECT COUNT(*) FROM items i WHERE i.category_id = c.id AND i.is_active = 0 AND i.deleted_at IS NULL) as inactive_item_count,
+        (SELECT COUNT(*) FROM items i WHERE i.category_id = c.id AND i.deleted_at IS NULL AND i.has_variants = 1) as variant_item_count,
+        (SELECT COUNT(*) FROM items i WHERE i.category_id = c.id AND i.deleted_at IS NULL AND i.has_addons = 1) as addon_item_count,
+        (SELECT COUNT(*) FROM items i WHERE i.category_id = c.id AND i.deleted_at IS NULL
+           AND EXISTS (SELECT 1 FROM recipes r WHERE r.menu_item_id = i.id AND r.is_active = 1)) as recipe_item_count
       FROM categories c
       LEFT JOIN categories pc ON c.parent_id = pc.id
       WHERE c.outlet_id = ? AND c.deleted_at IS NULL
     `;
     const params = [outletId];
 
-    // Build WHERE conditions
+    // Build WHERE conditions (applied to both count and data queries)
     let whereConditions = '';
     
-    // if (!includeInactive) {
-    //   whereConditions += ' AND c.is_active = 1';
-    // }
     if (filters.search) {
       whereConditions += ' AND (c.name LIKE ? OR c.description LIKE ?)';
       const searchTerm = `%${filters.search}%`;
       params.push(searchTerm, searchTerm);
-      countParams.push(searchTerm, searchTerm);
     }
     if (filters.serviceType && ['restaurant', 'bar', 'both'].includes(filters.serviceType)) {
       whereConditions += ' AND (c.service_type = ? OR c.service_type = ?)';
       params.push(filters.serviceType, 'both');
-      countParams.push(filters.serviceType, 'both');
     }
     if (filters.parentId !== undefined) {
       if (filters.parentId === null || filters.parentId === 'null') {
@@ -121,30 +112,44 @@ const categoryService = {
       } else {
         whereConditions += ' AND c.parent_id = ?';
         params.push(parseInt(filters.parentId));
-        countParams.push(parseInt(filters.parentId));
       }
     }
 
     query += whereConditions;
-    countQuery += whereConditions;
-    
+
+    // HAVING-style filters (applied after subqueries resolve)
+    // We wrap the query in a subquery to filter on computed columns
+    let havingFilters = [];
+    if (filters.hasInactiveItems === true) havingFilters.push('inactive_item_count > 0');
+    else if (filters.hasInactiveItems === false) havingFilters.push('inactive_item_count = 0');
+
+    if (filters.hasRecipeItems === true) havingFilters.push('recipe_item_count > 0');
+    else if (filters.hasRecipeItems === false) havingFilters.push('recipe_item_count = 0');
+
+    if (filters.hasVariants === true) havingFilters.push('variant_item_count > 0');
+    else if (filters.hasVariants === false) havingFilters.push('variant_item_count = 0');
+
+    if (filters.hasAddons === true) havingFilters.push('addon_item_count > 0');
+    else if (filters.hasAddons === false) havingFilters.push('addon_item_count = 0');
+
     query += ' ORDER BY c.display_order, c.name';
 
-    // Pagination
+    // If HAVING-style filters exist, wrap query in subquery
+    if (havingFilters.length > 0) {
+      query = `SELECT * FROM (${query}) AS filtered WHERE ${havingFilters.join(' AND ')}`;
+    }
+
+    // Pagination — count from the filtered set
     const page = parseInt(filters.page) || 1;
     const limit = parseInt(filters.limit) || 50;
     const offset = (page - 1) * limit;
-    
-    // Get total count
-    const [countResult] = await pool.query(countQuery, countParams);
-    const total = countResult[0].total;
+
+    const countSql = `SELECT COUNT(*) as total FROM (${query}) AS cnt`;
+    const [[{ total }]] = await pool.query(countSql, params);
     
     query += ' LIMIT ? OFFSET ?';
-    params.push(limit, offset);
-
-    const [categories] = await pool.query(query, params);
+    const [categories] = await pool.query(query, [...params, limit, offset]);
     
-    // Return with pagination metadata
     return {
       categories,
       pagination: {

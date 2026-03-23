@@ -37,6 +37,10 @@ const menuController = {
       const { outletId } = req.params;
       const filters = {
         includeInactive: req.query.includeInactive === 'true',
+        hasInactiveItems: req.query.hasInactiveItems === 'true' ? true : (req.query.hasInactiveItems === 'false' ? false : undefined),
+        hasRecipeItems: req.query.hasRecipeItems === 'true' ? true : (req.query.hasRecipeItems === 'false' ? false : undefined),
+        hasVariants: req.query.hasVariants === 'true' ? true : (req.query.hasVariants === 'false' ? false : undefined),
+        hasAddons: req.query.hasAddons === 'true' ? true : (req.query.hasAddons === 'false' ? false : undefined),
         search: req.query.search,
         serviceType: req.query.serviceType,
         parentId: req.query.parentId,

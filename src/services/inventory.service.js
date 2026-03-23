@@ -211,6 +211,21 @@ const inventoryService = {
       }
     }
 
+    // Summary stats — computed from ALL items in this outlet (unfiltered)
+    const [[summary]] = await pool.query(
+      `SELECT
+        COUNT(*) as totalItems,
+        COALESCE(SUM(CASE WHEN ii.is_active = 1 THEN 1 ELSE 0 END), 0) as activeItems,
+        COALESCE(SUM(CASE WHEN ii.is_active = 0 THEN 1 ELSE 0 END), 0) as inactiveItems,
+        COALESCE(SUM(CASE WHEN ii.current_stock <= 0 THEN 1 ELSE 0 END), 0) as zeroStockItems,
+        COALESCE(SUM(CASE WHEN ii.minimum_stock > 0 AND ii.current_stock <= (ii.minimum_stock * COALESCE(pu_s.conversion_factor, 1)) THEN 1 ELSE 0 END), 0) as lowStockItems,
+        COALESCE(SUM(ii.current_stock * ii.average_price), 0) as totalStockValue
+       FROM inventory_items ii
+       LEFT JOIN units pu_s ON ii.purchase_unit_id = pu_s.id
+       WHERE ii.outlet_id = ?`,
+      [outletId]
+    );
+
     return {
       items: rows.map(r => ({
         ...this.formatItem(r),
@@ -221,6 +236,14 @@ const inventoryService = {
         limit: safeLimit,
         total,
         totalPages: Math.ceil(total / safeLimit)
+      },
+      summary: {
+        totalItems: parseInt(summary.totalItems) || 0,
+        activeItems: parseInt(summary.activeItems) || 0,
+        inactiveItems: parseInt(summary.inactiveItems) || 0,
+        zeroStockItems: parseInt(summary.zeroStockItems) || 0,
+        lowStockItems: parseInt(summary.lowStockItems) || 0,
+        totalStockValue: parseFloat(parseFloat(summary.totalStockValue).toFixed(2)) || 0
       }
     };
   },
@@ -659,9 +682,39 @@ const inventoryService = {
       [...params, safeLimit, offset]
     );
 
+    // Summary stats — computed from ALL movements in this outlet
+    // movement_type ENUM: purchase, sale, production, wastage, adjustment,
+    //                      production_in, production_out, production_reversal, sale_reversal
+    const [[movSummary]] = await pool.query(
+      `SELECT
+        COUNT(*) as totalMovements,
+        COALESCE(SUM(CASE WHEN im.movement_type = 'purchase' THEN 1 ELSE 0 END), 0) as purchaseCount,
+        COALESCE(SUM(CASE WHEN im.movement_type = 'sale' THEN 1 ELSE 0 END), 0) as saleCount,
+        COALESCE(SUM(CASE WHEN im.movement_type = 'sale_reversal' THEN 1 ELSE 0 END), 0) as saleReversalCount,
+        COALESCE(SUM(CASE WHEN im.movement_type = 'adjustment' THEN 1 ELSE 0 END), 0) as adjustmentCount,
+        COALESCE(SUM(CASE WHEN im.movement_type = 'wastage' THEN 1 ELSE 0 END), 0) as wastageCount,
+        COALESCE(SUM(CASE WHEN im.movement_type IN ('production', 'production_in', 'production_out', 'production_reversal') THEN 1 ELSE 0 END), 0) as productionCount,
+        COALESCE(SUM(CASE WHEN im.quantity > 0 THEN im.quantity ELSE 0 END), 0) as totalInward,
+        COALESCE(SUM(CASE WHEN im.quantity < 0 THEN ABS(im.quantity) ELSE 0 END), 0) as totalOutward
+       FROM inventory_movements im
+       WHERE im.outlet_id = ?`,
+      [outletId]
+    );
+
     return {
       movements: rows.map(r => this.formatMovement(r)),
-      pagination: { page: safePage, limit: safeLimit, total, totalPages: Math.ceil(total / safeLimit) }
+      pagination: { page: safePage, limit: safeLimit, total, totalPages: Math.ceil(total / safeLimit) },
+      summary: {
+        totalMovements: parseInt(movSummary.totalMovements) || 0,
+        purchaseCount: parseInt(movSummary.purchaseCount) || 0,
+        saleCount: parseInt(movSummary.saleCount) || 0,
+        saleReversalCount: parseInt(movSummary.saleReversalCount) || 0,
+        adjustmentCount: parseInt(movSummary.adjustmentCount) || 0,
+        wastageCount: parseInt(movSummary.wastageCount) || 0,
+        productionCount: parseInt(movSummary.productionCount) || 0,
+        totalInward: parseFloat(parseFloat(movSummary.totalInward).toFixed(4)) || 0,
+        totalOutward: parseFloat(parseFloat(movSummary.totalOutward).toFixed(4)) || 0
+      }
     };
   },
 
