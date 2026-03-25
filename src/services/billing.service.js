@@ -210,114 +210,138 @@ const billingService = {
   // ========================
 
   /**
-   * Get bill printer for an outlet based on cashier user or floor
-   * Priority: 0) Specific cashier user's assigned bill station printer
-   *           1) Floor-specific cashier's bill station printer
-   *           2) Outlet-level bill printer (station = 'bill')
-   *           3) Any active network printer for the outlet
-   * 
-   * @param {number} outletId - Outlet ID
-   * @param {number} floorId - Optional floor ID for floor-based routing
-   * @param {number} cashierUserId - Optional specific cashier user ID
+   * Get bill printer for an outlet — simple step-by-step resolution with full logging.
+   * Flow: requester → floor → floor cashier (day_sessions) → cashier's stations → bill station → printer
    */
   async getBillPrinter(outletId, floorId = null, cashierUserId = null) {
     const pool = getPool();
 
-    // Priority 0: Find printer assigned to the specific cashier user (via user_stations -> kitchen_stations)
+    logger.info(`[BILL-PRINTER] === START === outletId=${outletId}, floorId=${floorId}, requestUserId=${cashierUserId}`);
+
+    // Helper: check if a station is bill-related
+    const isBillStation = (s) => {
+      const type = (s.station_type || '').toLowerCase();
+      const name = (s.station_name || s.name || '').toLowerCase();
+      return type === 'bill' || type.includes('bill') || name.includes('bill');
+    };
+
+    // Bidirectional printer lookup: ks.printer_id → p.id OR p.station_id → ks.id
+    // (kitchen_stations.printer_id may be NULL even when printers.station_id is set)
+    const printerJoin = `LEFT JOIN printers p ON (
+      (ks.printer_id IS NOT NULL AND p.id = ks.printer_id AND p.is_active = 1)
+      OR (ks.printer_id IS NULL AND p.station_id = ks.id AND p.is_active = 1 AND p.outlet_id = ks.outlet_id)
+    )`;
+
+    // ── Step 1: If cashierUserId given, get ALL their stations and find bill station ──
     if (cashierUserId) {
-      const [userPrinters] = await pool.query(
-        `SELECT DISTINCT p.*
+      const [stations] = await pool.query(
+        `SELECT us.station_id, us.is_primary,
+                ks.name AS station_name, ks.station_type, ks.printer_id AS ks_printer_id,
+                p.id AS p_id, p.name AS printer_name, p.ip_address, p.port, p.station AS printer_station,
+                p.station_id AS p_station_id
          FROM user_stations us
-         JOIN kitchen_stations ks ON us.station_id = ks.id AND ks.is_active = 1 AND ks.station_type = 'bill'
-         JOIN printers p ON ks.printer_id = p.id AND p.is_active = 1
+         JOIN kitchen_stations ks ON us.station_id = ks.id AND ks.is_active = 1
+         ${printerJoin}
          WHERE us.user_id = ? AND us.outlet_id = ? AND us.is_active = 1
-         ORDER BY us.is_primary DESC
-         LIMIT 1`,
+         ORDER BY us.is_primary DESC`,
         [cashierUserId, outletId]
       );
-      if (userPrinters[0]) {
-        logger.info(`Bill printer found via cashier user ${cashierUserId}: ${userPrinters[0].name}`);
-        return userPrinters[0];
+      logger.info(`[BILL-PRINTER] Step1: user ${cashierUserId} stations (${stations.length}): ${JSON.stringify(stations.map(s => ({ name: s.station_name, type: s.station_type, ks_printerId: s.ks_printer_id, p_station_id: s.p_station_id, printerName: s.printer_name, ip: s.ip_address })))}`);
+
+      const bill = stations.find(isBillStation);
+      if (bill && bill.p_id) {
+        logger.info(`[BILL-PRINTER] Step1: ✅ FOUND → station "${bill.station_name}" → printer "${bill.printer_name}" id=${bill.p_id} ip=${bill.ip_address}:${bill.port}`);
+        const [printer] = await pool.query('SELECT * FROM printers WHERE id = ?', [bill.p_id]);
+        if (printer[0]) return printer[0];
+      } else if (bill) {
+        logger.warn(`[BILL-PRINTER] Step1: Bill station "${bill.station_name}" (ks.id=${bill.station_id}) found but NO printer linked (ks.printer_id=${bill.ks_printer_id}, no printers.kitchen_station_id match)`);
+      } else {
+        logger.warn(`[BILL-PRINTER] Step1: User ${cashierUserId} has NO bill station among their ${stations.length} stations`);
       }
     }
 
-    // Priority 1: Find printer from cashier's bill station for this floor
+    // ── Step 2: Find floor's cashier from day_sessions, then THEIR stations ──
     if (floorId) {
-      const [floorPrinters] = await pool.query(
-        `SELECT DISTINCT p.*
-         FROM user_floors uf
-         JOIN user_roles ur ON uf.user_id = ur.user_id AND ur.outlet_id = uf.outlet_id AND ur.is_active = 1
-         JOIN roles r ON ur.role_id = r.id AND r.slug = 'cashier'
-         JOIN user_stations us ON uf.user_id = us.user_id AND us.outlet_id = uf.outlet_id AND us.is_active = 1
-         JOIN kitchen_stations ks ON us.station_id = ks.id AND ks.is_active = 1 AND ks.station_type = 'bill'
-         JOIN printers p ON ks.printer_id = p.id AND p.is_active = 1
-         WHERE uf.floor_id = ? AND uf.outlet_id = ? AND uf.is_active = 1
-         ORDER BY us.is_primary DESC, uf.is_primary DESC
-         LIMIT 1`,
-        [floorId, outletId]
+      const [sessions] = await pool.query(
+        `SELECT ds.id, ds.cashier_id, u.name AS cashier_name
+         FROM day_sessions ds
+         LEFT JOIN users u ON ds.cashier_id = u.id
+         WHERE ds.outlet_id = ? AND ds.floor_id = ? AND ds.status = 'open'
+         ORDER BY ds.id DESC LIMIT 1`,
+        [outletId, floorId]
       );
-      if (floorPrinters[0]) {
-        logger.info(`Bill printer found via floor ${floorId} cashier station: ${floorPrinters[0].name}`);
-        return floorPrinters[0];
-      }
+      logger.info(`[BILL-PRINTER] Step2a: day_sessions for floor ${floorId}: ${sessions[0] ? `cashier="${sessions[0].cashier_name}" id=${sessions[0].cashier_id}` : 'NONE'}`);
 
-      // Priority 1b: Find bill printer assigned to any cashier on this floor (simpler join)
-      const [cashierPrinters] = await pool.query(
-        `SELECT DISTINCT p.*
-         FROM user_floors uf
-         JOIN user_roles ur ON uf.user_id = ur.user_id AND ur.outlet_id = uf.outlet_id AND ur.is_active = 1
-         JOIN roles r ON ur.role_id = r.id AND r.slug = 'cashier'
-         JOIN printers p ON p.outlet_id = uf.outlet_id AND p.station = 'bill' AND p.is_active = 1
-         WHERE uf.floor_id = ? AND uf.outlet_id = ? AND uf.is_active = 1
-         LIMIT 1`,
-        [floorId, outletId]
-      );
-      if (cashierPrinters[0]) {
-        logger.info(`Bill printer found via floor ${floorId} cashier (outlet-level): ${cashierPrinters[0].name}`);
-        return cashierPrinters[0];
+      if (sessions[0] && sessions[0].cashier_id && sessions[0].cashier_id !== cashierUserId) {
+        const floorCashierId = sessions[0].cashier_id;
+        const [stations] = await pool.query(
+          `SELECT us.station_id, us.is_primary,
+                  ks.name AS station_name, ks.station_type, ks.printer_id AS ks_printer_id,
+                  p.id AS p_id, p.name AS printer_name, p.ip_address, p.port,
+                  p.station_id AS p_station_id
+           FROM user_stations us
+           JOIN kitchen_stations ks ON us.station_id = ks.id AND ks.is_active = 1
+           ${printerJoin}
+           WHERE us.user_id = ? AND us.outlet_id = ? AND us.is_active = 1
+           ORDER BY us.is_primary DESC`,
+          [floorCashierId, outletId]
+        );
+        logger.info(`[BILL-PRINTER] Step2b: floor cashier ${floorCashierId} stations (${stations.length}): ${JSON.stringify(stations.map(s => ({ name: s.station_name, type: s.station_type, ks_printerId: s.ks_printer_id, p_station_id: s.p_station_id, printerName: s.printer_name, ip: s.ip_address })))}`);
+
+        const bill = stations.find(isBillStation);
+        if (bill && bill.p_id) {
+          logger.info(`[BILL-PRINTER] Step2b: ✅ FOUND → floor ${floorId} cashier ${floorCashierId} → station "${bill.station_name}" → printer "${bill.printer_name}" id=${bill.p_id} ip=${bill.ip_address}:${bill.port}`);
+          const [printer] = await pool.query('SELECT * FROM printers WHERE id = ?', [bill.p_id]);
+          if (printer[0]) return printer[0];
+        } else {
+          logger.warn(`[BILL-PRINTER] Step2b: Floor cashier ${floorCashierId} has NO bill station with printer`);
+        }
       }
     }
 
-    // Priority 2: Dedicated outlet-level bill printer
+    // ── Step 3: Find ALL bill-type kitchen stations in outlet with bidirectional printer lookup ──
+    const [allBillStations] = await pool.query(
+      `SELECT ks.id, ks.name, ks.station_type, ks.printer_id AS ks_printer_id,
+              p.id AS p_id, p.name AS printer_name, p.ip_address, p.port,
+              p.station_id AS p_station_id
+       FROM kitchen_stations ks
+       ${printerJoin}
+       WHERE ks.outlet_id = ? AND ks.is_active = 1`,
+      [outletId]
+    );
+    const billOnly = allBillStations.filter(s => isBillStation(s));
+    logger.info(`[BILL-PRINTER] Step3: ALL kitchen_stations: ${allBillStations.length} total, ${billOnly.length} bill-related: ${JSON.stringify(billOnly.map(s => ({ id: s.id, name: s.name, type: s.station_type, ks_printerId: s.ks_printer_id, p_station_id: s.p_station_id, printerId: s.p_id, printerName: s.printer_name, ip: s.ip_address })))}`);
+
+    if (billOnly.length > 0 && billOnly[0].p_id) {
+      logger.info(`[BILL-PRINTER] Step3: Using first bill station → "${billOnly[0].name}" → printer "${billOnly[0].printer_name}" id=${billOnly[0].p_id}`);
+      const [printer] = await pool.query('SELECT * FROM printers WHERE id = ?', [billOnly[0].p_id]);
+      if (printer[0]) return printer[0];
+    }
+
+    // ── Step 4: Any printer with 'bill' in its station code ──
     let [printers] = await pool.query(
-      `SELECT * FROM printers 
-       WHERE outlet_id = ? AND station = 'bill' AND is_active = 1
+      `SELECT * FROM printers
+       WHERE outlet_id = ? AND is_active = 1 AND (station = 'bill' OR station LIKE '%bill%')
        ORDER BY id LIMIT 1`,
       [outletId]
     );
     if (printers[0]) {
-      logger.info(`Bill printer found via outlet-level bill station: ${printers[0].name}`);
+      logger.info(`[BILL-PRINTER] Step4: printer with bill station: "${printers[0].name}" id=${printers[0].id} station=${printers[0].station}`);
       return printers[0];
     }
 
-    // Priority 3: Bill printer type
+    // ── Step 5: Last resort — any active network printer ──
     [printers] = await pool.query(
-      `SELECT * FROM printers 
-       WHERE outlet_id = ? AND printer_type = 'bill' AND is_active = 1
-       ORDER BY id LIMIT 1`,
+      `SELECT * FROM printers WHERE outlet_id = ? AND is_active = 1 AND ip_address IS NOT NULL ORDER BY id LIMIT 1`,
       [outletId]
     );
-    if (printers[0]) {
-      logger.info(`Bill printer found via printer_type=bill: ${printers[0].name}`);
-      return printers[0];
-    }
-
-    // Priority 4: Any active network printer for this outlet
-    [printers] = await pool.query(
-      `SELECT * FROM printers 
-       WHERE outlet_id = ? AND is_active = 1 AND ip_address IS NOT NULL
-       ORDER BY id LIMIT 1`,
-      [outletId]
-    );
-    if (printers[0]) {
-      logger.info(`Bill printer fallback to any network printer: ${printers[0].name}`);
-    }
+    logger.warn(`[BILL-PRINTER] Step5: LAST RESORT → ${printers[0] ? `"${printers[0].name}" id=${printers[0].id}` : 'NONE'}`);
     return printers[0] || null;
   },
 
   /**
    * Print bill to thermal printer — shared by generateBill + existing invoice reprint
-   * Tries direct TCP first, falls back to print job queue
+   * Creates a print job in the queue for the bridge agent to pick up
    */
   async printBillToThermal(invoice, order, userId) {
     const pool = getPool();
@@ -407,23 +431,14 @@ const billingService = {
     // Get floor ID and user ID for printer routing
     const floorId = invoice.floorId || order.floor_id || null;
     const cashierUserId = userId || invoice.generatedBy || order.created_by || null;
-    const printer = await this.getBillPrinter(billPrintData.outletId, floorId, cashierUserId);
+    logger.info(`[BILL-PRINT] printBillToThermal: invoice=${invoice.invoiceNumber}, floorId=${floorId}, userId=${userId}, cashierUserId=${cashierUserId}`);
     
-    if (printer && printer.ip_address) {
-      // Try direct print first (works when printer is on same network)
-      try {
-        await printerService.printBillDirect(billPrintData, printer.ip_address, printer.port || 9100);
-        logger.info(`Bill ${invoice.invoiceNumber} printed directly to ${printer.ip_address}:${printer.port || 9100}`);
-        return; // Direct print succeeded, no need for queue
-      } catch (directErr) {
-        // Direct print failed - fall back to queue (bridge will handle it)
-        logger.warn(`Direct bill print failed for ${invoice.invoiceNumber}: ${directErr.message} - falling back to queue`);
-        // Fall through to queue
-      }
-    }
-    // Fallback: create print job for bridge polling
-    await printerService.printBill(billPrintData, userId);
-    logger.info(`Bill ${invoice.invoiceNumber} queued for bridge printing`);
+    const printer = await this.getBillPrinter(billPrintData.outletId, floorId, cashierUserId);
+    logger.info(`[BILL-PRINT] Resolved printer: ${printer ? `"${printer.name}" id=${printer.id} ip=${printer.ip_address}:${printer.port} station=${printer.station}` : 'NULL (will use fallback)'}`);
+    
+    // All printing goes through the bridge queue — no direct TCP printing
+    await printerService.printBill(billPrintData, userId, printer || null);
+    logger.info(`[BILL-PRINT] Job created for ${invoice.invoiceNumber} → printer_id=${printer?.id || 'auto'}`);
   },
 
   /**
@@ -514,6 +529,21 @@ const billingService = {
         }
       }
       if (!order) throw new Error('Order not found');
+
+      // Resolve floor cashier early — needed for bill printer routing in ALL paths
+      // (including existing invoice reprint and new bill generation)
+      let floorCashierId = null;
+      if (order.floor_id) {
+        const [floorShift] = await pool.query(
+          `SELECT ds.cashier_id FROM day_sessions ds
+           WHERE ds.outlet_id = ? AND ds.floor_id = ? AND ds.status = 'open'
+           ORDER BY ds.id DESC LIMIT 1`,
+          [order.outlet_id, order.floor_id]
+        );
+        if (floorShift[0]?.cashier_id) {
+          floorCashierId = floorShift[0].cashier_id;
+        }
+      }
 
       await connection.beginTransaction();
 
@@ -631,7 +661,8 @@ const billingService = {
 
         const existingInv = await this.getInvoiceById(ei.id);
         // Non-blocking print for existing invoice
-        this.printBillToThermal(existingInv, order, data.generatedBy).catch(printErr => {
+        // Use floorCashierId for correct printer routing (generatedBy may be captain)
+        this.printBillToThermal(existingInv, order, floorCashierId || data.generatedBy).catch(printErr => {
           logger.error(`Reprint existing invoice ${existingInv?.invoiceNumber} failed:`, printErr.message);
         });
         return existingInv;
@@ -768,21 +799,6 @@ const billingService = {
       // Fire all events in parallel, don't block response
       Promise.all(emitPromises).catch(err => logger.error('Bill event emit error:', err.message));
 
-      // Get floor cashier for routing bill request to correct cashier
-      // No session_date filter - shifts can remain open across days (manual close only)
-      let floorCashierId = null;
-      if (order.floor_id) {
-        const [floorShift] = await pool.query(
-          `SELECT ds.cashier_id FROM day_sessions ds
-           WHERE ds.outlet_id = ? AND ds.floor_id = ? AND ds.status = 'open'
-           ORDER BY ds.id DESC LIMIT 1`,
-          [order.outlet_id, order.floor_id]
-        );
-        if (floorShift[0]?.cashier_id) {
-          floorCashierId = floorShift[0].cashier_id;
-        }
-      }
-
       // Emit bill status event for Captain real-time tracking (non-blocking)
       // Include floorId, orderType, and cashierId for proper routing (including takeaway)
       publishMessage('bill:status', {
@@ -804,7 +820,8 @@ const billingService = {
       }).catch(err => logger.error('Bill status emit error:', err.message));
 
       // Print bill to thermal printer (non-blocking - don't wait for print)
-      this.printBillToThermal(invoice, order, generatedBy).catch(printError => {
+      // Use floorCashierId for correct printer routing (generatedBy may be captain, not cashier)
+      this.printBillToThermal(invoice, order, floorCashierId || generatedBy).catch(printError => {
         logger.error(`Bill print failed for ${invoiceNumber}:`, printError.message);
       });
 

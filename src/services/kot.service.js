@@ -320,26 +320,12 @@ const kotService = {
           captainName: order.created_by_name || 'Staff'
         };
 
-        // Try direct printing first (to configured printer)
+        // All printing goes through the bridge queue — no direct TCP printing
         try {
-          // Pass stationId and isCounter for accurate printer lookup
-          const printer = await this.getPrinterForStation(order.outlet_id, ticket.station, ticket.stationId, ticket.isCounter);
-          if (printer && printer.ip_address) {
-            await printerService.printKotDirect(kotPrintData, printer.ip_address, printer.port || 9100);
-            logger.info(`KOT ${ticket.kotNumber} printed directly to ${printer.ip_address}:${printer.port || 9100} (station: ${ticket.stationName}, isCounter: ${ticket.isCounter})`);
-          } else {
-            // Fallback: create print job for bridge polling
-            logger.warn(`No printer with IP found for station ${ticket.station} (id: ${ticket.stationId}, isCounter: ${ticket.isCounter}), creating print job`);
-            await printerService.printKot(kotPrintData, createdBy);
-          }
+          await printerService.printKot(kotPrintData, createdBy);
+          logger.info(`KOT ${ticket.kotNumber} queued for bridge printing (station: ${ticket.stationName}, stationId: ${ticket.stationId}, isCounter: ${ticket.isCounter})`);
         } catch (printError) {
-          // Direct print failed - fall back to queue (bridge will handle it)
-          logger.warn(`Direct KOT print failed for ${ticket.kotNumber}: ${printError.message} - falling back to queue`);
-          try {
-            await printerService.printKot(kotPrintData, createdBy);
-          } catch (fallbackError) {
-            logger.error(`Fallback print job also failed for KOT ${ticket.kotNumber}:`, fallbackError);
-          }
+          logger.error(`Failed to queue KOT ${ticket.kotNumber}:`, printError.message);
         }
       }
 

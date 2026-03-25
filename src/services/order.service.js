@@ -1789,12 +1789,8 @@ const orderService = {
           }]
         };
 
-        const printer = await kotService.getPrinterForStation(item.outlet_id, cancelSlipData.station);
-        if (printer && printer.ip_address) {
-          await printerService.printCancelSlipDirect(cancelSlipData, printer.ip_address, printer.port || 9100);
-        } else {
-          await printerService.printCancelSlip(cancelSlipData, userId);
-        }
+        // All printing goes through the bridge queue — no direct TCP printing
+        await printerService.printCancelSlip(cancelSlipData, userId);
       } catch (printError) {
         logger.error('Failed to print cancel slip:', printError.message);
       }
@@ -2037,14 +2033,9 @@ const orderService = {
               items: kotItems
             };
 
-            const printer = await kotService.getPrinterForStation(order.outlet_id, cancelSlipData.station);
-            if (printer && printer.ip_address) {
-              await printerService.printCancelSlipDirect(cancelSlipData, printer.ip_address, printer.port || 9100);
-              logger.info(`Cancel slip for KOT ${kot.kot_number} printed to ${printer.ip_address}`);
-            } else {
-              await printerService.printCancelSlip(cancelSlipData, userId);
-              logger.info(`Cancel slip print job created for KOT ${kot.kot_number}`);
-            }
+            // All printing goes through the bridge queue — no direct TCP printing
+            await printerService.printCancelSlip(cancelSlipData, userId);
+            logger.info(`Cancel slip print job created for KOT ${kot.kot_number}`);
           } catch (printError) {
             logger.error(`Failed to print cancel slip for KOT ${kot.kot_number}:`, printError.message);
           }

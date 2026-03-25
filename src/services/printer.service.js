@@ -1461,7 +1461,7 @@ const printerService = {
     });
   },
 
-  async printBill(billData, userId) {
+  async printBill(billData, userId, resolvedPrinter = null) {
     const content = this.formatBillContent(billData);
     
     // Load logo if outlet has logo_url
@@ -1475,10 +1475,16 @@ const printerService = {
       }
     }
 
+    // Use resolved printer's ID and station if available (from getBillPrinter routing).
+    const printerId = resolvedPrinter?.id || null;
+    const station = resolvedPrinter?.station || 'bill';
+    logger.info(`[BILL-PRINT] printBill: resolvedPrinter=${resolvedPrinter ? `id=${resolvedPrinter.id} name=${resolvedPrinter.name} ip=${resolvedPrinter.ip_address}` : 'NULL'}, using printerId=${printerId}, station=${station}`);
+
     return this.createPrintJob({
       outletId: billData.outletId,
       jobType: billData.isDuplicate ? 'duplicate_bill' : 'bill',
-      station: 'bill',
+      station,
+      printerId,
       orderId: billData.orderId,
       invoiceId: billData.invoiceId,
       content: this.wrapWithEscPos(content, { openDrawer: billData.openDrawer, logo }),
@@ -1675,7 +1681,7 @@ const printerService = {
                         ks.name as station_name, ks.code as station_code, ks.station_type
                  FROM printers p
                  LEFT JOIN kitchen_stations ks ON p.station_id = ks.id
-                 WHERE p.outlet_id = ? AND p.is_active = 1`;
+                 WHERE p.outlet_id = ?`;
     const params = [outletId];
 
     if (Array.isArray(stationFilter) && stationFilter.length > 0) {
