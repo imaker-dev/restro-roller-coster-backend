@@ -1170,7 +1170,7 @@ const printerService = {
     const dash = '-'.repeat(w);
     const cmd = this.getEscPosCommands();
     const FONT_B = '\x1B\x4D\x01'; // Condensed font (9x17, 64 chars/line on 80mm)
-    const LS_TIGHT = '\x1B\x33\x12'; // 18-dot line spacing — tight for entire bill
+    const LS_BODY = '\x1B\x33\x1C'; // 28-dot line spacing — readable on all printers (Font B = 17 dots + 11 gap)
 
     // ── 1. HEADER ───────────────────────────────
     if (billData.isDuplicate) {
@@ -1181,8 +1181,8 @@ const printerService = {
 
     // Restaurant name (double height, bold, centered)
     lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HEIGHT + (billData.outletName || 'Restaurant'));
-    // Switch to FONT_B + tight line spacing — stays for entire bill body
-    lines.push(cmd.NORMAL + cmd.BOLD_OFF + FONT_B + LS_TIGHT);
+    // Switch to FONT_B + body line spacing — stays for entire bill body
+    lines.push(cmd.NORMAL + cmd.BOLD_OFF + FONT_B + LS_BODY);
     if (billData.outletAddress) lines.push(billData.outletAddress);
     if (billData.outletPhone) lines.push('Ph: ' + billData.outletPhone);
     if (billData.outletGstin) lines.push('GSTIN: ' + billData.outletGstin);
@@ -1310,8 +1310,8 @@ const printerService = {
     // ── 6. GRAND TOTAL (center, bold, double height)
     lines.push(dash);
     lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HEIGHT + 'GRAND TOTAL Rs.' + billData.grandTotal);
-    // Restore FONT_B + tight spacing after DOUBLE_HEIGHT resets print mode
-    lines.push(cmd.NORMAL + cmd.BOLD_OFF + FONT_B + LS_TIGHT + cmd.ALIGN_LEFT + dash);
+    // Restore FONT_B + body spacing after DOUBLE_HEIGHT resets print mode
+    lines.push(cmd.NORMAL + cmd.BOLD_OFF + FONT_B + LS_BODY + cmd.ALIGN_LEFT + dash);
 
     // ── 7. PAYMENT (full width) ─────────────────
     if (billData.dueAmount && parseFloat(billData.dueAmount) > 0) {
