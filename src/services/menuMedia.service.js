@@ -7,14 +7,14 @@ const menuMediaService = {
     const [[row]] = await pool.query('SELECT * FROM menu_media WHERE id = ?', [id]);
     return row || null;
   },
-  async create(outletId, { fileType, title = null, path, displayOrder = 0, isActive = 1 }) {
+  async create(outletId, { fileType, title = null, path, displayOrder = 0, isActive = 1, menuType = 'restaurant' }) {
     const pool = getPool();
     try {
       // Store only relative path, no url column needed
       const [res] = await pool.query(
-        `INSERT INTO menu_media (outlet_id, file_type, title, path, display_order, is_active)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [outletId, fileType, title, path, displayOrder, isActive ? 1 : 0]
+        `INSERT INTO menu_media (outlet_id, menu_type, file_type, title, path, display_order, is_active)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [outletId, menuType, fileType, title, path, displayOrder, isActive ? 1 : 0]
       );
       const id = res.insertId;
       const [[row]] = await pool.query('SELECT * FROM menu_media WHERE id = ?', [id]);
@@ -25,11 +25,15 @@ const menuMediaService = {
     }
   },
 
-  async list(outletId, { type = 'all', isActive = 1 } = {}) {
+  async list(outletId, { type = 'all', isActive = null, menuType = null } = {}) {
     const pool = getPool();
     let where = 'WHERE outlet_id = ?';
     const params = [outletId];
 
+    if (menuType) {
+      where += ' AND menu_type = ?';
+      params.push(menuType);
+    }
     if (type && ['image', 'pdf'].includes(String(type))) {
       where += ' AND file_type = ?';
       params.push(type);
@@ -40,12 +44,36 @@ const menuMediaService = {
     }
 
     const [rows] = await pool.query(
-      `SELECT id, outlet_id, file_type, title, path, display_order, is_active, created_at
+      `SELECT id, outlet_id, menu_type, file_type, title, path, display_order, is_active, created_at
        FROM menu_media ${where}
        ORDER BY display_order ASC, created_at DESC`,
       params
     );
     return rows;
+  },
+
+  /**
+   * Check if any media exists for outlet+menuType (used to determine if QR needs creation)
+   */
+  async hasMediaForType(outletId, menuType) {
+    const pool = getPool();
+    const [[row]] = await pool.query(
+      'SELECT COUNT(*) as cnt FROM menu_media WHERE outlet_id = ? AND menu_type = ?',
+      [outletId, menuType]
+    );
+    return row.cnt > 0;
+  },
+
+  /**
+   * Get distinct menu types for an outlet
+   */
+  async getMenuTypes(outletId) {
+    const pool = getPool();
+    const [rows] = await pool.query(
+      'SELECT DISTINCT menu_type FROM menu_media WHERE outlet_id = ? ORDER BY menu_type',
+      [outletId]
+    );
+    return rows.map(r => r.menu_type);
   },
 
   async setActive(id, isActive) {

@@ -1,13 +1,25 @@
 const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 const uploadUtil = require('../utils/upload');
 const menuMediaService = require('../services/menuMedia.service');
+const menuQrService = require('../services/menuQr.service');
 const outletService = require('../services/outlet.service');
 const logger = require('../utils/logger');
+
+// Normalize stored paths — old QR records may lack the 'uploads/' prefix
+const ensureUploadsPrefix = (p) => {
+  if (!p) return p;
+  const n = p.replace(/\\/g, '/');
+  return n.startsWith('uploads/') ? n : `uploads/${n}`;
+};
 
 const menuMediaController = {
   /**
    * POST /api/v1/menu-media/:outletId/upload
-   * form-data: file (image or pdf), optional: title, displayOrder
+   * form-data: file (image or pdf), optional: title, displayOrder, menuType
+   * menuType: 'restaurant' | 'bar' | custom string (default: 'restaurant')
+   * Auto-generates QR code on first upload for each menuType
    */
   async uploadMenuMedia(req, res) {
     const outletId = parseInt(req.params.outletId);
@@ -29,7 +41,7 @@ const menuMediaController = {
           return res.status(400).json({ success: false, message: 'No file provided. Send in "file" field (multipart/form-data).'});
         }
 
-        const { title = null, displayOrder = 0 } = req.body || {};
+        const { title = null, displayOrder = 0, menuType = 'restaurant' } = req.body || {};
         const fileInfo = uploadUtil.formatFileResponse(req, req.file);
         const isPdf = (fileInfo.extension || '').toLowerCase() === '.pdf' || req.file.mimetype === 'application/pdf';
         const fileType = isPdf ? 'pdf' : 'image';
@@ -40,12 +52,25 @@ const menuMediaController = {
           title,
           path: fileInfo.path,
           displayOrder: parseInt(displayOrder) || 0,
-          isActive: 1
+          isActive: 1,
+          menuType: menuType || 'restaurant'
         });
+
+        // Auto-generate QR code for this menuType (creates only if not exists)
+        const qrRecord = await menuQrService.getOrCreateQr(outletId, menuType || 'restaurant');
 
         // Prefix APP_URL only in response
         const urlApp = uploadUtil.buildAbsoluteUrlFromApp(fileInfo.path);
-        res.json({ success: true, message: 'Menu media uploaded', data: { record: { ...record, url: urlApp }, file: { ...fileInfo, url: urlApp } } });
+          const qrUrl = uploadUtil.buildAbsoluteUrlFromApp(ensureUploadsPrefix(qrRecord.qr_path));
+        res.json({ 
+          success: true, 
+          message: 'Menu media uploaded', 
+          data: { 
+            record: { ...record, url: urlApp }, 
+            file: { ...fileInfo, url: urlApp },
+            qr: { ...qrRecord, qrUrl }
+          } 
+        });
       } catch (error) {
         logger.error('uploadMenuMedia error:', error);
         res.status(500).json({ success: false, message: error.message });
@@ -55,7 +80,8 @@ const menuMediaController = {
 
   /**
    * POST /api/v1/menu-media/:outletId/upload/multiple
-   * form-data: files[] (image/pdf), optional: titles (JSON array), displayOrders (JSON array)
+   * form-data: files[] (image/pdf), optional: titles (JSON array), displayOrders (JSON array), menuType
+   * menuType: 'restaurant' | 'bar' | custom string (default: 'restaurant')
    */
   async uploadMultipleMenuMedia(req, res) {
     const outletId = parseInt(req.params.outletId);
@@ -81,6 +107,7 @@ const menuMediaController = {
           return res.status(400).json({ success: false, message: 'No files provided. Send in "files" field (multipart/form-data).'});
         }
 
+        const menuType = req.body.menuType || 'restaurant';
         let titles = [];
         if (req.body && req.body.titles) {
           try { titles = JSON.parse(req.body.titles); } catch (_) { titles = []; }
@@ -106,13 +133,18 @@ const menuMediaController = {
             title,
             path: info.path,
             displayOrder,
-            isActive: 1
+            isActive: 1,
+            menuType
           });
           // Prefix APP_URL only in response
           created.push({ record: { ...rec, url: urlApp }, file: { ...info, url: urlApp } });
         }
 
-        res.json({ success: true, message: `${created.length} file(s) uploaded`, data: created });
+        // Auto-generate QR code for this menuType (creates only if not exists)
+        const qrRecord = await menuQrService.getOrCreateQr(outletId, menuType);
+        const qrUrl = uploadUtil.buildAbsoluteUrlFromApp(ensureUploadsPrefix(qrRecord.qr_path));
+
+        res.json({ success: true, message: `${created.length} file(s) uploaded`, data: created, qr: { ...qrRecord, qrUrl } });
       } catch (error) {
         logger.error('uploadMultipleMenuMedia error:', error);
         res.status(500).json({ success: false, message: error.message });
@@ -120,13 +152,13 @@ const menuMediaController = {
     });
   },
 
-  /** GET /api/v1/menu-media/:outletId?type=image|pdf|all&isActive=1|0 */
+  /** GET /api/v1/menu-media/:outletId?type=image|pdf|all&isActive=1|0&menuType=restaurant|bar|... */
   async listMenuMedia(req, res) {
     try {
       const outletId = parseInt(req.params.outletId);
-      const { type = 'all', isActive = null } = req.query;
+      const { type = 'all', isActive = null, menuType = null } = req.query;
       const resolvedActive = isActive === null ? null : (String(isActive) === '1' || String(isActive).toLowerCase() === 'true');
-      const rows = await menuMediaService.list(outletId, { type, isActive: resolvedActive });
+      const rows = await menuMediaService.list(outletId, { type, isActive: resolvedActive, menuType });
       const data = rows.map(r => ({ ...r, url: uploadUtil.buildAbsoluteUrlFromApp(r.path) }));
       res.json({ success: true, data });
     } catch (error) {
@@ -214,12 +246,18 @@ const menuMediaController = {
     }
   },
 
-  /** GET /api/v1/menu-media/:outletId/view — Public HTML gallery */
+  /** GET /api/v1/menu-media/:outletId/view?type=restaurant|bar|... — Public HTML gallery */
   async renderPublicView(req, res) {
     try {
       const outletId = parseInt(req.params.outletId);
-      const rows = await menuMediaService.list(outletId, { type: 'all', isActive: true });
+      const menuType = req.query.type || null; // Filter by menu type if provided
+      const rows = await menuMediaService.list(outletId, { type: 'all', isActive: true, menuType });
       const outlet = await outletService.getById(outletId);
+
+      // Increment scan count if menuType specified (QR scan)
+      if (menuType) {
+        menuQrService.incrementScanCount(outletId, menuType).catch(() => {});
+      }
 
       // Normalize URLs to APP_URL + path for reliability
       const items = rows.map(r => ({ ...r, url: uploadUtil.buildAbsoluteUrlFromApp(r.path) }));
@@ -387,6 +425,144 @@ const menuMediaController = {
     } catch (error) {
       logger.error('renderPublicView error:', error);
       res.status(500).send('Failed to render menu');
+    }
+  },
+
+  // ==================== QR CODE ENDPOINTS ====================
+
+  /** GET /api/v1/menu-media/:outletId/qr — List all QR codes for outlet */
+  async listQrCodes(req, res) {
+    try {
+      const outletId = parseInt(req.params.outletId);
+      const qrCodes = await menuQrService.listByOutlet(outletId);
+      const data = qrCodes.map(qr => ({
+        ...qr,
+        qrUrl: uploadUtil.buildAbsoluteUrlFromApp(ensureUploadsPrefix(qr.qr_path)),
+        logoUrl: qr.logo_path ? uploadUtil.buildAbsoluteUrlFromApp(ensureUploadsPrefix(qr.logo_path)) : null
+      }));
+      res.json({ success: true, data });
+    } catch (error) {
+      logger.error('listQrCodes error:', error);
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
+
+  /** GET /api/v1/menu-media/:outletId/qr/:menuType — Get specific QR code */
+  async getQrCode(req, res) {
+    try {
+      const outletId = parseInt(req.params.outletId);
+      const menuType = req.params.menuType || 'restaurant';
+      const qr = await menuQrService.getByOutletAndType(outletId, menuType);
+      if (!qr) {
+        return res.status(404).json({ success: false, message: `No QR code found for menu type: ${menuType}` });
+      }
+      res.json({
+        success: true,
+        data: {
+          ...qr,
+          qrUrl: uploadUtil.buildAbsoluteUrlFromApp(ensureUploadsPrefix(qr.qr_path)),
+          logoUrl: qr.logo_path ? uploadUtil.buildAbsoluteUrlFromApp(ensureUploadsPrefix(qr.logo_path)) : null
+        }
+      });
+    } catch (error) {
+      logger.error('getQrCode error:', error);
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
+
+  /** GET /api/v1/menu-media/:outletId/qr/:menuType/image — Get QR code image directly */
+  async getQrImage(req, res) {
+    try {
+      const outletId = parseInt(req.params.outletId);
+      const menuType = req.params.menuType || 'restaurant';
+      const qr = await menuQrService.getByOutletAndType(outletId, menuType);
+      if (!qr) {
+        return res.status(404).json({ success: false, message: `No QR code found for menu type: ${menuType}` });
+      }
+      const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, '../../uploads');
+      const qrRelative = qr.qr_path.replace(/^uploads[\\/]/, '');
+      const qrFilePath = path.join(UPLOAD_DIR, qrRelative);
+      if (!fs.existsSync(qrFilePath)) {
+        return res.status(404).json({ success: false, message: 'QR image file not found' });
+      }
+      res.set('Content-Type', 'image/png');
+      res.sendFile(qrFilePath);
+    } catch (error) {
+      logger.error('getQrImage error:', error);
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
+
+  /** POST /api/v1/menu-media/:outletId/qr/:menuType/logo — Upload custom logo for QR */
+  async uploadQrLogo(req, res) {
+    const outletId = parseInt(req.params.outletId);
+    const menuType = req.params.menuType || 'restaurant';
+    const subfolder = 'menu-qr/logos';
+    const middleware = uploadUtil.singleMenuMedia('logo', subfolder);
+
+    middleware(req, res, async (err) => {
+      try {
+        if (err) {
+          return res.status(400).json({ success: false, message: err.message });
+        }
+        if (!req.file) {
+          return res.status(400).json({ success: false, message: 'No logo file provided. Send in "logo" field.' });
+        }
+
+        const fileInfo = uploadUtil.formatFileResponse(req, req.file);
+        
+        // Update QR with new logo (regenerates QR image with logo overlay)
+        const qr = await menuQrService.updateLogo(outletId, menuType, fileInfo.path);
+        
+        res.json({
+          success: true,
+          message: 'QR logo updated and QR regenerated',
+          data: {
+            ...qr,
+            qrUrl: uploadUtil.buildAbsoluteUrlFromApp(ensureUploadsPrefix(qr.qr_path)),
+            logoUrl: uploadUtil.buildAbsoluteUrlFromApp(ensureUploadsPrefix(qr.logo_path))
+          }
+        });
+      } catch (error) {
+        logger.error('uploadQrLogo error:', error);
+        res.status(500).json({ success: false, message: error.message });
+      }
+    });
+  },
+
+  /** POST /api/v1/menu-media/:outletId/qr/:menuType/regenerate — Regenerate QR code */
+  async regenerateQr(req, res) {
+    try {
+      const outletId = parseInt(req.params.outletId);
+      const menuType = req.params.menuType || 'restaurant';
+      const includeLogo = req.body.includeLogo !== false; // Default true
+      
+      const qr = await menuQrService.regenerateQr(outletId, menuType, includeLogo);
+      
+      res.json({
+        success: true,
+        message: 'QR code regenerated',
+        data: {
+          ...qr,
+          qrUrl: uploadUtil.buildAbsoluteUrlFromApp(ensureUploadsPrefix(qr.qr_path)),
+          logoUrl: qr.logo_path ? uploadUtil.buildAbsoluteUrlFromApp(ensureUploadsPrefix(qr.logo_path)) : null
+        }
+      });
+    } catch (error) {
+      logger.error('regenerateQr error:', error);
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
+
+  /** GET /api/v1/menu-media/:outletId/menu-types — Get distinct menu types for outlet */
+  async getMenuTypes(req, res) {
+    try {
+      const outletId = parseInt(req.params.outletId);
+      const types = await menuMediaService.getMenuTypes(outletId);
+      res.json({ success: true, data: types });
+    } catch (error) {
+      logger.error('getMenuTypes error:', error);
+      res.status(500).json({ success: false, message: error.message });
     }
   }
 };
