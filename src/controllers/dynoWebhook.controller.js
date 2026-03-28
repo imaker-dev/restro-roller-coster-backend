@@ -13,97 +13,165 @@ const logger = require('../utils/logger');
 /**
  * POST /orders
  * Receive new orders from Swiggy/Zomato via Dyno
+ * 
+ * Dyno Webhook Payload Format:
+ * {
+ *   "orders": [
+ *     {
+ *       "data": { ... full Swiggy/Zomato order JSON ... },
+ *       "orderId": "string",
+ *       "resId": "string",
+ *       "status": "NEW | PREPARING | READY | DELIVERED",
+ *       "vendor": "Swiggy | Zomato"
+ *     }
+ *   ]
+ * }
+ * 
+ * Expected Response Format:
+ * [
+ *   { "status": 200, "orderId": "123", "message": "Order No. 123 Inserted Successfully" }
+ * ]
  */
 exports.receiveOrder = async (req, res) => {
   const startTime = Date.now();
+  const responses = [];
   
   try {
-    const orderData = req.body;
+    const payload = req.body;
     
-    logger.info('Dyno webhook: Received order', {
-      platform: orderData.platform || orderData.channel,
-      orderId: orderData.order_id || orderData.external_order_id,
-      resId: orderData.res_id || orderData.restaurant_id
+    // Handle Dyno's actual format: { orders: [...] }
+    const ordersArray = payload.orders || (Array.isArray(payload) ? payload : [payload]);
+    
+    logger.info('Dyno webhook: Received orders batch', {
+      orderCount: ordersArray.length,
+      rawPayload: JSON.stringify(payload).substring(0, 500)
     });
 
-    // Find channel by resId (Property ID)
-    const resId = orderData.res_id || orderData.restaurant_id || orderData.property_id;
-    const platform = (orderData.platform || orderData.channel || 'swiggy').toLowerCase();
-    
-    let channel;
-    if (resId) {
-      const pool = getPool();
-      const [channels] = await pool.query(
-        `SELECT * FROM integration_channels 
-         WHERE property_id = ? AND is_active = 1`,
-        [resId]
-      );
-      channel = channels[0];
-    }
-    
-    if (!channel) {
-      // Try to find by platform
-      const pool = getPool();
-      const [channels] = await pool.query(
-        `SELECT * FROM integration_channels 
-         WHERE channel_name = ? AND is_active = 1 LIMIT 1`,
-        [platform]
-      );
-      channel = channels[0];
-    }
+    // Process each order in the batch
+    for (const orderWrapper of ordersArray) {
+      const orderId = orderWrapper.orderId || orderWrapper.order_id;
+      
+      try {
+        // Extract order details from Dyno wrapper
+        const resId = orderWrapper.resId || orderWrapper.res_id;
+        const vendor = (orderWrapper.vendor || 'swiggy').toLowerCase();
+        const status = orderWrapper.status || 'NEW';
+        const orderData = orderWrapper.data || orderWrapper; // Full order JSON is in 'data' field
+        
+        logger.info('Dyno webhook: Processing order', {
+          orderId,
+          resId,
+          vendor,
+          status
+        });
 
-    if (!channel) {
-      logger.warn('No active channel found for order', { resId, platform });
-      return res.status(400).json({
-        success: false,
-        error: 'No active integration channel found'
-      });
-    }
+        // Skip non-NEW orders (status updates handled separately)
+        if (status !== 'NEW' && status !== 'new') {
+          logger.info('Dyno webhook: Skipping non-NEW order', { orderId, status });
+          responses.push({
+            status: 200,
+            orderId: orderId,
+            message: `Order ${orderId} status update acknowledged (${status})`
+          });
+          continue;
+        }
 
-    // Normalize order data to our internal format
-    const normalizedOrder = normalizeOrderData(orderData, channel);
-    
-    // Process the order (note: processIncomingOrder expects webhookPayload first, then channelId)
-    const result = await onlineOrderService.processIncomingOrder(normalizedOrder, channel.id);
+        // Find channel by resId (Property ID)
+        const pool = getPool();
+        let channel;
+        
+        if (resId) {
+          const [channels] = await pool.query(
+            `SELECT * FROM integration_channels 
+             WHERE property_id = ? AND is_active = 1`,
+            [resId]
+          );
+          channel = channels[0];
+        }
+        
+        if (!channel) {
+          // Try to find by vendor/platform name
+          const [channels] = await pool.query(
+            `SELECT * FROM integration_channels 
+             WHERE channel_name = ? AND is_active = 1 LIMIT 1`,
+            [vendor]
+          );
+          channel = channels[0];
+        }
 
-    // Log successful receipt
-    await logWebhook(channel.id, 'order_received', 'inbound', orderData, result, 'success');
+        if (!channel) {
+          logger.warn('No active channel found for order', { orderId, resId, vendor });
+          responses.push({
+            status: 400,
+            orderId: orderId,
+            message: `No active integration channel found for resId: ${resId}, vendor: ${vendor}`
+          });
+          continue;
+        }
 
-    logger.info('Dyno webhook: Order processed successfully', {
-      onlineOrderId: result.onlineOrderId,
-      posOrderNumber: result.orderNumber,
-      duration: Date.now() - startTime
-    });
+        // Normalize order data to our internal format
+        const normalizedOrder = normalizeSwiggyOrder(orderData, orderId, resId, vendor, channel);
+        
+        // Process the order
+        const result = await onlineOrderService.processIncomingOrder(normalizedOrder, channel.id);
 
-    return res.status(201).json({
-      success: true,
-      message: 'Order received successfully',
-      data: {
-        onlineOrderId: result.onlineOrderId,
-        orderNumber: result.orderNumber,
-        posOrderId: result.posOrderId
+        // Log successful receipt
+        await logWebhook(channel.id, 'order_received', 'inbound', orderWrapper, result, 'success');
+
+        logger.info('Dyno webhook: Order processed successfully', {
+          orderId,
+          onlineOrderId: result.onlineOrderId,
+          posOrderNumber: result.orderNumber,
+          duration: Date.now() - startTime
+        });
+
+        responses.push({
+          status: 200,
+          orderId: orderId,
+          message: `Order No. ${result.orderNumber || result.onlineOrderId} Inserted Successfully`
+        });
+
+      } catch (orderError) {
+        logger.error('Dyno webhook: Error processing single order', { 
+          orderId, 
+          error: orderError.message 
+        });
+        
+        // Log failed receipt
+        await logWebhook(null, 'order_received', 'inbound', orderWrapper, null, 'failed', orderError.message);
+
+        // Check for duplicate order
+        if (orderError.message.includes('duplicate') || orderError.code === 'ER_DUP_ENTRY') {
+          responses.push({
+            status: 200,
+            orderId: orderId,
+            message: `Order ${orderId} already exists (duplicate)`
+          });
+        } else {
+          responses.push({
+            status: 500,
+            orderId: orderId,
+            message: `Error: ${orderError.message}`
+          });
+        }
       }
-    });
+    }
+
+    // Return array response as expected by Dyno
+    return res.status(200).json(responses);
 
   } catch (error) {
-    logger.error('Dyno webhook: Error processing order', { error: error.message });
+    logger.error('Dyno webhook: Fatal error processing orders batch', { error: error.message });
     
     // Log failed receipt
     await logWebhook(null, 'order_received', 'inbound', req.body, null, 'failed', error.message);
 
-    // Check for duplicate order
-    if (error.message.includes('duplicate') || error.code === 'ER_DUP_ENTRY') {
-      return res.status(200).json({
-        success: true,
-        duplicate: true,
-        message: 'Order already exists'
-      });
-    }
-
-    return res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    // Return error in array format
+    return res.status(500).json([{
+      status: 500,
+      orderId: null,
+      message: `Fatal error: ${error.message}`
+    }]);
   }
 };
 
@@ -440,7 +508,154 @@ exports.receiveAllItems = async (req, res) => {
 // ============================================================
 
 /**
- * Normalize order data from various Dyno formats to our internal format
+ * Normalize Swiggy order data from Dyno webhook to our internal format
+ * 
+ * Swiggy order structure (inside data field):
+ * {
+ *   "order_id": "123456789",
+ *   "restaurant_id": "489654",
+ *   "order_status": "placed",
+ *   "order_total": 535,
+ *   "customer": { "name": "...", "phone": "...", "address": "..." },
+ *   "cart": { "items": [...] },
+ *   "payment": { "paymentMethod": "PREPAID", ... },
+ *   "charges": { "subtotal": 500, "taxes": 25, ... },
+ *   ...
+ * }
+ */
+function normalizeSwiggyOrder(orderData, dynoOrderId, resId, vendor, channel) {
+  // Swiggy-specific field extraction
+  const order = orderData;
+  
+  // Extract customer info (Swiggy format)
+  const customer = order.customer || order.customerDetails || {};
+  const deliveryAddress = order.delivery_address || order.deliveryAddress || customer.address || {};
+  
+  // Extract items (Swiggy uses 'cart.items' or 'items' or 'order_items')
+  const cartItems = order.cart?.items || order.items || order.order_items || [];
+  
+  // Extract charges (Swiggy format)
+  const charges = order.charges || order.bill || {};
+  const payment = order.payment || order.paymentDetails || {};
+  
+  // Build normalized format
+  return {
+    event: 'order.new',
+    timestamp: new Date().toISOString(),
+    data: {
+      platform: vendor || channel.channel_name,
+      external_order_id: order.order_id || order.orderId || dynoOrderId,
+      dyno_order_id: dynoOrderId,
+      platform_order_number: order.order_number || order.orderNumber || order.order_id,
+      res_id: resId,
+      
+      customer: {
+        name: customer.name || customer.customerName || 'Customer',
+        phone: customer.phone || customer.mobile || customer.phoneNumber || '',
+        address: formatSwiggyAddress(deliveryAddress),
+        instructions: order.special_instructions || order.instructions || 
+                      deliveryAddress.instructions || customer.instructions || ''
+      },
+      
+      items: normalizeSwiggyItems(cartItems),
+      
+      payment: {
+        method: normalizePaymentMethod(payment.paymentMethod || payment.payment_method || payment.mode || 'prepaid'),
+        is_paid: payment.isPaid ?? payment.is_paid ?? 
+                 (payment.paymentMethod === 'PREPAID' || payment.payment_method === 'prepaid') ?? true,
+        item_total: parseFloat(charges.subtotal || charges.itemTotal || charges.item_total || order.subtotal || 0),
+        taxes: parseFloat(charges.taxes || charges.tax || charges.gst || order.taxes || 0),
+        delivery_charge: parseFloat(charges.deliveryCharge || charges.delivery_charge || charges.delivery_fee || 0),
+        packaging_charge: parseFloat(charges.packagingCharge || charges.packaging_charge || charges.packing_charges || 0),
+        discount: parseFloat(charges.discount || charges.totalDiscount || order.discount || 0),
+        total: parseFloat(charges.total || charges.grandTotal || order.order_total || order.total || 0)
+      },
+      
+      timing: {
+        placed_at: order.order_time || order.orderTime || order.created_at || order.placedAt || new Date().toISOString(),
+        expected_delivery: order.expected_delivery_time || order.expectedDeliveryTime || 
+                          order.delivery_time || order.sla?.expectedDeliveryTime || null
+      },
+      
+      // Store raw data for debugging
+      raw_order_data: order
+    }
+  };
+}
+
+/**
+ * Format Swiggy address object to string
+ */
+function formatSwiggyAddress(address) {
+  if (typeof address === 'string') return address;
+  if (!address) return '';
+  
+  const parts = [
+    address.address || address.full_address || address.completeAddress,
+    address.landmark,
+    address.area || address.locality,
+    address.city,
+    address.pincode || address.zipcode
+  ].filter(Boolean);
+  
+  return parts.join(', ') || JSON.stringify(address);
+}
+
+/**
+ * Normalize Swiggy items to our internal format
+ * 
+ * Swiggy item structure:
+ * {
+ *   "id": "12345",
+ *   "name": "Butter Chicken",
+ *   "quantity": 2,
+ *   "price": 250,
+ *   "total": 500,
+ *   "variant": { "id": "v1", "name": "Half" },
+ *   "addons": [{ "id": "a1", "name": "Extra Gravy", "price": 30 }],
+ *   "instructions": "Less spicy"
+ * }
+ */
+function normalizeSwiggyItems(items) {
+  return items.map(item => ({
+    external_item_id: String(item.id || item.item_id || item.itemId),
+    name: item.name || item.item_name || item.itemName,
+    variant_id: item.variant?.id || item.variantId || item.variation_id || null,
+    variant_name: item.variant?.name || item.variantName || item.variation_name || null,
+    quantity: parseInt(item.quantity || item.qty || 1),
+    unit_price: parseFloat(item.price || item.unit_price || item.unitPrice || 0),
+    total_price: parseFloat(item.total || item.total_price || item.totalPrice || 
+                           (item.price * item.quantity) || 0),
+    addons: normalizeSwiggyAddons(item.addons || item.add_ons || item.customizations || []),
+    instructions: item.instructions || item.special_instructions || item.notes || ''
+  }));
+}
+
+/**
+ * Normalize Swiggy addons
+ */
+function normalizeSwiggyAddons(addons) {
+  return addons.map(addon => ({
+    addon_id: String(addon.id || addon.addon_id || addon.addonId),
+    name: addon.name || addon.addon_name || addon.addonName,
+    price: parseFloat(addon.price || addon.addon_price || addon.addonPrice || 0),
+    quantity: parseInt(addon.quantity || addon.qty || 1)
+  }));
+}
+
+/**
+ * Normalize payment method to our enum values
+ */
+function normalizePaymentMethod(method) {
+  if (!method) return 'prepaid';
+  const m = method.toLowerCase();
+  if (m.includes('cod') || m.includes('cash')) return 'cod';
+  if (m.includes('wallet')) return 'wallet';
+  return 'prepaid';
+}
+
+/**
+ * Normalize order data from various Dyno formats to our internal format (legacy)
  */
 function normalizeOrderData(rawOrder, channel) {
   // Handle different Dyno order formats

@@ -28,6 +28,7 @@ router.use('/reports', require('./reports.routes'));
 router.use('/bulk-upload', require('./bulkUpload.routes'));
 router.use('/app', require('./appVersion.routes'));
 router.use('/integrations', require('./integration.routes'));
+router.use('/dyno', require('./dyno.routes'));
 router.use('/inventory', require('./inventory.routes'));
 router.use('/recipes', require('./recipe.routes'));
 router.use('/production', require('./production.routes'));
