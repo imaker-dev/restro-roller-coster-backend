@@ -205,6 +205,7 @@ const QUEUE_NAMES = {
   EMAIL: 'email',
   WHATSAPP: 'whatsapp',
   INVENTORY: 'inventory',
+  DYNO_WEBHOOK: 'dyno-webhook',
 };
 
 const REPORT_TYPE = {

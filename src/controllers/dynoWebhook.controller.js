@@ -1,36 +1,37 @@
 /**
- * Dyno Webhook Controller
+ * Dyno Webhook Controller (Production-Level)
  * 
  * Handles all webhook endpoints that Dyno calls on your server.
+ * Pattern: Webhook → Queue (Redis) → Worker → DB
+ * 
  * Based on Dyno Webhook Implementation Documentation v2.0
  */
 
-const onlineOrderService = require('../services/onlineOrder.service');
-const dynoService = require('../services/dyno.service');
 const { getPool } = require('../database');
+const { addJob } = require('../queues');
+const { QUEUE_NAMES } = require('../constants');
+const { isRedisAvailable } = require('../config/redis');
+const onlineOrderService = require('../services/onlineOrder.service');
 const logger = require('../utils/logger');
+
+// Dyno status codes
+const DYNO_STATUS = {
+  ACCEPT: 1,      // Order needs to be accepted
+  ACCEPTED: 2,    // Order was accepted
+  READY: 3,       // Order needs to be marked ready
+  MARKED_READY: 4 // Order was marked ready
+};
+
+// ============================================================
+// ORDER ENDPOINTS
+// ============================================================
 
 /**
  * POST /orders
  * Receive new orders from Swiggy/Zomato via Dyno
  * 
- * Dyno Webhook Payload Format:
- * {
- *   "orders": [
- *     {
- *       "data": { ... full Swiggy/Zomato order JSON ... },
- *       "orderId": "string",
- *       "resId": "string",
- *       "status": "NEW | PREPARING | READY | DELIVERED",
- *       "vendor": "Swiggy | Zomato"
- *     }
- *   ]
- * }
- * 
- * Expected Response Format:
- * [
- *   { "status": 200, "orderId": "123", "message": "Order No. 123 Inserted Successfully" }
- * ]
+ * Uses Redis queue for async processing when available,
+ * falls back to sync processing otherwise.
  */
 exports.receiveOrder = async (req, res) => {
   const startTime = Date.now();
@@ -38,135 +39,103 @@ exports.receiveOrder = async (req, res) => {
   
   try {
     const payload = req.body;
-    
-    // Handle Dyno's actual format: { orders: [...] }
     const ordersArray = payload.orders || (Array.isArray(payload) ? payload : [payload]);
     
-    logger.info('Dyno webhook: Received orders batch', {
-      orderCount: ordersArray.length,
-      rawPayload: JSON.stringify(payload).substring(0, 500)
+    logger.info('Dyno webhook: Received orders', {
+      count: ordersArray.length,
+      ip: req.ip
     });
 
-    // Process each order in the batch
+    // Get channel from middleware (already validated)
+    const channel = req.webhookChannel;
+
     for (const orderWrapper of ordersArray) {
       const orderId = orderWrapper.orderId || orderWrapper.order_id;
-      
-      try {
-        // Extract order details from Dyno wrapper
-        const resId = orderWrapper.resId || orderWrapper.res_id;
-        const vendor = (orderWrapper.vendor || 'swiggy').toLowerCase();
-        const status = orderWrapper.status || 'NEW';
-        const orderData = orderWrapper.data || orderWrapper; // Full order JSON is in 'data' field
-        
-        logger.info('Dyno webhook: Processing order', {
-          orderId,
-          resId,
-          vendor,
-          status
-        });
+      const status = (orderWrapper.status || 'NEW').toUpperCase();
 
-        // Skip non-NEW orders (status updates handled separately)
-        if (status !== 'NEW' && status !== 'new') {
-          logger.info('Dyno webhook: Skipping non-NEW order', { orderId, status });
+      try {
+        // Skip non-NEW orders
+        if (status !== 'NEW') {
           responses.push({
             status: 200,
-            orderId: orderId,
+            orderId,
             message: `Order ${orderId} status update acknowledged (${status})`
           });
           continue;
         }
 
-        // Find channel by resId (Property ID)
-        const pool = getPool();
-        let channel;
-        
-        if (resId) {
-          const [channels] = await pool.query(
-            `SELECT * FROM integration_channels 
-             WHERE property_id = ? AND is_active = 1`,
-            [resId]
-          );
-          channel = channels[0];
-        }
-        
-        if (!channel) {
-          // Try to find by vendor/platform name
-          const [channels] = await pool.query(
-            `SELECT * FROM integration_channels 
-             WHERE channel_name = ? AND is_active = 1 LIMIT 1`,
-            [vendor]
-          );
-          channel = channels[0];
+        // Find channel if not from middleware
+        let orderChannel = channel;
+        if (!orderChannel) {
+          const resId = orderWrapper.resId || orderWrapper.res_id;
+          orderChannel = await findChannelByResId(resId);
         }
 
-        if (!channel) {
-          logger.warn('No active channel found for order', { orderId, resId, vendor });
+        if (!orderChannel) {
           responses.push({
             status: 400,
-            orderId: orderId,
-            message: `No active integration channel found for resId: ${resId}, vendor: ${vendor}`
+            orderId,
+            message: `No active channel found for resId: ${orderWrapper.resId}`
           });
           continue;
         }
 
-        // Normalize order data to our internal format
-        const normalizedOrder = normalizeSwiggyOrder(orderData, orderId, resId, vendor, channel);
-        
-        // Process the order
-        const result = await onlineOrderService.processIncomingOrder(normalizedOrder, channel.id);
+        // Use Redis queue if available, otherwise process sync
+        if (isRedisAvailable()) {
+          // Queue for async processing
+          await addJob(QUEUE_NAMES.DYNO_WEBHOOK, 'process-order', {
+            orderWrapper,
+            channel: orderChannel,
+            receivedAt: new Date().toISOString()
+          }, {
+            priority: 1, // High priority
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 2000 }
+          });
 
-        // Log successful receipt
-        await logWebhook(channel.id, 'order_received', 'inbound', orderWrapper, result, 'success');
-
-        logger.info('Dyno webhook: Order processed successfully', {
-          orderId,
-          onlineOrderId: result.onlineOrderId,
-          posOrderNumber: result.orderNumber,
-          duration: Date.now() - startTime
-        });
-
-        responses.push({
-          status: 200,
-          orderId: orderId,
-          message: `Order No. ${result.orderNumber || result.onlineOrderId} Inserted Successfully`
-        });
-
-      } catch (orderError) {
-        logger.error('Dyno webhook: Error processing single order', { 
-          orderId, 
-          error: orderError.message 
-        });
-        
-        // Log failed receipt
-        await logWebhook(null, 'order_received', 'inbound', orderWrapper, null, 'failed', orderError.message);
-
-        // Check for duplicate order
-        if (orderError.message.includes('duplicate') || orderError.code === 'ER_DUP_ENTRY') {
           responses.push({
             status: 200,
-            orderId: orderId,
+            orderId,
+            message: `Order ${orderId} queued for processing`
+          });
+        } else {
+          // Sync processing (fallback)
+          const result = await processOrderSync(orderWrapper, orderChannel);
+          responses.push({
+            status: 200,
+            orderId,
+            message: `Order No. ${result.orderNumber || result.onlineOrderId} Inserted Successfully`
+          });
+        }
+
+      } catch (error) {
+        logger.error('Dyno webhook: Order processing error', { orderId, error: error.message });
+        
+        if (error.message.includes('duplicate') || error.code === 'ER_DUP_ENTRY') {
+          responses.push({
+            status: 200,
+            orderId,
             message: `Order ${orderId} already exists (duplicate)`
           });
         } else {
           responses.push({
             status: 500,
-            orderId: orderId,
-            message: `Error: ${orderError.message}`
+            orderId,
+            message: `Error: ${error.message}`
           });
         }
       }
     }
 
-    // Return array response as expected by Dyno
+    logger.info('Dyno webhook: Batch processed', {
+      count: ordersArray.length,
+      duration: Date.now() - startTime
+    });
+
     return res.status(200).json(responses);
 
   } catch (error) {
-    logger.error('Dyno webhook: Fatal error processing orders batch', { error: error.message });
-    
-    // Log failed receipt
-    await logWebhook(null, 'order_received', 'inbound', req.body, null, 'failed', error.message);
-
-    // Return error in array format
+    logger.error('Dyno webhook: Fatal error', { error: error.message });
     return res.status(500).json([{
       status: 500,
       orderId: null,
@@ -177,75 +146,137 @@ exports.receiveOrder = async (req, res) => {
 
 /**
  * GET /:resId/orders/status
- * Return current order statuses to Dyno
+ * Return order statuses to Dyno for polling
+ * 
+ * Dyno polls this every 30 seconds to check for orders needing action:
+ * - status: 1 = needs to be accepted
+ * - status: 3 = needs to be marked ready
  */
 exports.getOrdersStatus = async (req, res) => {
   try {
     const { resId } = req.params;
-    
-    logger.info('Dyno webhook: Fetching orders status', { resId });
-
-    // Find channel by property_id
     const pool = getPool();
+
+    // Find channel
     const [channels] = await pool.query(
       `SELECT * FROM integration_channels WHERE property_id = ? AND is_active = 1`,
       [resId]
     );
 
     if (!channels.length) {
-      return res.status(404).json({
-        success: false,
-        error: 'Channel not found'
+      return res.json({
+        success: true,
+        res_id: resId,
+        orders: [],
+        orderHistory: false
       });
     }
 
     const channel = channels[0];
 
-    // Get active orders for this channel
+    // Get orders needing action (last 24 hours)
     const [orders] = await pool.query(
       `SELECT 
-        oo.external_order_id as order_id,
-        oo.platform_order_number,
-        oo.pos_status as status,
+        oo.external_order_id as orderId,
+        oo.pos_status,
+        oo.platform_status,
         oo.accepted_at,
         oo.food_ready_at,
-        oo.picked_up_at,
-        oo.delivered_at,
-        oo.cancelled_at,
-        oo.cancel_reason,
-        o.order_number as pos_order_number
+        COALESCE(ic.default_prep_time, 20) as prepTime
        FROM online_orders oo
-       LEFT JOIN orders o ON oo.pos_order_id = o.id
+       JOIN integration_channels ic ON oo.channel_id = ic.id
        WHERE oo.channel_id = ?
        AND oo.created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)
+       AND oo.pos_status NOT IN ('delivered', 'cancelled')
        ORDER BY oo.created_at DESC`,
       [channel.id]
     );
 
     // Map to Dyno expected format
-    const statusList = orders.map(order => ({
-      order_id: order.order_id,
-      platform_order_number: order.platform_order_number,
-      status: mapStatusToDyno(order.status),
-      pos_order_number: order.pos_order_number,
-      timestamps: {
-        accepted_at: order.accepted_at,
-        ready_at: order.food_ready_at,
-        picked_up_at: order.picked_up_at,
-        delivered_at: order.delivered_at,
-        cancelled_at: order.cancelled_at
-      },
-      cancel_reason: order.cancel_reason
-    }));
+    const ordersList = orders.map(order => {
+      let status = 0;
+      
+      // Determine what action is needed
+      if (!order.accepted_at && order.pos_status === 'received') {
+        status = DYNO_STATUS.ACCEPT; // Needs acceptance
+      } else if (order.accepted_at && !order.food_ready_at && 
+                 ['accepted', 'preparing'].includes(order.pos_status)) {
+        status = DYNO_STATUS.READY; // Needs to be marked ready
+      } else if (order.accepted_at && !order.food_ready_at) {
+        status = DYNO_STATUS.ACCEPTED; // Was accepted
+      } else if (order.food_ready_at) {
+        status = DYNO_STATUS.MARKED_READY; // Was marked ready
+      }
+
+      return {
+        orderId: order.orderId,
+        resId: resId,
+        status,
+        prepTime: order.prepTime
+      };
+    });
 
     return res.json({
-      success: true,
-      res_id: resId,
-      orders: statusList
+      orderHistory: false,
+      orders: ordersList
     });
 
   } catch (error) {
-    logger.error('Dyno webhook: Error fetching orders status', { error: error.message });
+    logger.error('Dyno webhook: getOrdersStatus error', { error: error.message });
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+};
+
+/**
+ * POST /orders/:orderId/status
+ * Receive status update confirmation from Dyno
+ * 
+ * Called after client exe accepts/marks ready:
+ * - statusCode: 2 = Accepted
+ * - statusCode: 4 = Marked Ready
+ */
+exports.updateOrderStatusById = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { statusCode, statusResponse } = req.body;
+    
+    logger.info('Dyno webhook: Status update received', { orderId, statusCode });
+
+    const pool = getPool();
+    
+    // Update based on status code
+    let updateField = '';
+    let newStatus = '';
+    
+    if (statusCode === DYNO_STATUS.ACCEPTED) {
+      updateField = 'accepted_at = NOW()';
+      newStatus = 'accepted';
+    } else if (statusCode === DYNO_STATUS.MARKED_READY) {
+      updateField = 'food_ready_at = NOW()';
+      newStatus = 'ready';
+    }
+
+    if (updateField) {
+      await pool.query(
+        `UPDATE online_orders 
+         SET ${updateField}, pos_status = ?, platform_status = ?, last_status_sync_at = NOW()
+         WHERE external_order_id = ?`,
+        [newStatus, statusCode, orderId]
+      );
+    }
+
+    await logWebhook(null, 'status_update', req.body, { statusCode }, 'success');
+
+    return res.json({
+      status: statusCode,
+      message: `Updated the status to ${statusCode} for order Id ${orderId}`
+    });
+
+  } catch (error) {
+    logger.error('Dyno webhook: updateOrderStatusById error', { error: error.message });
     return res.status(500).json({
       success: false,
       error: error.message
@@ -255,35 +286,36 @@ exports.getOrdersStatus = async (req, res) => {
 
 /**
  * POST /:resId/orders/status
- * Receive status update confirmations from Dyno
+ * Receive status update confirmations from Dyno (legacy endpoint)
  */
 exports.updateOrderStatus = async (req, res) => {
   try {
     const { resId } = req.params;
-    const { order_id, status, message } = req.body;
+    const { order_id, orderId, status, statusCode } = req.body;
+    const orderIdValue = order_id || orderId;
+    const statusValue = status || statusCode;
     
-    logger.info('Dyno webhook: Received status update', { resId, order_id, status });
+    logger.info('Dyno webhook: Status update', { resId, orderId: orderIdValue, status: statusValue });
 
-    // Update local tracking
     const pool = getPool();
-    const [result] = await pool.query(
+    await pool.query(
       `UPDATE online_orders 
        SET platform_status = ?, last_status_sync_at = NOW()
        WHERE external_order_id = ?`,
-      [status, order_id]
+      [statusValue, orderIdValue]
     );
 
-    await logWebhook(null, 'status_update', 'inbound', req.body, { updated: result.affectedRows }, 'success');
+    await logWebhook(null, 'status_update', req.body, { updated: true }, 'success');
 
     return res.json({
       success: true,
       message: 'Status update received',
-      order_id,
-      status
+      order_id: orderIdValue,
+      status: statusValue
     });
 
   } catch (error) {
-    logger.error('Dyno webhook: Error updating order status', { error: error.message });
+    logger.error('Dyno webhook: updateOrderStatus error', { error: error.message });
     return res.status(500).json({
       success: false,
       error: error.message
@@ -293,29 +325,36 @@ exports.updateOrderStatus = async (req, res) => {
 
 /**
  * POST /:resId/orders/history
- * Receive order history data from Dyno
+ * Receive order history from Dyno (last 40 orders)
  */
 exports.receiveOrderHistory = async (req, res) => {
   try {
     const { resId } = req.params;
     const historyData = req.body;
     
-    logger.info('Dyno webhook: Received order history', { 
-      resId, 
-      orderCount: Array.isArray(historyData.orders) ? historyData.orders.length : 0 
-    });
+    const orderCount = Array.isArray(historyData.orders) ? historyData.orders.length : 
+                       Array.isArray(historyData) ? historyData.length : 0;
 
-    // Store for reference (can be used for reconciliation)
-    await logWebhook(null, 'order_history', 'inbound', historyData, null, 'success');
+    logger.info('Dyno webhook: Order history received', { resId, orderCount });
+
+    // Queue for async processing if Redis available
+    if (isRedisAvailable() && orderCount > 0) {
+      await addJob(QUEUE_NAMES.DYNO_WEBHOOK, 'process-history', {
+        orders: historyData.orders || historyData,
+        resId,
+        receivedAt: new Date().toISOString()
+      });
+    }
+
+    await logWebhook(null, 'order_history', historyData, { count: orderCount }, 'success');
 
     return res.json({
-      success: true,
-      message: 'Order history received',
-      count: Array.isArray(historyData.orders) ? historyData.orders.length : 0
+      status: 200,
+      message: 'Request is Successful'
     });
 
   } catch (error) {
-    logger.error('Dyno webhook: Error receiving order history', { error: error.message });
+    logger.error('Dyno webhook: receiveOrderHistory error', { error: error.message });
     return res.status(500).json({
       success: false,
       error: error.message
@@ -323,124 +362,77 @@ exports.receiveOrderHistory = async (req, res) => {
   }
 };
 
+// ============================================================
+// ITEMS ENDPOINTS
+// ============================================================
+
 /**
- * GET /:resId/items/status
- * Return current item stock statuses to Dyno
+ * GET /:resId/items
+ * Return items and categories for Dyno to fetch
  */
-exports.getItemsStatus = async (req, res) => {
+exports.getItems = async (req, res) => {
   try {
     const { resId } = req.params;
-    
-    logger.info('Dyno webhook: Fetching items status', { resId });
-
-    // Find channel by property_id
     const pool = getPool();
+
+    // Find channel
     const [channels] = await pool.query(
       `SELECT * FROM integration_channels WHERE property_id = ? AND is_active = 1`,
       [resId]
     );
 
     if (!channels.length) {
-      return res.status(404).json({
-        success: false,
-        error: 'Channel not found'
+      return res.json({
+        getAllItems: false,
+        restaurantId: resId,
+        items: [],
+        categories: []
       });
     }
 
     const channel = channels[0];
 
-    // Get items with their stock status from menu mapping
+    // Get mapped items
     const [items] = await pool.query(
       `SELECT 
-        cmm.external_item_id,
-        cmm.external_item_name,
-        i.name as pos_item_name,
-        i.is_available as item_available,
-        cmm.is_available as mapping_available
+        cmm.external_item_id as id,
+        cmm.external_item_name as name,
+        cmm.is_available as stockStatus,
+        'swiggy' as aggregator
        FROM channel_menu_mapping cmm
-       LEFT JOIN items i ON cmm.pos_item_id = i.id
        WHERE cmm.channel_id = ?`,
       [channel.id]
     );
 
-    const itemsList = items.map(item => ({
-      item_id: item.external_item_id,
-      name: item.external_item_name || item.pos_item_name,
-      in_stock: (item.item_available !== false && item.mapping_available !== false)
-    }));
+    // Get categories (from items table)
+    const [categories] = await pool.query(
+      `SELECT DISTINCT
+        c.id,
+        c.name,
+        c.is_active as stockStatus,
+        ? as aggregator
+       FROM categories c
+       WHERE c.outlet_id = ? AND c.is_active = 1`,
+      [channel.channel_name, channel.outlet_id]
+    );
 
     return res.json({
-      success: true,
-      res_id: resId,
-      items: itemsList
+      getAllItems: false,
+      restaurantId: resId,
+      items: items.map(i => ({
+        id: i.id,
+        aggregator: i.aggregator,
+        stockStatus: i.stockStatus !== false
+      })),
+      categories: categories.map(c => ({
+        id: String(c.id),
+        aggregator: c.aggregator,
+        stockStatus: c.stockStatus !== false
+      }))
     });
 
   } catch (error) {
-    logger.error('Dyno webhook: Error fetching items status', { error: error.message });
-    return res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-};
-
-/**
- * POST /:resId/items/status
- * Receive item stock update confirmations from Dyno
- */
-exports.updateItemsStatus = async (req, res) => {
-  try {
-    const { resId } = req.params;
-    const { items } = req.body;
-    
-    logger.info('Dyno webhook: Received items status update', { 
-      resId, 
-      itemCount: Array.isArray(items) ? items.length : 0 
-    });
-
-    // Log the update
-    await logWebhook(null, 'items_status', 'inbound', req.body, null, 'success');
-
-    return res.json({
-      success: true,
-      message: 'Items status update received',
-      count: Array.isArray(items) ? items.length : 0
-    });
-
-  } catch (error) {
-    logger.error('Dyno webhook: Error updating items status', { error: error.message });
-    return res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-};
-
-/**
- * POST /:resId/categories/status
- * Receive category stock update confirmations from Dyno
- */
-exports.updateCategoriesStatus = async (req, res) => {
-  try {
-    const { resId } = req.params;
-    const { categories } = req.body;
-    
-    logger.info('Dyno webhook: Received categories status update', { 
-      resId, 
-      categoryCount: Array.isArray(categories) ? categories.length : 0 
-    });
-
-    // Log the update
-    await logWebhook(null, 'categories_status', 'inbound', req.body, null, 'success');
-
-    return res.json({
-      success: true,
-      message: 'Categories status update received',
-      count: Array.isArray(categories) ? categories.length : 0
-    });
-
-  } catch (error) {
-    logger.error('Dyno webhook: Error updating categories status', { error: error.message });
+    logger.error('Dyno webhook: getItems error', { error: error.message });
     return res.status(500).json({
       success: false,
       error: error.message
@@ -455,12 +447,12 @@ exports.updateCategoriesStatus = async (req, res) => {
 exports.receiveAllItems = async (req, res) => {
   try {
     const { resId } = req.params;
-    const { items } = req.body;
+    const itemsData = req.body;
+    const items = itemsData.items || itemsData;
     
-    logger.info('Dyno webhook: Received all items', { 
-      resId, 
-      itemCount: Array.isArray(items) ? items.length : 0 
-    });
+    const itemCount = Array.isArray(items) ? items.length : 0;
+
+    logger.info('Dyno webhook: Items received', { resId, itemCount });
 
     // Find channel
     const pool = getPool();
@@ -469,10 +461,10 @@ exports.receiveAllItems = async (req, res) => {
       [resId]
     );
 
-    if (channels.length && Array.isArray(items)) {
+    if (channels.length && itemCount > 0) {
       const channel = channels[0];
       
-      // Store items in menu mapping for future reference
+      // Batch insert/update items
       for (const item of items) {
         await pool.query(
           `INSERT INTO channel_menu_mapping 
@@ -486,16 +478,121 @@ exports.receiveAllItems = async (req, res) => {
       }
     }
 
-    await logWebhook(channels[0]?.id, 'menu_sync', 'inbound', req.body, { itemCount: items?.length }, 'success');
+    await logWebhook(channels[0]?.id, 'menu_sync', itemsData, { count: itemCount }, 'success');
 
     return res.json({
-      success: true,
-      message: 'Items received and stored',
-      count: Array.isArray(items) ? items.length : 0
+      status: 200,
+      message: 'Request is Successful'
     });
 
   } catch (error) {
-    logger.error('Dyno webhook: Error receiving items', { error: error.message });
+    logger.error('Dyno webhook: receiveAllItems error', { error: error.message });
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+};
+
+/**
+ * GET /:resId/items/status
+ * Return item stock statuses
+ */
+exports.getItemsStatus = async (req, res) => {
+  try {
+    const { resId } = req.params;
+    const pool = getPool();
+
+    const [channels] = await pool.query(
+      `SELECT * FROM integration_channels WHERE property_id = ? AND is_active = 1`,
+      [resId]
+    );
+
+    if (!channels.length) {
+      return res.json({
+        success: true,
+        res_id: resId,
+        items: []
+      });
+    }
+
+    const [items] = await pool.query(
+      `SELECT 
+        cmm.external_item_id as item_id,
+        cmm.external_item_name as name,
+        COALESCE(i.is_available, 1) as in_stock
+       FROM channel_menu_mapping cmm
+       LEFT JOIN items i ON cmm.pos_item_id = i.id
+       WHERE cmm.channel_id = ?`,
+      [channels[0].id]
+    );
+
+    return res.json({
+      success: true,
+      res_id: resId,
+      items: items.map(i => ({
+        item_id: i.item_id,
+        name: i.name,
+        in_stock: i.in_stock !== false && i.in_stock !== 0
+      }))
+    });
+
+  } catch (error) {
+    logger.error('Dyno webhook: getItemsStatus error', { error: error.message });
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+};
+
+/**
+ * POST /:resId/items/status
+ * Receive item stock update confirmations
+ */
+exports.updateItemsStatus = async (req, res) => {
+  try {
+    const { resId } = req.params;
+    const { aggregator, entityId, stockStatus, statusResponse } = req.body;
+    
+    logger.info('Dyno webhook: Item status update', { resId, entityId, stockStatus });
+
+    await logWebhook(null, 'item_status', req.body, null, 'success');
+
+    return res.json({
+      status: 200,
+      message: `Stock for ID ${entityId} Updated Successfully`
+    });
+
+  } catch (error) {
+    logger.error('Dyno webhook: updateItemsStatus error', { error: error.message });
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+};
+
+/**
+ * POST /:resId/categories/status
+ * Receive category stock update confirmations
+ */
+exports.updateCategoriesStatus = async (req, res) => {
+  try {
+    const { resId } = req.params;
+    const { aggregator, entityId, stockStatus, statusResponse } = req.body;
+    
+    logger.info('Dyno webhook: Category status update', { resId, entityId, stockStatus });
+
+    await logWebhook(null, 'category_status', req.body, null, 'success');
+
+    return res.json({
+      status: 200,
+      message: `Stock for ID ${entityId} Updated Successfully`
+    });
+
+  } catch (error) {
+    logger.error('Dyno webhook: updateCategoriesStatus error', { error: error.message });
     return res.status(500).json({
       success: false,
       error: error.message
@@ -508,143 +605,116 @@ exports.receiveAllItems = async (req, res) => {
 // ============================================================
 
 /**
- * Normalize Swiggy order data from Dyno webhook to our internal format
- * 
- * Swiggy order structure (inside data field):
- * {
- *   "order_id": "123456789",
- *   "restaurant_id": "489654",
- *   "order_status": "placed",
- *   "order_total": 535,
- *   "customer": { "name": "...", "phone": "...", "address": "..." },
- *   "cart": { "items": [...] },
- *   "payment": { "paymentMethod": "PREPAID", ... },
- *   "charges": { "subtotal": 500, "taxes": 25, ... },
- *   ...
- * }
+ * Find channel by restaurant ID
  */
-function normalizeSwiggyOrder(orderData, dynoOrderId, resId, vendor, channel) {
-  // Swiggy-specific field extraction
-  const order = orderData;
+async function findChannelByResId(resId) {
+  if (!resId) return null;
   
-  // Extract customer info (Swiggy format)
-  const customer = order.customer || order.customerDetails || {};
-  const deliveryAddress = order.delivery_address || order.deliveryAddress || customer.address || {};
-  
-  // Extract items (Swiggy uses 'cart.items' or 'items' or 'order_items')
-  const cartItems = order.cart?.items || order.items || order.order_items || [];
-  
-  // Extract charges (Swiggy format)
-  const charges = order.charges || order.bill || {};
-  const payment = order.payment || order.paymentDetails || {};
-  
-  // Build normalized format
+  const pool = getPool();
+  const [channels] = await pool.query(
+    `SELECT * FROM integration_channels WHERE property_id = ? AND is_active = 1`,
+    [String(resId)]
+  );
+  return channels[0] || null;
+}
+
+/**
+ * Process order synchronously (fallback when Redis unavailable)
+ */
+async function processOrderSync(orderWrapper, channel) {
+  const orderId = orderWrapper.orderId || orderWrapper.order_id;
+  const vendor = (orderWrapper.vendor || 'swiggy').toLowerCase();
+  const orderData = orderWrapper.data || orderWrapper;
+
+  // Normalize order
+  const normalizedOrder = normalizeOrderData(orderData, orderId, orderWrapper.resId, vendor, channel);
+
+  // Process via service
+  const result = await onlineOrderService.processIncomingOrder(normalizedOrder, channel.id);
+
+  await logWebhook(channel.id, 'order_received', orderWrapper, result, 'success');
+
+  return result;
+}
+
+/**
+ * Normalize order data from Swiggy/Zomato format
+ */
+function normalizeOrderData(orderData, orderId, resId, vendor, channel) {
+  const customer = orderData.customer || {};
+  const address = orderData.delivery_address || orderData.address || {};
+  const cart = orderData.cart || {};
+  const charges = orderData.charges || orderData.bill_details || {};
+  const payment = orderData.payment || {};
+  const items = cart.items || orderData.items || [];
+
   return {
-    event: 'order.new',
-    timestamp: new Date().toISOString(),
-    data: {
-      platform: vendor || channel.channel_name,
-      external_order_id: order.order_id || order.orderId || dynoOrderId,
-      dyno_order_id: dynoOrderId,
-      platform_order_number: order.order_number || order.orderNumber || order.order_id,
-      res_id: resId,
-      
-      customer: {
-        name: customer.name || customer.customerName || 'Customer',
-        phone: customer.phone || customer.mobile || customer.phoneNumber || '',
-        address: formatSwiggyAddress(deliveryAddress),
-        instructions: order.special_instructions || order.instructions || 
-                      deliveryAddress.instructions || customer.instructions || ''
-      },
-      
-      items: normalizeSwiggyItems(cartItems),
-      
-      payment: {
-        method: normalizePaymentMethod(payment.paymentMethod || payment.payment_method || payment.mode || 'prepaid'),
-        is_paid: payment.isPaid ?? payment.is_paid ?? 
-                 (payment.paymentMethod === 'PREPAID' || payment.payment_method === 'prepaid') ?? true,
-        item_total: parseFloat(charges.subtotal || charges.itemTotal || charges.item_total || order.subtotal || 0),
-        taxes: parseFloat(charges.taxes || charges.tax || charges.gst || order.taxes || 0),
-        delivery_charge: parseFloat(charges.deliveryCharge || charges.delivery_charge || charges.delivery_fee || 0),
-        packaging_charge: parseFloat(charges.packagingCharge || charges.packaging_charge || charges.packing_charges || 0),
-        discount: parseFloat(charges.discount || charges.totalDiscount || order.discount || 0),
-        total: parseFloat(charges.total || charges.grandTotal || order.order_total || order.total || 0)
-      },
-      
-      timing: {
-        placed_at: order.order_time || order.orderTime || order.created_at || order.placedAt || new Date().toISOString(),
-        expected_delivery: order.expected_delivery_time || order.expectedDeliveryTime || 
-                          order.delivery_time || order.sla?.expectedDeliveryTime || null
-      },
-      
-      // Store raw data for debugging
-      raw_order_data: order
-    }
+    external_order_id: orderId || orderData.order_id,
+    platform: vendor,
+    channel_id: channel.id,
+    outlet_id: channel.outlet_id,
+    
+    customer: {
+      name: customer.name || customer.customer_name || `${vendor} Customer`,
+      phone: customer.phone || customer.mobile || customer.customer_phone,
+      address: formatAddress(address),
+      instructions: address.instructions || orderData.special_instructions || ''
+    },
+    
+    items: items.map(item => ({
+      external_item_id: item.id || item.item_id,
+      name: item.name || item.item_name,
+      quantity: parseInt(item.quantity) || 1,
+      unit_price: parseFloat(item.price || item.unit_price || 0),
+      total_price: parseFloat(item.total || item.total_price || 0),
+      variant_id: item.variant?.id || item.variant_id,
+      variant_name: item.variant?.name || item.variant_name,
+      instructions: item.instructions || '',
+      addons: (item.addons || item.add_ons || []).map(addon => ({
+        external_addon_id: addon.id || addon.addon_id,
+        name: addon.name || addon.addon_name,
+        price: parseFloat(addon.price || 0)
+      }))
+    })),
+    
+    payment: {
+      method: normalizePaymentMethod(payment.paymentMethod || payment.payment_method),
+      is_paid: payment.isPaid !== false && payment.is_paid !== false,
+      subtotal: parseFloat(charges.subtotal || charges.item_total || 0),
+      taxes: parseFloat(charges.taxes || charges.gst || 0),
+      delivery_charge: parseFloat(charges.deliveryCharge || charges.delivery_charge || 0),
+      packaging_charge: parseFloat(charges.packagingCharge || charges.packaging_charge || 0),
+      discount: parseFloat(charges.discount || 0),
+      total: parseFloat(charges.total || charges.grand_total || orderData.order_total || 0)
+    },
+    
+    timing: {
+      placed_at: orderData.order_time || orderData.created_at || new Date().toISOString(),
+      expected_delivery: orderData.expected_delivery_time || orderData.delivery_time
+    },
+    
+    raw_data: orderData
   };
 }
 
 /**
- * Format Swiggy address object to string
+ * Format address object to string
  */
-function formatSwiggyAddress(address) {
-  if (typeof address === 'string') return address;
+function formatAddress(address) {
   if (!address) return '';
+  if (typeof address === 'string') return address;
   
-  const parts = [
-    address.address || address.full_address || address.completeAddress,
+  return [
+    address.address || address.line1,
     address.landmark,
     address.area || address.locality,
     address.city,
-    address.pincode || address.zipcode
-  ].filter(Boolean);
-  
-  return parts.join(', ') || JSON.stringify(address);
+    address.pincode
+  ].filter(Boolean).join(', ');
 }
 
 /**
- * Normalize Swiggy items to our internal format
- * 
- * Swiggy item structure:
- * {
- *   "id": "12345",
- *   "name": "Butter Chicken",
- *   "quantity": 2,
- *   "price": 250,
- *   "total": 500,
- *   "variant": { "id": "v1", "name": "Half" },
- *   "addons": [{ "id": "a1", "name": "Extra Gravy", "price": 30 }],
- *   "instructions": "Less spicy"
- * }
- */
-function normalizeSwiggyItems(items) {
-  return items.map(item => ({
-    external_item_id: String(item.id || item.item_id || item.itemId),
-    name: item.name || item.item_name || item.itemName,
-    variant_id: item.variant?.id || item.variantId || item.variation_id || null,
-    variant_name: item.variant?.name || item.variantName || item.variation_name || null,
-    quantity: parseInt(item.quantity || item.qty || 1),
-    unit_price: parseFloat(item.price || item.unit_price || item.unitPrice || 0),
-    total_price: parseFloat(item.total || item.total_price || item.totalPrice || 
-                           (item.price * item.quantity) || 0),
-    addons: normalizeSwiggyAddons(item.addons || item.add_ons || item.customizations || []),
-    instructions: item.instructions || item.special_instructions || item.notes || ''
-  }));
-}
-
-/**
- * Normalize Swiggy addons
- */
-function normalizeSwiggyAddons(addons) {
-  return addons.map(addon => ({
-    addon_id: String(addon.id || addon.addon_id || addon.addonId),
-    name: addon.name || addon.addon_name || addon.addonName,
-    price: parseFloat(addon.price || addon.addon_price || addon.addonPrice || 0),
-    quantity: parseInt(addon.quantity || addon.qty || 1)
-  }));
-}
-
-/**
- * Normalize payment method to our enum values
+ * Normalize payment method
  */
 function normalizePaymentMethod(method) {
   if (!method) return 'prepaid';
@@ -655,116 +725,27 @@ function normalizePaymentMethod(method) {
 }
 
 /**
- * Normalize order data from various Dyno formats to our internal format (legacy)
+ * Log webhook to database
  */
-function normalizeOrderData(rawOrder, channel) {
-  // Handle different Dyno order formats
-  const order = rawOrder.data || rawOrder;
-  
-  return {
-    event: rawOrder.event || 'order.new',
-    timestamp: rawOrder.timestamp || new Date().toISOString(),
-    data: {
-      platform: channel.channel_name,
-      external_order_id: order.order_id || order.external_order_id || order.id,
-      dyno_order_id: order.dyno_order_id || order.order_id,
-      platform_order_number: order.order_number || order.platform_order_number,
-      
-      customer: {
-        name: order.customer?.name || order.customer_name || 'Customer',
-        phone: order.customer?.phone || order.customer_phone || '',
-        address: order.customer?.address || order.delivery_address || ''
-      },
-      
-      items: normalizeItems(order.items || order.order_items || []),
-      
-      payment: {
-        method: order.payment?.method || order.payment_method || 'prepaid',
-        is_paid: order.payment?.is_paid ?? order.is_paid ?? true,
-        item_total: parseFloat(order.payment?.item_total || order.item_total || order.subtotal || 0),
-        taxes: parseFloat(order.payment?.taxes || order.taxes || order.tax || 0),
-        delivery_charges: parseFloat(order.payment?.delivery_charges || order.delivery_charges || 0),
-        packaging_charges: parseFloat(order.payment?.packaging_charges || order.packaging_charges || 0),
-        discount: parseFloat(order.payment?.discount || order.discount || 0),
-        total: parseFloat(order.payment?.total || order.total_amount || order.total || 0)
-      },
-      
-      timing: {
-        placed_at: order.timing?.placed_at || order.order_time || order.created_at,
-        expected_delivery: order.timing?.expected_delivery || order.expected_delivery_time
-      },
-      
-      special_instructions: order.special_instructions || order.instructions || order.notes || ''
-    }
-  };
-}
-
-/**
- * Normalize items array
- */
-function normalizeItems(items) {
-  return items.map(item => ({
-    external_item_id: item.external_item_id || item.item_id || item.id,
-    name: item.name || item.item_name,
-    variant_id: item.variant_id || item.variation_id,
-    variant_name: item.variant_name || item.variation_name,
-    quantity: parseInt(item.quantity || item.qty || 1),
-    unit_price: parseFloat(item.unit_price || item.price || 0),
-    total_price: parseFloat(item.total_price || item.total || (item.unit_price * item.quantity) || 0),
-    addons: normalizeAddons(item.addons || item.add_ons || []),
-    instructions: item.instructions || item.special_instructions || ''
-  }));
-}
-
-/**
- * Normalize addons array
- */
-function normalizeAddons(addons) {
-  return addons.map(addon => ({
-    addon_id: addon.addon_id || addon.id,
-    name: addon.name || addon.addon_name,
-    price: parseFloat(addon.price || addon.addon_price || 0),
-    quantity: parseInt(addon.quantity || addon.qty || 1)
-  }));
-}
-
-/**
- * Map POS status to Dyno status
- */
-function mapStatusToDyno(posStatus) {
-  const statusMap = {
-    'received': 'RECEIVED',
-    'accepted': 'ACCEPTED',
-    'preparing': 'PREPARING',
-    'ready': 'READY',
-    'picked_up': 'PICKED_UP',
-    'delivered': 'DELIVERED',
-    'cancelled': 'CANCELLED'
-  };
-  return statusMap[posStatus] || posStatus?.toUpperCase() || 'RECEIVED';
-}
-
-/**
- * Log webhook activity
- */
-async function logWebhook(channelId, logType, direction, requestData, responseData, status, errorMessage = null) {
+async function logWebhook(channelId, logType, requestData, responseData, status, errorMessage = null) {
   try {
     const pool = getPool();
     await pool.query(
       `INSERT INTO integration_logs 
-       (channel_id, log_type, direction, request_data, response_data, status, error_message)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       (channel_id, log_type, direction, request_body, response_body, status, error_message)
+       VALUES (?, ?, 'inbound', ?, ?, ?, ?)`,
       [
         channelId,
         logType,
-        direction,
         JSON.stringify(requestData),
         responseData ? JSON.stringify(responseData) : null,
         status,
         errorMessage
       ]
     );
-  } catch (err) {
-    logger.error('Failed to log webhook', { error: err.message });
+  } catch (error) {
+    logger.warn('Failed to log webhook:', error.message);
   }
 }
+
+module.exports = exports;

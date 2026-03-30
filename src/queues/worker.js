@@ -9,6 +9,7 @@ const logger = require('../utils/logger');
 const printProcessor = require('./processors/print.processor');
 const notificationProcessor = require('./processors/notification.processor');
 const reportProcessor = require('./processors/report.processor');
+const dynoWebhookProcessor = require('./processors/dynoWebhook.processor');
 
 const redisConnection = {
   host: redisConfig.host,
@@ -22,6 +23,7 @@ const processors = {
   [QUEUE_NAMES.PRINT]: printProcessor,
   [QUEUE_NAMES.NOTIFICATION]: notificationProcessor,
   [QUEUE_NAMES.REPORT]: reportProcessor,
+  [QUEUE_NAMES.DYNO_WEBHOOK]: dynoWebhookProcessor,
   [QUEUE_NAMES.EMAIL]: async (job) => {
     logger.info(`Processing email job: ${job.id}`);
     // Email processor will be implemented

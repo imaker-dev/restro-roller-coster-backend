@@ -1,22 +1,22 @@
 /**
- * Dyno Webhook Routes
+ * Dyno Webhook Routes (Production-Level)
  * 
  * These endpoints are called BY Dyno to push data to your server.
- * Based on Dyno Webhook Implementation Documentation v2.0
+ * Pattern: Webhook → Queue (Redis) → Worker → DB
  * 
- * Base URL configured in Dyno: https://restro-backend.imaker.in
+ * Base URL configured in Dyno: https://restro-backend.imaker.in/api/v1/dyno
  * 
- * Order Management Endpoints:
- *   POST /orders                      - Receive new orders from Dyno
- *   GET  /:resId/orders/status        - Dyno fetches order statuses
- *   POST /:resId/orders/status        - Dyno posts accept/ready responses
- *   POST /:resId/orders/history       - Dyno posts order history
+ * Order Endpoints:
+ *   POST /orders                      - Receive new orders from aggregators
+ *   GET  /:resId/orders/status        - Dyno polls for order statuses (every 30s)
+ *   POST /orders/:orderId/status      - Dyno posts status update confirmation
+ *   POST /:resId/orders/history       - Dyno posts last 40 orders
  * 
- * Item/Category Management Endpoints:
- *   GET  /:resId/items/status         - Dyno fetches items status
+ * Items Endpoints:
+ *   GET  /:resId/items                - Dyno fetches items/categories
+ *   POST /:resId/items                - Dyno posts all items (menu sync)
  *   POST /:resId/items/status         - Dyno posts item stock updates
  *   POST /:resId/categories/status    - Dyno posts category stock updates
- *   POST /:resId/items                - Dyno posts all items
  */
 
 const express = require('express');
@@ -28,13 +28,13 @@ const { verifyDynoWebhookSimple, webhookRateLimit } = require('../middleware/web
 router.use(webhookRateLimit);
 
 // ============================================================
-// ORDER MANAGEMENT ENDPOINTS
+// ORDER ENDPOINTS
 // ============================================================
 
 /**
  * POST /orders
- * Receive new orders from Swiggy/Zomato via Dyno
- * This is the main order ingestion endpoint
+ * Push new orders from various aggregators
+ * Main webhook endpoint - orders are queued for async processing
  */
 router.post('/orders',
   verifyDynoWebhookSimple,
@@ -43,8 +43,8 @@ router.post('/orders',
 
 /**
  * GET /:resId/orders/status
- * Dyno fetches current order statuses from your POS
- * Returns list of orders with their current status
+ * Get order statuses for a restaurant (polled every 30s)
+ * Returns orders needing action: status 1 = accept, status 3 = mark ready
  */
 router.get('/:resId/orders/status',
   verifyDynoWebhookSimple,
@@ -52,9 +52,18 @@ router.get('/:resId/orders/status',
 );
 
 /**
+ * POST /orders/:orderId/status
+ * Update order status and send response
+ * Called after client exe accepts (status 2) or marks ready (status 4)
+ */
+router.post('/orders/:orderId/status',
+  verifyDynoWebhookSimple,
+  dynoWebhookController.updateOrderStatusById
+);
+
+/**
  * POST /:resId/orders/status
- * Dyno posts accept/ready response confirmations
- * Called after your POS sends status update to Dyno
+ * Legacy endpoint for status updates
  */
 router.post('/:resId/orders/status',
   verifyDynoWebhookSimple,
@@ -63,8 +72,8 @@ router.post('/:resId/orders/status',
 
 /**
  * POST /:resId/orders/history
- * Dyno posts order history data
- * Used for syncing historical orders
+ * Receive last 40 orders history
+ * Pushed when orderHistory = true in status response
  */
 router.post('/:resId/orders/history',
   verifyDynoWebhookSimple,
@@ -72,13 +81,32 @@ router.post('/:resId/orders/history',
 );
 
 // ============================================================
-// ITEM/CATEGORY MANAGEMENT ENDPOINTS
+// ITEMS ENDPOINTS
 // ============================================================
 
 /**
+ * GET /:resId/items
+ * Get items and categories of the restaurant
+ * Returns getAllItems flag and current stock status
+ */
+router.get('/:resId/items',
+  verifyDynoWebhookSimple,
+  dynoWebhookController.getItems
+);
+
+/**
+ * POST /:resId/items
+ * Receive all items from platform (menu sync)
+ * Posted when getAllItems = true in GET response
+ */
+router.post('/:resId/items',
+  verifyDynoWebhookSimple,
+  dynoWebhookController.receiveAllItems
+);
+
+/**
  * GET /:resId/items/status
- * Dyno fetches current item stock statuses
- * Returns list of items with in_stock/out_of_stock status
+ * Get current item stock statuses
  */
 router.get('/:resId/items/status',
   verifyDynoWebhookSimple,
@@ -87,8 +115,7 @@ router.get('/:resId/items/status',
 
 /**
  * POST /:resId/items/status
- * Dyno posts item stock update responses
- * Confirms stock updates were applied on platform
+ * Mark items inStock/outOfStock
  */
 router.post('/:resId/items/status',
   verifyDynoWebhookSimple,
@@ -97,21 +124,11 @@ router.post('/:resId/items/status',
 
 /**
  * POST /:resId/categories/status
- * Dyno posts category stock update responses
+ * Mark categories inStock/outOfStock
  */
 router.post('/:resId/categories/status',
   verifyDynoWebhookSimple,
   dynoWebhookController.updateCategoriesStatus
-);
-
-/**
- * POST /:resId/items
- * Dyno posts all items from platform (menu sync)
- * Used for initial menu sync or refresh
- */
-router.post('/:resId/items',
-  verifyDynoWebhookSimple,
-  dynoWebhookController.receiveAllItems
 );
 
 module.exports = router;
