@@ -16,13 +16,11 @@ const logger = require('../utils/logger');
 
 // ============================================================
 // IN-MEMORY CACHE FOR HIGH-FREQUENCY ENDPOINTS
-// Reduces DB load from Dyno's frequent polling
+// Note: Middleware handles 1 req/min rate limiting per resId
+// This cache is for getOrdersStatus DB query optimization
 // ============================================================
 const statusCache = new Map(); // resId -> { data, timestamp }
-const STATUS_CACHE_TTL = 60000; // 60 seconds - cache response for 1 minute (1 req/min per resId)
-const LOG_DEBOUNCE_MS = 60000; // Only log to DB every 60 seconds per resId
-const lastLogTime = new Map(); // resId:logType -> timestamp
-const lastRequestTime = new Map(); // resId:endpoint -> timestamp (for strict 1 req/min)
+const STATUS_CACHE_TTL = 60000; // 60 seconds cache for order status queries
 
 // Dyno status codes
 const DYNO_STATUS = {
@@ -577,28 +575,14 @@ exports.getItemsStatus = async (req, res) => {
  * POST /:resId/items/status
  * Receive item stock update confirmations
  * 
- * RATE LIMITED: 1 request per minute per resId
- * Returns cached response for subsequent requests within 1 minute
+ * Note: Middleware enforces 1 request per minute per resId
+ * This handler only runs once per minute per resId
  */
 exports.updateItemsStatus = async (req, res) => {
   try {
     const { resId } = req.params;
     const { entityId, stockStatus } = req.body;
-    const requestKey = `${resId}:items_status`;
-    const now = Date.now();
-    const lastReq = lastRequestTime.get(requestKey) || 0;
     
-    // Strict 1 request per minute - return cached response if within window
-    if (now - lastReq < STATUS_CACHE_TTL) {
-      return res.json({
-        status: 200,
-        message: `Stock for ID ${entityId} Updated Successfully`,
-        cached: true
-      });
-    }
-    
-    // First request in this minute window
-    lastRequestTime.set(requestKey, now);
     logger.debug('Dyno webhook: Item status update', { resId, entityId, stockStatus });
     logWebhook(null, 'item_status', req.body, null, 'success').catch(() => {});
 
@@ -620,28 +604,14 @@ exports.updateItemsStatus = async (req, res) => {
  * POST /:resId/categories/status
  * Receive category stock update confirmations
  * 
- * RATE LIMITED: 1 request per minute per resId
- * Returns cached response for subsequent requests within 1 minute
+ * Note: Middleware enforces 1 request per minute per resId
+ * This handler only runs once per minute per resId
  */
 exports.updateCategoriesStatus = async (req, res) => {
   try {
     const { resId } = req.params;
     const { entityId, stockStatus } = req.body;
-    const requestKey = `${resId}:categories_status`;
-    const now = Date.now();
-    const lastReq = lastRequestTime.get(requestKey) || 0;
     
-    // Strict 1 request per minute - return cached response if within window
-    if (now - lastReq < STATUS_CACHE_TTL) {
-      return res.json({
-        status: 200,
-        message: `Stock for ID ${entityId} Updated Successfully`,
-        cached: true
-      });
-    }
-    
-    // First request in this minute window
-    lastRequestTime.set(requestKey, now);
     logger.debug('Dyno webhook: Category status update', { resId, entityId, stockStatus });
     logWebhook(null, 'category_status', req.body, null, 'success').catch(() => {});
 

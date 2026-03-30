@@ -147,74 +147,77 @@ const ipAllowlist = (allowedIps = []) => {
 };
 
 /**
- * Rate limiting for webhooks
- * Different limits for different endpoint types:
- * - Order webhooks: 100/min (critical, shouldn't be spammed)
- * - Status polling: 600/min (Dyno polls frequently)
- * - Items/Categories: 300/min (stock updates can be frequent)
+ * Rate limiting for Dyno webhooks
+ * 
+ * STRICT: 1 request per minute per resId for status/items/categories endpoints
+ * This dramatically reduces server load from Dyno client exe polling every second
+ * 
+ * Order webhooks (POST /orders) are NOT rate limited - they're critical
  */
 const webhookRateLimit = (() => {
-  const requests = new Map();
+  const lastRequestTime = new Map(); // key -> timestamp
   const WINDOW_MS = 60000; // 1 minute
-  
-  // Rate limits by endpoint type (per minute)
-  // Controller-level caching handles 1 req/min per resId, this is just a safety net
-  const RATE_LIMITS = {
-    orders: 100,        // Order webhooks - critical, shouldn't be spammed
-    status: 60,         // Status polling - ~1/sec max (controller caches per resId)
-    items: 60,          // Item/category updates - ~1/sec max (controller caches per resId)
-    default: 100        // Everything else
+
+  // Extract resId from URL path like /api/v1/dyno/1319090/categories/status
+  const extractResId = (path) => {
+    const match = path.match(/\/dyno\/(\d+)\//);
+    return match ? match[1] : null;
   };
 
-  const getEndpointType = (path) => {
-    if (path.includes('/orders') && !path.includes('/status')) return 'orders';
-    if (path.includes('/status')) return 'status';
-    if (path.includes('/items') || path.includes('/categories')) return 'items';
-    return 'default';
+  // Check if this is a high-frequency polling endpoint
+  const isPollingEndpoint = (path) => {
+    return path.includes('/status') || 
+           path.includes('/items') || 
+           path.includes('/categories');
   };
 
   return (req, res, next) => {
-    const endpointType = getEndpointType(req.path);
-    const maxRequests = RATE_LIMITS[endpointType];
+    const path = req.path;
     
-    // Key by IP + endpoint type (allows different limits per type)
-    const key = `${req.ip}:${endpointType}`;
+    // Skip rate limiting for order webhooks - they're critical
+    if (path.includes('/orders') && !path.includes('/status')) {
+      return next();
+    }
+
+    // Only rate limit polling endpoints
+    if (!isPollingEndpoint(path)) {
+      return next();
+    }
+
+    const resId = extractResId(path);
+    if (!resId) {
+      return next(); // Can't rate limit without resId
+    }
+
+    // Key: resId + endpoint type (e.g., "1319090:categories_status")
+    const endpointType = path.includes('/categories') ? 'categories' : 
+                         path.includes('/items') ? 'items' : 'status';
+    const key = `${resId}:${endpointType}`;
     const now = Date.now();
 
-    // Clean old entries periodically (every 100 requests)
-    if (requests.size > 1000) {
-      for (const [k, data] of requests.entries()) {
-        if (now - data.windowStart > WINDOW_MS) {
-          requests.delete(k);
+    // Clean old entries periodically
+    if (lastRequestTime.size > 500) {
+      for (const [k, timestamp] of lastRequestTime.entries()) {
+        if (now - timestamp > WINDOW_MS) {
+          lastRequestTime.delete(k);
         }
       }
     }
 
-    // Check rate
-    const current = requests.get(key);
-    if (current) {
-      if (now - current.windowStart < WINDOW_MS) {
-        current.count++;
-        if (current.count > maxRequests) {
-          logger.warn('Webhook rate limit exceeded', { 
-            ip: req.ip, 
-            type: endpointType, 
-            count: current.count,
-            limit: maxRequests,
-            path: req.path
-          });
-          return res.status(429).json({
-            success: false,
-            error: `Rate limit exceeded (${endpointType}: ${maxRequests}/min)`
-          });
-        }
-      } else {
-        requests.set(key, { windowStart: now, count: 1 });
-      }
-    } else {
-      requests.set(key, { windowStart: now, count: 1 });
+    // Check if within rate limit window (1 request per minute per resId:endpoint)
+    const lastTime = lastRequestTime.get(key);
+    if (lastTime && (now - lastTime) < WINDOW_MS) {
+      // Return 200 with cached flag instead of 429 - Dyno doesn't need to retry
+      return res.json({
+        status: 200,
+        message: 'Request throttled - using cached response',
+        cached: true,
+        nextAllowedIn: Math.ceil((WINDOW_MS - (now - lastTime)) / 1000)
+      });
     }
 
+    // First request in this window - allow it
+    lastRequestTime.set(key, now);
     next();
   };
 })();
