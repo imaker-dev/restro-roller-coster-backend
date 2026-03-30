@@ -191,135 +191,139 @@ const webhookRateLimit = (() => {
 
 /**
  * Simplified webhook verification for Dyno endpoints
- * Uses resId from URL params to find channel and verify
- * Falls back to global webhook secret if no channel found
+ * 
+ * Dyno webhooks don't send signature headers by default.
+ * This middleware validates requests by:
+ * 1. Checking if resId in payload matches a registered channel
+ * 2. Optionally verifying signature if headers are present
+ * 3. Allowing access token authentication as fallback
  */
 const verifyDynoWebhookSimple = async (req, res, next) => {
   try {
-    // For development/testing, allow bypass if no signature provided
-    const isDevMode = process.env.NODE_ENV !== 'production';
     const signature = req.headers['x-dyno-signature'];
     const timestamp = req.headers['x-dyno-timestamp'];
     
-    // In development mode without signature headers, allow through with warning
-    if (isDevMode && !signature && !timestamp) {
-      logger.warn('Dyno webhook: Development mode - allowing request without signature', {
-        path: req.path,
-        ip: req.ip
-      });
-      req.webhookVerified = false;
-      return next();
-    }
+    // Extract resId from various possible locations in the request
+    // Dyno sends: { orders: [{ resId: "489654", ... }] }
+    const resId = req.params.resId || 
+                  req.body?.res_id || 
+                  req.body?.restaurant_id || 
+                  req.body?.property_id ||
+                  req.body?.orders?.[0]?.resId ||
+                  req.body?.orders?.[0]?.res_id;
 
-    // Get resId from URL params or request body
-    const resId = req.params.resId || req.body?.res_id || req.body?.restaurant_id || req.body?.property_id;
+    const { getPool } = require('../database');
+    const pool = getPool();
 
-    // If no signature headers, check for access token auth
-    if (!signature && !timestamp) {
-      const accessToken = req.headers['authorization']?.replace('Bearer ', '') || 
-                          req.headers['x-access-token'];
-      
-      if (accessToken) {
-        // Verify access token against channel
-        const { getPool } = require('../database');
-        const pool = getPool();
-        const [channels] = await pool.query(
-          `SELECT * FROM integration_channels 
-           WHERE (dyno_access_token = ? OR property_id = ?) AND is_active = 1`,
-          [accessToken, resId]
-        );
-        
-        if (channels.length > 0) {
-          req.webhookVerified = true;
-          req.webhookChannel = channels[0];
-          return next();
-        }
-      }
-
-      // Log request for debugging but allow through in development
-      logger.warn('Dyno webhook: No authentication provided', {
-        path: req.path,
-        resId,
-        ip: req.ip
-      });
-
-      // In production, require auth
-      if (process.env.NODE_ENV === 'production') {
-        return res.status(401).json({
-          success: false,
-          error: 'Authentication required'
-        });
-      }
-
-      // In development, allow through with warning
-      req.webhookVerified = false;
-      return next();
-    }
-
-    // Check timestamp freshness (5 minute window)
-    const now = Math.floor(Date.now() / 1000);
-    const webhookTime = parseInt(timestamp, 10);
-    
-    if (isNaN(webhookTime) || Math.abs(now - webhookTime) > 300) {
-      return res.status(401).json({
-        success: false,
-        error: 'Webhook timestamp expired'
-      });
-    }
-
-    // Get webhook secret from channel or environment
-    let webhookSecret = process.env.DYNO_WEBHOOK_SECRET;
-    
+    // Method 1: Validate by resId (primary method for Dyno webhooks)
+    // If the request contains a valid resId that matches a registered channel, allow it
     if (resId) {
-      const { getPool } = require('../database');
-      const pool = getPool();
       const [channels] = await pool.query(
         `SELECT * FROM integration_channels WHERE property_id = ? AND is_active = 1`,
         [resId]
       );
-      if (channels.length > 0 && channels[0].webhook_secret) {
-        webhookSecret = channels[0].webhook_secret;
+      
+      if (channels.length > 0) {
+        logger.info('Dyno webhook: Authenticated via resId', { 
+          resId, 
+          channelId: channels[0].id,
+          channelName: channels[0].channel_name 
+        });
+        req.webhookVerified = true;
         req.webhookChannel = channels[0];
+        return next();
       }
     }
 
-    if (!webhookSecret) {
-      logger.error('No webhook secret configured');
-      return res.status(500).json({
-        success: false,
-        error: 'Webhook verification not configured'
-      });
-    }
-
-    // Verify signature
-    const payload = JSON.stringify(req.body);
-    const signatureData = `${timestamp}.${payload}`;
-    const expectedSignature = crypto
-      .createHmac('sha256', webhookSecret)
-      .update(signatureData)
-      .digest('hex');
-
-    let isValid = false;
-    try {
-      isValid = crypto.timingSafeEqual(
-        Buffer.from(signature),
-        Buffer.from(expectedSignature)
+    // Method 2: Check for access token in headers
+    const accessToken = req.headers['authorization']?.replace('Bearer ', '') || 
+                        req.headers['x-access-token'] ||
+                        req.headers['x-dyno-access-token'];
+    
+    if (accessToken) {
+      const [channels] = await pool.query(
+        `SELECT * FROM integration_channels WHERE dyno_access_token = ? AND is_active = 1`,
+        [accessToken]
       );
-    } catch (err) {
-      isValid = false;
+      
+      if (channels.length > 0) {
+        logger.info('Dyno webhook: Authenticated via access token', { 
+          channelId: channels[0].id 
+        });
+        req.webhookVerified = true;
+        req.webhookChannel = channels[0];
+        return next();
+      }
     }
 
-    if (!isValid) {
-      logger.warn('Invalid Dyno webhook signature', { resId, ip: req.ip });
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid webhook signature'
+    // Method 3: Verify signature if headers are present
+    if (signature && timestamp) {
+      // Check timestamp freshness (5 minute window)
+      const now = Math.floor(Date.now() / 1000);
+      const webhookTime = parseInt(timestamp, 10);
+      
+      if (isNaN(webhookTime) || Math.abs(now - webhookTime) > 300) {
+        return res.status(401).json({
+          success: false,
+          error: 'Webhook timestamp expired'
+        });
+      }
+
+      // Get webhook secret from environment
+      const webhookSecret = process.env.DYNO_WEBHOOK_SECRET;
+
+      if (webhookSecret) {
+        // Verify signature
+        const payload = JSON.stringify(req.body);
+        const signatureData = `${timestamp}.${payload}`;
+        const expectedSignature = crypto
+          .createHmac('sha256', webhookSecret)
+          .update(signatureData)
+          .digest('hex');
+
+        let isValid = false;
+        try {
+          isValid = crypto.timingSafeEqual(
+            Buffer.from(signature),
+            Buffer.from(expectedSignature)
+          );
+        } catch (err) {
+          isValid = false;
+        }
+
+        if (isValid) {
+          logger.info('Dyno webhook: Authenticated via signature');
+          req.webhookVerified = true;
+          req.webhookTimestamp = webhookTime;
+          return next();
+        }
+      }
+    }
+
+    // Method 4: Development mode bypass
+    if (process.env.NODE_ENV !== 'production') {
+      logger.warn('Dyno webhook: Development mode - allowing unauthenticated request', {
+        path: req.path,
+        resId,
+        ip: req.ip
       });
+      req.webhookVerified = false;
+      return next();
     }
 
-    req.webhookVerified = true;
-    req.webhookTimestamp = webhookTime;
-    next();
+    // No valid authentication found
+    logger.warn('Dyno webhook: Authentication failed', {
+      path: req.path,
+      resId,
+      hasSignature: !!signature,
+      hasAccessToken: !!accessToken,
+      ip: req.ip
+    });
+
+    return res.status(401).json({
+      success: false,
+      error: 'Authentication required. Ensure resId matches a registered channel or provide valid access token.'
+    });
 
   } catch (error) {
     logger.error('Dyno webhook verification error:', error);
