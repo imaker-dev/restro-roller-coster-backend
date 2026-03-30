@@ -166,14 +166,19 @@ const dynoRateLimit = (() => {
 
   return (req, res, next) => {
     const resId = req.params.resId;
+    
+    // Debug: Log what we're getting
+    logger.debug(`dynoRateLimit: resId=${resId}, path=${req.path}, originalUrl=${req.originalUrl}`);
+    
     if (!resId) {
+      logger.warn(`dynoRateLimit: No resId found, skipping rate limit`);
       return next(); // Can't rate limit without resId
     }
 
-    // Determine endpoint type from path
-    const path = req.path;
-    const endpointType = path.includes('/categories') ? 'categories' : 
-                         path.includes('/items') ? 'items' : 'status';
+    // Determine endpoint type from originalUrl (more reliable than path)
+    const url = req.originalUrl;
+    const endpointType = url.includes('/categories') ? 'categories' : 
+                         url.includes('/items') ? 'items' : 'status';
     const key = `${resId}:${endpointType}`;
     const now = Date.now();
 
@@ -189,6 +194,8 @@ const dynoRateLimit = (() => {
     // Check if within rate limit window (1 request per minute per resId:endpoint)
     const lastTime = lastRequestTime.get(key);
     if (lastTime && (now - lastTime) < WINDOW_MS) {
+      // Log throttled request (debug level to avoid log spam)
+      logger.debug(`dynoRateLimit: Throttled ${key}, next in ${Math.ceil((WINDOW_MS - (now - lastTime)) / 1000)}s`);
       // Return 200 with cached flag - Dyno doesn't need to retry
       return res.json({
         status: 200,
@@ -198,9 +205,9 @@ const dynoRateLimit = (() => {
       });
     }
 
-    // First request in this window - allow it
+    // First request in this window - allow it through
     lastRequestTime.set(key, now);
-    logger.info(`Dyno: Processing ${key} (next allowed in 60s)`);
+    logger.info(`dynoRateLimit: ALLOWED ${key} (next in 60s)`);
     next();
   };
 })();
