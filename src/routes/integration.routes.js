@@ -7,7 +7,7 @@ const express = require('express');
 const router = express.Router();
 const integrationController = require('../controllers/integration.controller');
 const { authenticate, authorize } = require('../middlewares/auth.middleware');
-const { verifyDynoWebhook, webhookRateLimit } = require('../middleware/webhookAuth');
+const { verifyDynoWebhook } = require('../middleware/webhookAuth');
 
 // Roles for integration management
 const INTEGRATION_ROLES = ['super_admin', 'admin'];
@@ -21,9 +21,9 @@ const ORDER_MANAGEMENT_ROLES = ['super_admin', 'admin', 'manager', 'cashier'];
  * Dyno webhook endpoint
  * Receives orders from Swiggy/Zomato via Dyno
  * POST /api/v1/integrations/dyno/webhook
+ * Note: No rate limiting on order webhooks - they're critical
  */
 router.post('/dyno/webhook',
-  webhookRateLimit,
   verifyDynoWebhook,
   integrationController.handleDynoWebhook
 );
