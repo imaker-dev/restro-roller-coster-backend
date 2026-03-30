@@ -62,8 +62,11 @@ exports.receiveOrder = async (req, res) => {
       const status = (orderWrapper.status || 'NEW').toUpperCase();
 
       try {
-        // Skip non-NEW orders
-        if (status !== 'NEW') {
+        // Only process NEW or PENDING orders (new orders from aggregators)
+        // Other statuses (PREPARING, READY, DELIVERED, etc.) are status updates
+        const isNewOrder = status === 'NEW' || status === 'PENDING' || status === 'PLACED';
+        
+        if (!isNewOrder) {
           responses.push({
             status: 200,
             orderId,
@@ -655,11 +658,17 @@ async function processOrderSync(orderWrapper, channel) {
   const vendor = (orderWrapper.vendor || 'swiggy').toLowerCase();
   const orderData = orderWrapper.data || orderWrapper;
 
-  // Normalize order
-  const normalizedOrder = normalizeOrderData(orderData, orderId, orderWrapper.resId, vendor, channel);
+  // Normalize order data
+  const normalizedData = normalizeOrderData(orderData, orderId, orderWrapper.resId, vendor, channel);
+
+  // Wrap in expected format for service: { data: {...}, event: 'order.new' }
+  const webhookPayload = {
+    event: 'order.new',
+    data: normalizedData
+  };
 
   // Process via service
-  const result = await onlineOrderService.processIncomingOrder(normalizedOrder, channel.id);
+  const result = await onlineOrderService.processIncomingOrder(webhookPayload, channel.id);
 
   await logWebhook(channel.id, 'order_received', orderWrapper, result, 'success');
 
