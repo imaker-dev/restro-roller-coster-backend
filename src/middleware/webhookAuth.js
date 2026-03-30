@@ -155,41 +155,25 @@ const ipAllowlist = (allowedIps = []) => {
  * Order webhooks (POST /orders) are NOT rate limited - they're critical
  */
 /**
- * Dyno rate limiting middleware - 1 request per minute per resId
+ * Dyno rate limiting middleware - 3-layer protection
  * 
- * IMPORTANT: Returns VALID cached response (same format as real response)
- * so Dyno doesn't keep retrying due to unexpected response format.
+ * Layer 1: Hard throttle - reject excessive requests with 429
+ * Layer 2: In-progress deduplication - prevent duplicate execution
+ * Layer 3: Response caching - return cached valid response
  * 
  * MUST be applied AFTER route matching so req.params.resId is available
  */
 const dynoRateLimit = (() => {
   const responseCache = new Map(); // key -> { response, timestamp }
-  const WINDOW_MS = 60000; // 1 minute
-
-  // Valid response formats for each endpoint type
-  const getDefaultResponse = (endpointType, entityId) => {
-    if (endpointType === 'categories') {
-      return {
-        status: 200,
-        message: `Stock for ID ${entityId || 'all'} Updated Successfully`
-      };
-    } else if (endpointType === 'items') {
-      return {
-        status: 200,
-        message: `Stock for ID ${entityId || 'all'} Updated Successfully`
-      };
-    } else {
-      // orders/status
-      return {
-        orderHistory: false,
-        orders: []
-      };
-    }
-  };
+  const inProgress = new Map();    // key -> Promise (for deduplication)
+  const hitCount = new Map();      // key -> [timestamps] (for hard throttle)
+  
+  const CACHE_WINDOW_MS = 60000;   // 1 minute cache
+  const THROTTLE_WINDOW_MS = 10000; // 10 second window for hit counting
+  const MAX_HITS_PER_WINDOW = 3;   // Max 3 requests per 10 seconds
 
   return (req, res, next) => {
     const resId = req.params.resId;
-    
     if (!resId) {
       return next();
     }
@@ -201,28 +185,61 @@ const dynoRateLimit = (() => {
     const key = `${resId}:${endpointType}`;
     const now = Date.now();
 
-    // Clean old entries periodically
-    if (responseCache.size > 500) {
-      for (const [k, data] of responseCache.entries()) {
-        if (now - data.timestamp > WINDOW_MS) {
-          responseCache.delete(k);
-        }
-      }
+    // ========================================
+    // LAYER 1: Hard throttle (429)
+    // ========================================
+    if (!hitCount.has(key)) {
+      hitCount.set(key, []);
+    }
+    
+    // Clean old hits and add current
+    const hits = hitCount.get(key).filter(t => now - t < THROTTLE_WINDOW_MS);
+    hits.push(now);
+    hitCount.set(key, hits);
+
+    // Reject if too many hits in window
+    if (hits.length > MAX_HITS_PER_WINDOW) {
+      return res.status(429).json({
+        success: false,
+        message: 'Too many requests. Please slow down.',
+        retryAfter: Math.ceil(THROTTLE_WINDOW_MS / 1000)
+      });
     }
 
-    // Check cache
+    // ========================================
+    // LAYER 2: Response cache (1 minute)
+    // ========================================
     const cached = responseCache.get(key);
-    if (cached && (now - cached.timestamp) < WINDOW_MS) {
-      // Return the SAME valid response format (not a throttle message)
+    if (cached && (now - cached.timestamp) < CACHE_WINDOW_MS) {
       return res.json(cached.response);
     }
 
-    // First request - intercept response to cache it
+    // ========================================
+    // LAYER 3: In-progress deduplication
+    // ========================================
+    if (inProgress.has(key)) {
+      // Another request is already processing - wait for it
+      inProgress.get(key)
+        .then(response => res.json(response))
+        .catch(() => res.status(500).json({ success: false, error: 'Processing failed' }));
+      return;
+    }
+
+    // First request - create promise for deduplication
+    let resolvePromise;
+    const promise = new Promise(resolve => { resolvePromise = resolve; });
+    inProgress.set(key, promise);
+
+    // Intercept response to cache it and resolve promise
     const originalJson = res.json.bind(res);
     res.json = (data) => {
       // Cache this valid response
       responseCache.set(key, { response: data, timestamp: now });
-      logger.info(`dynoRateLimit: Cached ${key} for 60s`);
+      // Resolve promise for any waiting requests
+      resolvePromise(data);
+      // Clean up in-progress
+      inProgress.delete(key);
+      logger.info(`dynoRateLimit: Processed & cached ${key}`);
       return originalJson(data);
     };
 
