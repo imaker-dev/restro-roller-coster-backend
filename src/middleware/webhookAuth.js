@@ -158,12 +158,12 @@ const webhookRateLimit = (() => {
   const WINDOW_MS = 60000; // 1 minute
   
   // Rate limits by endpoint type (per minute)
-  // Dyno client exe polls frequently but our handlers are now lightweight (no DB writes)
+  // Controller-level caching handles 1 req/min per resId, this is just a safety net
   const RATE_LIMITS = {
     orders: 100,        // Order webhooks - critical, shouldn't be spammed
-    status: 300,        // Status polling - allow ~5/sec (handlers are lightweight)
-    items: 300,         // Item/category updates - allow ~5/sec (debounced DB writes)
-    default: 200        // Everything else
+    status: 60,         // Status polling - ~1/sec max (controller caches per resId)
+    items: 60,          // Item/category updates - ~1/sec max (controller caches per resId)
+    default: 100        // Everything else
   };
 
   const getEndpointType = (path) => {
