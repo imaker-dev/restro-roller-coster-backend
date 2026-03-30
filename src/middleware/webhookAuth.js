@@ -157,25 +157,44 @@ const ipAllowlist = (allowedIps = []) => {
 /**
  * Dyno rate limiting middleware - 1 request per minute per resId
  * 
+ * IMPORTANT: Returns VALID cached response (same format as real response)
+ * so Dyno doesn't keep retrying due to unexpected response format.
+ * 
  * MUST be applied AFTER route matching so req.params.resId is available
- * Use this on individual routes, not as router.use()
  */
 const dynoRateLimit = (() => {
-  const lastRequestTime = new Map(); // key -> timestamp
+  const responseCache = new Map(); // key -> { response, timestamp }
   const WINDOW_MS = 60000; // 1 minute
+
+  // Valid response formats for each endpoint type
+  const getDefaultResponse = (endpointType, entityId) => {
+    if (endpointType === 'categories') {
+      return {
+        status: 200,
+        message: `Stock for ID ${entityId || 'all'} Updated Successfully`
+      };
+    } else if (endpointType === 'items') {
+      return {
+        status: 200,
+        message: `Stock for ID ${entityId || 'all'} Updated Successfully`
+      };
+    } else {
+      // orders/status
+      return {
+        orderHistory: false,
+        orders: []
+      };
+    }
+  };
 
   return (req, res, next) => {
     const resId = req.params.resId;
     
-    // Debug: Log what we're getting
-    logger.debug(`dynoRateLimit: resId=${resId}, path=${req.path}, originalUrl=${req.originalUrl}`);
-    
     if (!resId) {
-      logger.warn(`dynoRateLimit: No resId found, skipping rate limit`);
-      return next(); // Can't rate limit without resId
+      return next();
     }
 
-    // Determine endpoint type from originalUrl (more reliable than path)
+    // Determine endpoint type
     const url = req.originalUrl;
     const endpointType = url.includes('/categories') ? 'categories' : 
                          url.includes('/items') ? 'items' : 'status';
@@ -183,31 +202,30 @@ const dynoRateLimit = (() => {
     const now = Date.now();
 
     // Clean old entries periodically
-    if (lastRequestTime.size > 500) {
-      for (const [k, timestamp] of lastRequestTime.entries()) {
-        if (now - timestamp > WINDOW_MS) {
-          lastRequestTime.delete(k);
+    if (responseCache.size > 500) {
+      for (const [k, data] of responseCache.entries()) {
+        if (now - data.timestamp > WINDOW_MS) {
+          responseCache.delete(k);
         }
       }
     }
 
-    // Check if within rate limit window (1 request per minute per resId:endpoint)
-    const lastTime = lastRequestTime.get(key);
-    if (lastTime && (now - lastTime) < WINDOW_MS) {
-      // Log throttled request (debug level to avoid log spam)
-      logger.debug(`dynoRateLimit: Throttled ${key}, next in ${Math.ceil((WINDOW_MS - (now - lastTime)) / 1000)}s`);
-      // Return 200 with cached flag - Dyno doesn't need to retry
-      return res.json({
-        status: 200,
-        message: 'Request throttled - cached response',
-        cached: true,
-        nextAllowedIn: Math.ceil((WINDOW_MS - (now - lastTime)) / 1000)
-      });
+    // Check cache
+    const cached = responseCache.get(key);
+    if (cached && (now - cached.timestamp) < WINDOW_MS) {
+      // Return the SAME valid response format (not a throttle message)
+      return res.json(cached.response);
     }
 
-    // First request in this window - allow it through
-    lastRequestTime.set(key, now);
-    logger.info(`dynoRateLimit: ALLOWED ${key} (next in 60s)`);
+    // First request - intercept response to cache it
+    const originalJson = res.json.bind(res);
+    res.json = (data) => {
+      // Cache this valid response
+      responseCache.set(key, { response: data, timestamp: now });
+      logger.info(`dynoRateLimit: Cached ${key} for 60s`);
+      return originalJson(data);
+    };
+
     next();
   };
 })();
