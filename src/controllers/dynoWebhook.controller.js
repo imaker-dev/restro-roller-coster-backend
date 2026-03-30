@@ -173,7 +173,8 @@ exports.getOrdersStatus = async (req, res) => {
     const cacheKey = `orders_status:${resId}`;
     const cached = statusCache.get(cacheKey);
     if (cached && (Date.now() - cached.timestamp) < STATUS_CACHE_TTL) {
-      return res.json({ ...cached.data, cached: true });
+      // Return exact Dyno format (no extra fields)
+      return res.json(cached.data);
     }
     
     const pool = getPool();
@@ -185,11 +186,10 @@ exports.getOrdersStatus = async (req, res) => {
     );
 
     if (!channels.length) {
+      // Dyno OrderStatusResponse format
       const emptyResponse = {
-        success: true,
-        res_id: resId,
-        orders: [],
-        orderHistory: false
+        orderHistory: false,
+        orders: []
       };
       statusCache.set(cacheKey, { data: emptyResponse, timestamp: Date.now() });
       return res.json(emptyResponse);
@@ -537,32 +537,37 @@ exports.getItemsStatus = async (req, res) => {
     );
 
     if (!channels.length) {
+      // Dyno ItemStatusResponse format
       return res.json({
-        success: true,
-        res_id: resId,
-        items: []
+        getAllItems: false,
+        restaurantId: resId,
+        items: [],
+        categories: []
       });
     }
 
+    const channel = channels[0];
+
     const [items] = await pool.query(
       `SELECT 
-        cmm.external_item_id as item_id,
-        cmm.external_item_name as name,
-        COALESCE(i.is_available, 1) as in_stock
+        cmm.external_item_id as id,
+        COALESCE(i.is_available, 1) as stockStatus
        FROM channel_menu_mapping cmm
        LEFT JOIN items i ON cmm.pos_item_id = i.id
        WHERE cmm.channel_id = ?`,
-      [channels[0].id]
+      [channel.id]
     );
 
+    // Dyno ItemStatusResponse format with ItemStatus objects
     return res.json({
-      success: true,
-      res_id: resId,
+      getAllItems: false,
+      restaurantId: resId,
       items: items.map(i => ({
-        item_id: i.item_id,
-        name: i.name,
-        in_stock: i.in_stock !== false && i.in_stock !== 0
-      }))
+        id: String(i.id),
+        aggregator: channel.channel_name || 'swiggy',
+        stockStatus: i.stockStatus !== false && i.stockStatus !== 0
+      })),
+      categories: []
     });
 
   } catch (error) {
@@ -584,11 +589,12 @@ exports.getItemsStatus = async (req, res) => {
 exports.updateItemsStatus = async (req, res) => {
   try {
     const { resId } = req.params;
-    const { entityId, stockStatus } = req.body;
+    const { entityId, stockStatus, aggregator } = req.body;
     
     logger.debug('Dyno webhook: Item status update', { resId, entityId, stockStatus });
     logWebhook(null, 'item_status', req.body, null, 'success').catch(() => {});
 
+    // Return Dyno expected format (ItemStockUpdate)
     return res.json({
       status: 200,
       message: `Stock for ID ${entityId} Updated Successfully`
@@ -597,8 +603,8 @@ exports.updateItemsStatus = async (req, res) => {
   } catch (error) {
     logger.error('Dyno webhook: updateItemsStatus error', { error: error.message });
     return res.status(500).json({
-      success: false,
-      error: error.message
+      status: 500,
+      message: error.message
     });
   }
 };
@@ -613,11 +619,12 @@ exports.updateItemsStatus = async (req, res) => {
 exports.updateCategoriesStatus = async (req, res) => {
   try {
     const { resId } = req.params;
-    const { entityId, stockStatus } = req.body;
+    const { entityId, stockStatus, aggregator } = req.body;
     
     logger.debug('Dyno webhook: Category status update', { resId, entityId, stockStatus });
     logWebhook(null, 'category_status', req.body, null, 'success').catch(() => {});
 
+    // Return Dyno expected format (ItemStockUpdate)
     return res.json({
       status: 200,
       message: `Stock for ID ${entityId} Updated Successfully`
@@ -626,8 +633,8 @@ exports.updateCategoriesStatus = async (req, res) => {
   } catch (error) {
     logger.error('Dyno webhook: updateCategoriesStatus error', { error: error.message });
     return res.status(500).json({
-      success: false,
-      error: error.message
+      status: 500,
+      message: error.message
     });
   }
 };

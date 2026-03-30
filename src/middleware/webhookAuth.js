@@ -161,11 +161,13 @@ const dynoRateLimit = (() => {
   
   const CACHE_WINDOW_MS = 60000;   // 1 minute cache
 
-  // Default valid responses for each endpoint type
+  // Default valid responses for each endpoint type (Dyno expected format)
   const getDefaultResponse = (endpointType) => {
     if (endpointType === 'categories' || endpointType === 'items') {
+      // Dyno ItemStockUpdate format
       return { status: 200, message: 'Stock Updated Successfully' };
     }
+    // Dyno OrderStatusResponse format
     return { orderHistory: false, orders: [] };
   };
 
