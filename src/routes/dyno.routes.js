@@ -22,10 +22,9 @@
 const express = require('express');
 const router = express.Router();
 const dynoWebhookController = require('../controllers/dynoWebhook.controller');
-const { verifyDynoWebhookSimple, webhookRateLimit } = require('../middleware/webhookAuth');
+const { verifyDynoWebhookSimple, dynoRateLimit } = require('../middleware/webhookAuth');
 
-// Apply rate limiting to all webhook endpoints
-router.use(webhookRateLimit);
+// Note: Rate limiting is applied per-route (not globally) because we need req.params.resId
 
 // ============================================================
 // ORDER ENDPOINTS
@@ -45,8 +44,10 @@ router.post('/orders',
  * GET /:resId/orders/status
  * Get order statuses for a restaurant (polled every 30s)
  * Returns orders needing action: status 1 = accept, status 3 = mark ready
+ * RATE LIMITED: 1 request per minute per resId
  */
 router.get('/:resId/orders/status',
+  dynoRateLimit,
   verifyDynoWebhookSimple,
   dynoWebhookController.getOrdersStatus
 );
@@ -107,8 +108,10 @@ router.post('/:resId/items',
 /**
  * GET /:resId/items/status
  * Get current item stock statuses
+ * RATE LIMITED: 1 request per minute per resId
  */
 router.get('/:resId/items/status',
+  dynoRateLimit,
   verifyDynoWebhookSimple,
   dynoWebhookController.getItemsStatus
 );
@@ -116,8 +119,10 @@ router.get('/:resId/items/status',
 /**
  * POST /:resId/items/status
  * Mark items inStock/outOfStock
+ * RATE LIMITED: 1 request per minute per resId
  */
 router.post('/:resId/items/status',
+  dynoRateLimit,
   verifyDynoWebhookSimple,
   dynoWebhookController.updateItemsStatus
 );
@@ -125,8 +130,10 @@ router.post('/:resId/items/status',
 /**
  * POST /:resId/categories/status
  * Mark categories inStock/outOfStock
+ * RATE LIMITED: 1 request per minute per resId
  */
 router.post('/:resId/categories/status',
+  dynoRateLimit,
   verifyDynoWebhookSimple,
   dynoWebhookController.updateCategoriesStatus
 );

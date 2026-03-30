@@ -154,42 +154,24 @@ const ipAllowlist = (allowedIps = []) => {
  * 
  * Order webhooks (POST /orders) are NOT rate limited - they're critical
  */
-const webhookRateLimit = (() => {
+/**
+ * Dyno rate limiting middleware - 1 request per minute per resId
+ * 
+ * MUST be applied AFTER route matching so req.params.resId is available
+ * Use this on individual routes, not as router.use()
+ */
+const dynoRateLimit = (() => {
   const lastRequestTime = new Map(); // key -> timestamp
   const WINDOW_MS = 60000; // 1 minute
 
-  // Extract resId from URL path like /api/v1/dyno/1319090/categories/status
-  const extractResId = (path) => {
-    const match = path.match(/\/dyno\/(\d+)\//);
-    return match ? match[1] : null;
-  };
-
-  // Check if this is a high-frequency polling endpoint
-  const isPollingEndpoint = (path) => {
-    return path.includes('/status') || 
-           path.includes('/items') || 
-           path.includes('/categories');
-  };
-
   return (req, res, next) => {
-    const path = req.path;
-    
-    // Skip rate limiting for order webhooks - they're critical
-    if (path.includes('/orders') && !path.includes('/status')) {
-      return next();
-    }
-
-    // Only rate limit polling endpoints
-    if (!isPollingEndpoint(path)) {
-      return next();
-    }
-
-    const resId = extractResId(path);
+    const resId = req.params.resId;
     if (!resId) {
       return next(); // Can't rate limit without resId
     }
 
-    // Key: resId + endpoint type (e.g., "1319090:categories_status")
+    // Determine endpoint type from path
+    const path = req.path;
     const endpointType = path.includes('/categories') ? 'categories' : 
                          path.includes('/items') ? 'items' : 'status';
     const key = `${resId}:${endpointType}`;
@@ -207,10 +189,10 @@ const webhookRateLimit = (() => {
     // Check if within rate limit window (1 request per minute per resId:endpoint)
     const lastTime = lastRequestTime.get(key);
     if (lastTime && (now - lastTime) < WINDOW_MS) {
-      // Return 200 with cached flag instead of 429 - Dyno doesn't need to retry
+      // Return 200 with cached flag - Dyno doesn't need to retry
       return res.json({
         status: 200,
-        message: 'Request throttled - using cached response',
+        message: 'Request throttled - cached response',
         cached: true,
         nextAllowedIn: Math.ceil((WINDOW_MS - (now - lastTime)) / 1000)
       });
@@ -218,6 +200,7 @@ const webhookRateLimit = (() => {
 
     // First request in this window - allow it
     lastRequestTime.set(key, now);
+    logger.info(`Dyno: Processing ${key} (next allowed in 60s)`);
     next();
   };
 })();
@@ -292,5 +275,5 @@ module.exports = {
   verifyDynoWebhook,
   verifyDynoWebhookSimple,
   ipAllowlist,
-  webhookRateLimit
+  dynoRateLimit
 };
