@@ -64,22 +64,31 @@ async function processOrder(data) {
     const status = orderWrapper.status || 'NEW';
     const orderData = orderWrapper.data || orderWrapper;
 
-    // Skip non-NEW orders
-    if (status.toUpperCase() !== 'NEW') {
-      logger.info('Dyno processor: Skipping non-NEW order', { orderId, status });
+    // Only process NEW, PENDING, or PLACED orders (new orders from aggregators)
+    const statusUpper = status.toUpperCase();
+    const isNewOrder = statusUpper === 'NEW' || statusUpper === 'PENDING' || statusUpper === 'PLACED' || statusUpper === '';
+    
+    if (!isNewOrder) {
+      logger.info('Dyno processor: Skipping status update order', { orderId, status });
       return {
         success: true,
         orderId,
         skipped: true,
-        reason: `Status is ${status}, not NEW`
+        reason: `Status is ${status}, not a new order`
       };
     }
 
     // Normalize order data based on vendor
-    const normalizedOrder = normalizeOrderData(orderData, orderId, orderWrapper.resId, vendor, channel);
+    const normalizedData = normalizeOrderData(orderData, orderId, orderWrapper.resId, vendor, channel);
+
+    // Wrap in expected format for service: { data: {...}, event: 'order.new' }
+    const webhookPayload = {
+      event: 'order.new',
+      data: normalizedData
+    };
 
     // Process the order (creates online_order + POS order)
-    const result = await onlineOrderService.processIncomingOrder(normalizedOrder, channel.id);
+    const result = await onlineOrderService.processIncomingOrder(webhookPayload, channel.id);
 
     // Log success
     await logWebhookResult(channel.id, 'order_processed', orderWrapper, result, 'success');
