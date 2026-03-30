@@ -148,21 +148,45 @@ const ipAllowlist = (allowedIps = []) => {
 
 /**
  * Rate limiting for webhooks
- * Prevents abuse and DoS
+ * Different limits for different endpoint types:
+ * - Order webhooks: 100/min (critical, shouldn't be spammed)
+ * - Status polling: 600/min (Dyno polls frequently)
+ * - Items/Categories: 300/min (stock updates can be frequent)
  */
 const webhookRateLimit = (() => {
   const requests = new Map();
   const WINDOW_MS = 60000; // 1 minute
-  const MAX_REQUESTS = 100; // per window
+  
+  // Rate limits by endpoint type (per minute)
+  // Dyno client exe polls frequently but our handlers are now lightweight (no DB writes)
+  const RATE_LIMITS = {
+    orders: 100,        // Order webhooks - critical, shouldn't be spammed
+    status: 300,        // Status polling - allow ~5/sec (handlers are lightweight)
+    items: 300,         // Item/category updates - allow ~5/sec (debounced DB writes)
+    default: 200        // Everything else
+  };
+
+  const getEndpointType = (path) => {
+    if (path.includes('/orders') && !path.includes('/status')) return 'orders';
+    if (path.includes('/status')) return 'status';
+    if (path.includes('/items') || path.includes('/categories')) return 'items';
+    return 'default';
+  };
 
   return (req, res, next) => {
-    const key = req.ip;
+    const endpointType = getEndpointType(req.path);
+    const maxRequests = RATE_LIMITS[endpointType];
+    
+    // Key by IP + endpoint type (allows different limits per type)
+    const key = `${req.ip}:${endpointType}`;
     const now = Date.now();
 
-    // Clean old entries
-    for (const [ip, data] of requests.entries()) {
-      if (now - data.windowStart > WINDOW_MS) {
-        requests.delete(ip);
+    // Clean old entries periodically (every 100 requests)
+    if (requests.size > 1000) {
+      for (const [k, data] of requests.entries()) {
+        if (now - data.windowStart > WINDOW_MS) {
+          requests.delete(k);
+        }
       }
     }
 
@@ -171,11 +195,17 @@ const webhookRateLimit = (() => {
     if (current) {
       if (now - current.windowStart < WINDOW_MS) {
         current.count++;
-        if (current.count > MAX_REQUESTS) {
-          logger.warn('Webhook rate limit exceeded', { ip: key, count: current.count });
+        if (current.count > maxRequests) {
+          logger.warn('Webhook rate limit exceeded', { 
+            ip: req.ip, 
+            type: endpointType, 
+            count: current.count,
+            limit: maxRequests,
+            path: req.path
+          });
           return res.status(429).json({
             success: false,
-            error: 'Rate limit exceeded'
+            error: `Rate limit exceeded (${endpointType}: ${maxRequests}/min)`
           });
         }
       } else {

@@ -10,9 +10,18 @@
 const { getPool } = require('../database');
 const { addJob } = require('../queues');
 const { QUEUE_NAMES } = require('../constants');
-const { isRedisAvailable } = require('../config/redis');
+const { isRedisAvailable, cache } = require('../config/redis');
 const onlineOrderService = require('../services/onlineOrder.service');
 const logger = require('../utils/logger');
+
+// ============================================================
+// IN-MEMORY CACHE FOR HIGH-FREQUENCY ENDPOINTS
+// Reduces DB load from Dyno's frequent polling
+// ============================================================
+const statusCache = new Map(); // resId -> { data, timestamp }
+const STATUS_CACHE_TTL = 5000; // 5 seconds - respond with cached data if same request within 5s
+const LOG_DEBOUNCE_MS = 30000; // Only log to DB every 30 seconds per resId
+const lastLogTime = new Map(); // resId:logType -> timestamp
 
 // Dyno status codes
 const DYNO_STATUS = {
@@ -148,13 +157,23 @@ exports.receiveOrder = async (req, res) => {
  * GET /:resId/orders/status
  * Return order statuses to Dyno for polling
  * 
- * Dyno polls this every 30 seconds to check for orders needing action:
+ * OPTIMIZED: Uses in-memory cache to reduce DB queries
+ * Dyno polls this every 30 seconds - we cache for 5 seconds
+ * 
  * - status: 1 = needs to be accepted
  * - status: 3 = needs to be marked ready
  */
 exports.getOrdersStatus = async (req, res) => {
   try {
     const { resId } = req.params;
+    
+    // Check cache first (5 second TTL)
+    const cacheKey = `orders_status:${resId}`;
+    const cached = statusCache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp) < STATUS_CACHE_TTL) {
+      return res.json(cached.data);
+    }
+    
     const pool = getPool();
 
     // Find channel
@@ -164,12 +183,14 @@ exports.getOrdersStatus = async (req, res) => {
     );
 
     if (!channels.length) {
-      return res.json({
+      const emptyResponse = {
         success: true,
         res_id: resId,
         orders: [],
         orderHistory: false
-      });
+      };
+      statusCache.set(cacheKey, { data: emptyResponse, timestamp: Date.now() });
+      return res.json(emptyResponse);
     }
 
     const channel = channels[0];
@@ -216,10 +237,15 @@ exports.getOrdersStatus = async (req, res) => {
       };
     });
 
-    return res.json({
+    const response = {
       orderHistory: false,
       orders: ordersList
-    });
+    };
+    
+    // Cache the response for 5 seconds
+    statusCache.set(cacheKey, { data: response, timestamp: Date.now() });
+
+    return res.json(response);
 
   } catch (error) {
     logger.error('Dyno webhook: getOrdersStatus error', { error: error.message });
@@ -549,15 +575,26 @@ exports.getItemsStatus = async (req, res) => {
 /**
  * POST /:resId/items/status
  * Receive item stock update confirmations
+ * 
+ * OPTIMIZED: Uses debounced logging to reduce DB writes
+ * Dyno client exe calls this every second - we only log every 30s
  */
 exports.updateItemsStatus = async (req, res) => {
   try {
     const { resId } = req.params;
-    const { aggregator, entityId, stockStatus, statusResponse } = req.body;
+    const { entityId, stockStatus } = req.body;
     
-    logger.info('Dyno webhook: Item status update', { resId, entityId, stockStatus });
-
-    await logWebhook(null, 'item_status', req.body, null, 'success');
+    // Debounced logging - only log to DB every 30 seconds per resId
+    const logKey = `${resId}:item_status`;
+    const now = Date.now();
+    const lastLog = lastLogTime.get(logKey) || 0;
+    
+    if (now - lastLog > LOG_DEBOUNCE_MS) {
+      lastLogTime.set(logKey, now);
+      logger.debug('Dyno webhook: Item status update', { resId, entityId, stockStatus });
+      // Only log to DB periodically, not every request
+      logWebhook(null, 'item_status', req.body, null, 'success').catch(() => {});
+    }
 
     return res.json({
       status: 200,
@@ -576,15 +613,26 @@ exports.updateItemsStatus = async (req, res) => {
 /**
  * POST /:resId/categories/status
  * Receive category stock update confirmations
+ * 
+ * OPTIMIZED: Uses debounced logging to reduce DB writes
+ * Dyno client exe calls this every second - we only log every 30s
  */
 exports.updateCategoriesStatus = async (req, res) => {
   try {
     const { resId } = req.params;
-    const { aggregator, entityId, stockStatus, statusResponse } = req.body;
+    const { entityId, stockStatus } = req.body;
     
-    logger.info('Dyno webhook: Category status update', { resId, entityId, stockStatus });
-
-    await logWebhook(null, 'category_status', req.body, null, 'success');
+    // Debounced logging - only log to DB every 30 seconds per resId
+    const logKey = `${resId}:category_status`;
+    const now = Date.now();
+    const lastLog = lastLogTime.get(logKey) || 0;
+    
+    if (now - lastLog > LOG_DEBOUNCE_MS) {
+      lastLogTime.set(logKey, now);
+      logger.debug('Dyno webhook: Category status update', { resId, entityId, stockStatus });
+      // Only log to DB periodically, not every request
+      logWebhook(null, 'category_status', req.body, null, 'success').catch(() => {});
+    }
 
     return res.json({
       status: 200,
