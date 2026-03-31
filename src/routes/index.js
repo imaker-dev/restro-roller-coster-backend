@@ -10,6 +10,40 @@ router.get('/health', (req, res) => {
   });
 });
 
+// Sentry test endpoint (for verifying Sentry integration)
+router.get('/debug/sentry-test', (req, res) => {
+  const Sentry = require('../instrument');
+  
+  if (!process.env.SENTRY_DSN) {
+    return res.status(400).json({
+      success: false,
+      message: 'Sentry is not configured. Add SENTRY_DSN to .env'
+    });
+  }
+  
+  // Test span with profiling
+  Sentry.startSpan({
+    op: "test",
+    name: "Sentry Test Span",
+  }, () => {
+    try {
+      // Capture a test message
+      Sentry.captureMessage('Sentry test message from Restaurant POS', 'info');
+      
+      // Intentionally throw error to test exception capture
+      throw new Error('Sentry test error - this is intentional');
+    } catch (error) {
+      Sentry.captureException(error);
+    }
+  });
+  
+  res.json({
+    success: true,
+    message: 'Test error sent to Sentry. Check your Sentry dashboard.',
+    environment: process.env.NODE_ENV || 'development'
+  });
+});
+
 // API Routes
 router.use('/auth', require('./auth.routes'));
 router.use('/users', require('./user.routes'));

@@ -1,12 +1,14 @@
 require('dotenv').config();
 
+// IMPORTANT: Sentry must be imported first, before any other modules
+const Sentry = require('./instrument');
+
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const compression = require('compression');
 const morgan = require('morgan');
 const http = require('http');
-
 
 const config = require('./config');
 const logger = require('./utils/logger');
@@ -17,6 +19,7 @@ const { initializeQueues } = require('./queues');
 const { initializeCronJobs } = require('./cron');
 
 const app = express();
+
 const server = http.createServer(app);
 
 // Security middleware
@@ -79,6 +82,11 @@ app.use('/', dynoRoutes);
 const routes = require('./routes');
 app.use('/api/v1', routes);
 
+// Sentry test endpoint for verification (must be before 404 handler)
+app.get('/sentry-debug', function mainHandler(req, res) {
+  throw new Error("Sentry test error - verification endpoint");
+});
+
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({
@@ -86,6 +94,9 @@ app.use((req, res) => {
     message: 'Resource not found',
   });
 });
+
+// Sentry error handler (must be before custom error handler)
+Sentry.setupExpressErrorHandler(app);
 
 // Global error handler
 app.use((err, req, res, next) => {
