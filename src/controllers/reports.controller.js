@@ -101,17 +101,20 @@ const getDayEndSummary = async (req, res, next) => {
  */
 const getDayEndSummaryDetail = async (req, res, next) => {
   try {
-    const { outletId, date } = req.query;
+    const { outletId, date, startDate, endDate } = req.query;
     
     if (!outletId) {
       return res.status(400).json({ success: false, message: 'outletId is required' });
     }
 
+    // Support both 'date' and 'startDate' parameters for flexibility
+    const targetDate = date || startDate || endDate;
+
     const scope = await getUserDataScope(req.user, parseInt(outletId));
     
     const result = await reportsService.getDayEndSummaryDetail(
       parseInt(outletId),
-      date,
+      targetDate,
       {
         floorIds: scope.floorIds,
         userId: scope.userId,
