@@ -6,18 +6,29 @@
  */
 
 const Sentry = require("@sentry/node");
-const { nodeProfilingIntegration } = require("@sentry/profiling-node");
+
+// Try to load profiling integration (may fail on some platforms)
+let nodeProfilingIntegration = null;
+try {
+  nodeProfilingIntegration = require("@sentry/profiling-node").nodeProfilingIntegration;
+} catch (err) {
+  console.log('⚠️  Sentry profiling not available on this platform (optional feature)');
+}
 
 // DSN from environment or fallback to configured value
 const dsn = process.env.SENTRY_DSN || "https://c8c38f99a22e486f71ca51d1cc9c3adb@o4511139135488000.ingest.de.sentry.io/4511139148070992";
 
 if (dsn) {
+  // Build integrations array
+  const integrations = [];
+  if (nodeProfilingIntegration) {
+    integrations.push(nodeProfilingIntegration());
+  }
+
   Sentry.init({
     dsn: dsn,
     
-    integrations: [
-      nodeProfilingIntegration(),
-    ],
+    integrations: integrations,
 
     // Environment - auto-detect from NODE_ENV
     environment: process.env.NODE_ENV || 'development',
@@ -33,8 +44,8 @@ if (dsn) {
     // Development: 100% for full visibility
     tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.2 : 1.0,
     
-    // Profiling - capture CPU profiles
-    profileSessionSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
+    // Profiling - capture CPU profiles (only if profiling is available)
+    profileSessionSampleRate: nodeProfilingIntegration ? (process.env.NODE_ENV === 'production' ? 0.1 : 1.0) : 0,
     profileLifecycle: 'trace',
     
     // Send default PII data (IP addresses, user agents, etc.)
