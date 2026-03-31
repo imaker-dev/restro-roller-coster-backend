@@ -10,7 +10,8 @@ const { getPool } = require('../database');
 const logger = require('../utils/logger');
 
 // Configuration from Dyno API Documentation v2.0.19
-const DYNO_API_BASE_URL = process.env.DYNO_API_BASE_URL || 'https://api.dynoapis.com';
+// Dyno runs as a local service on port 8080
+const DYNO_API_BASE_URL = process.env.DYNO_API_BASE_URL || 'http://localhost:8080';
 const DYNO_API_TIMEOUT = parseInt(process.env.DYNO_API_TIMEOUT) || 30000;
 
 // Platform-specific API paths (from OpenAPI spec)

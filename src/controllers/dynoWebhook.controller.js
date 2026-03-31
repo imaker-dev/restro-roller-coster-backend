@@ -62,11 +62,12 @@ exports.receiveOrder = async (req, res) => {
       const status = (orderWrapper.status || 'NEW').toUpperCase();
 
       try {
-        // Only process NEW or PENDING orders (new orders from aggregators)
-        // Other statuses (PREPARING, READY, DELIVERED, etc.) are status updates
-        const isNewOrder = status === 'NEW' || status === 'PENDING' || status === 'PLACED';
+        // Status updates are explicit statuses like PREPARING, READY, DELIVERED, CANCELLED
+        // Everything else (NEW, PENDING, PLACED, empty, unknown) is treated as a new order
+        const statusUpdateStatuses = ['PREPARING', 'READY', 'PICKED_UP', 'DELIVERED', 'CANCELLED', 'REJECTED'];
+        const isStatusUpdate = statusUpdateStatuses.includes(status);
         
-        if (!isNewOrder) {
+        if (isStatusUpdate) {
           responses.push({
             status: 200,
             orderId,
@@ -91,33 +92,14 @@ exports.receiveOrder = async (req, res) => {
           continue;
         }
 
-        // Use Redis queue if available, otherwise process sync
-        if (isRedisAvailable()) {
-          // Queue for async processing
-          await addJob(QUEUE_NAMES.DYNO_WEBHOOK, 'process-order', {
-            orderWrapper,
-            channel: orderChannel,
-            receivedAt: new Date().toISOString()
-          }, {
-            priority: 1, // High priority
-            attempts: 3,
-            backoff: { type: 'exponential', delay: 2000 }
-          });
-
-          responses.push({
-            status: 200,
-            orderId,
-            message: `Order ${orderId} queued for processing`
-          });
-        } else {
-          // Sync processing (fallback)
-          const result = await processOrderSync(orderWrapper, orderChannel);
-          responses.push({
-            status: 200,
-            orderId,
-            message: `Order No. ${result.orderNumber || result.onlineOrderId} Inserted Successfully`
-          });
-        }
+        // Always use sync processing for reliability
+        // (Queue processing requires worker to be running)
+        const result = await processOrderSync(orderWrapper, orderChannel);
+        responses.push({
+          status: 200,
+          orderId: result.orderNumber || result.onlineOrderId,
+          message: `Order No. ${result.orderNumber || result.onlineOrderId} Inserted Successfully`
+        });
 
       } catch (error) {
         logger.error('Dyno webhook: Order processing error', { orderId, error: error.message });

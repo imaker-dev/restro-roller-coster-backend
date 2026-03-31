@@ -2047,29 +2047,33 @@ const paymentService = {
       return String(dateVal).slice(0, 10);
     };
 
-    // Helper to extract time portion
-    const extractTime = (timeVal) => {
-      if (!timeVal) return null;
-      const str = String(timeVal);
-      if (str.includes(' ')) return str.split(' ')[1] || str;
-      if (str.includes('T')) return str.split('T')[1]?.slice(0, 8) || str;
-      return str;
+    // Helper to format datetime for MySQL query (handles cross-day shifts correctly)
+    const formatDateTimeForQuery = (dateVal) => {
+      if (!dateVal) return null;
+      if (dateVal instanceof Date) {
+        return `${dateVal.getFullYear()}-${String(dateVal.getMonth() + 1).padStart(2, '0')}-${String(dateVal.getDate()).padStart(2, '0')} ${String(dateVal.getHours()).padStart(2, '0')}:${String(dateVal.getMinutes()).padStart(2, '0')}:${String(dateVal.getSeconds()).padStart(2, '0')}`;
+      }
+      // If it's a string, return as-is (already formatted)
+      return String(dateVal);
     };
 
     // Calculate real-time values for each shift based on shift time range
     const formattedShifts = await Promise.all(shifts.map(async (shift) => {
-      const sessionDateStr = formatLocalDate(shift.session_date);
-      const openingTimeStr = extractTime(shift.opening_time) || '00:00:00';
-      const closingTimeStr = extractTime(shift.closing_time);
+      // Use opening_time directly (it's stored as DATETIME in DB)
+      // For cross-day shifts, closing_time will have the correct date (next day)
+      const shiftStartTime = formatDateTimeForQuery(shift.opening_time);
       
-      const shiftStartTime = `${sessionDateStr} ${openingTimeStr}`;
+      // For closed shifts, use closing_time directly (handles cross-day correctly)
+      // For open shifts, use current time
       let shiftEndTime;
-      if (closingTimeStr) {
-        shiftEndTime = `${sessionDateStr} ${closingTimeStr}`;
+      if (shift.closing_time) {
+        shiftEndTime = formatDateTimeForQuery(shift.closing_time);
       } else if (shift.status === 'open') {
         const now = new Date();
         shiftEndTime = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
       } else {
+        // Fallback: use session_date end of day
+        const sessionDateStr = formatLocalDate(shift.session_date);
         shiftEndTime = `${sessionDateStr} 23:59:59`;
       }
 
@@ -2256,40 +2260,33 @@ const paymentService = {
     const floorId = shift.floor_id;
 
     // Build shift time range for filtering (shift-specific, not day-wise)
-    // Helper to format date in LOCAL timezone (not UTC)
-    const formatLocalDate = (dateVal) => {
+    // Helper to format datetime for MySQL query
+    const formatDateTimeForQuery = (dateVal) => {
       if (!dateVal) return null;
       if (dateVal instanceof Date) {
-        return `${dateVal.getFullYear()}-${String(dateVal.getMonth() + 1).padStart(2, '0')}-${String(dateVal.getDate()).padStart(2, '0')}`;
+        return `${dateVal.getFullYear()}-${String(dateVal.getMonth() + 1).padStart(2, '0')}-${String(dateVal.getDate()).padStart(2, '0')} ${String(dateVal.getHours()).padStart(2, '0')}:${String(dateVal.getMinutes()).padStart(2, '0')}:${String(dateVal.getSeconds()).padStart(2, '0')}`;
       }
-      return String(dateVal).slice(0, 10);
+      // If it's a string, return as-is (already formatted)
+      return String(dateVal);
     };
     
-    const sessionDateStr = formatLocalDate(shift.session_date);
+    // Use opening_time directly (it's stored as DATETIME in DB)
+    // For cross-day shifts, closing_time will have the correct date (next day)
+    const shiftStartTime = formatDateTimeForQuery(shift.opening_time);
     
-    // Helper to extract time portion from various formats
-    const extractTime = (timeVal) => {
-      if (!timeVal) return null;
-      const str = String(timeVal);
-      if (str.includes(' ')) return str.split(' ')[1] || str;
-      if (str.includes('T')) return str.split('T')[1]?.slice(0, 8) || str;
-      return str;
-    };
-    
-    // Format opening_time and closing_time
-    const openingTimeStr = extractTime(shift.opening_time) || '00:00:00';
-    const closingTimeStr = extractTime(shift.closing_time);
-    
-    // Combine date and time for shift range
-    const shiftStartTime = `${sessionDateStr} ${openingTimeStr}`;
-    // For open shifts, use current LOCAL time as end (not UTC); for closed shifts use closing_time
+    // For closed shifts, use closing_time directly (handles cross-day correctly)
+    // For open shifts, use current time
     let shiftEndTime;
-    if (closingTimeStr) {
-      shiftEndTime = `${sessionDateStr} ${closingTimeStr}`;
+    if (shift.closing_time) {
+      shiftEndTime = formatDateTimeForQuery(shift.closing_time);
     } else if (shift.status === 'open') {
       const now = new Date();
       shiftEndTime = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
     } else {
+      // Fallback: use session_date end of day
+      const sessionDateStr = shift.session_date instanceof Date 
+        ? `${shift.session_date.getFullYear()}-${String(shift.session_date.getMonth() + 1).padStart(2, '0')}-${String(shift.session_date.getDate()).padStart(2, '0')}`
+        : String(shift.session_date).slice(0, 10);
       shiftEndTime = `${sessionDateStr} 23:59:59`;
     }
 
@@ -2688,38 +2685,33 @@ const paymentService = {
     }
 
     // Build shift time range for filtering (shift-specific, not day-wise)
-    // Helper to format date in LOCAL timezone (not UTC)
-    const formatLocalDate = (dateVal) => {
+    // Helper to format datetime for MySQL query
+    const formatDateTimeForQuery = (dateVal) => {
       if (!dateVal) return null;
       if (dateVal instanceof Date) {
-        return `${dateVal.getFullYear()}-${String(dateVal.getMonth() + 1).padStart(2, '0')}-${String(dateVal.getDate()).padStart(2, '0')}`;
+        return `${dateVal.getFullYear()}-${String(dateVal.getMonth() + 1).padStart(2, '0')}-${String(dateVal.getDate()).padStart(2, '0')} ${String(dateVal.getHours()).padStart(2, '0')}:${String(dateVal.getMinutes()).padStart(2, '0')}:${String(dateVal.getSeconds()).padStart(2, '0')}`;
       }
-      return String(dateVal).slice(0, 10);
+      // If it's a string, return as-is (already formatted)
+      return String(dateVal);
     };
     
-    const sessionDateStr = formatLocalDate(shift.session_date);
+    // Use opening_time directly (it's stored as DATETIME in DB)
+    // For cross-day shifts, closing_time will have the correct date (next day)
+    const shiftStartTime = formatDateTimeForQuery(shift.opening_time);
     
-    // Helper to extract time portion from various formats
-    const extractTime = (timeVal) => {
-      if (!timeVal) return null;
-      const str = String(timeVal);
-      if (str.includes(' ')) return str.split(' ')[1] || str;
-      if (str.includes('T')) return str.split('T')[1]?.slice(0, 8) || str;
-      return str;
-    };
-    
-    const openingTimeStr = extractTime(shift.opening_time) || '00:00:00';
-    const closingTimeStr = extractTime(shift.closing_time);
-    
-    const shiftStartTime = `${sessionDateStr} ${openingTimeStr}`;
-    // For open shifts, use current LOCAL time as end (not UTC); for closed shifts use closing_time
+    // For closed shifts, use closing_time directly (handles cross-day correctly)
+    // For open shifts, use current time
     let shiftEndTime;
-    if (closingTimeStr) {
-      shiftEndTime = `${sessionDateStr} ${closingTimeStr}`;
+    if (shift.closing_time) {
+      shiftEndTime = formatDateTimeForQuery(shift.closing_time);
     } else if (shift.status === 'open') {
       const now = new Date();
       shiftEndTime = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
     } else {
+      // Fallback: use session_date end of day
+      const sessionDateStr = shift.session_date instanceof Date 
+        ? `${shift.session_date.getFullYear()}-${String(shift.session_date.getMonth() + 1).padStart(2, '0')}-${String(shift.session_date.getDate()).padStart(2, '0')}`
+        : String(shift.session_date).slice(0, 10);
       shiftEndTime = `${sessionDateStr} 23:59:59`;
     }
 
