@@ -23,7 +23,7 @@ const itemService = {
 
       const {
         outletId, categoryId, sku, name, shortName, description,
-        itemType = 'veg', basePrice, costPrice = 0, taxGroupId,
+        itemType = 'veg', basePrice, costPrice = 0, taxGroupId, taxEnabled = true,
         imageUrl, preparationTimeMins = 15, spiceLevel = 0,
         calories, allergens, tags,
         isCustomizable = false, hasVariants = false, hasAddons = false,
@@ -45,16 +45,16 @@ const itemService = {
       const [result] = await connection.query(
         `INSERT INTO items (
           outlet_id, category_id, sku, name, short_name, slug, description,
-          item_type, base_price, cost_price, tax_group_id,
+          item_type, base_price, cost_price, tax_group_id, tax_enabled,
           image_url, preparation_time_mins, spice_level, calories, allergens, tags,
           is_customizable, has_variants, has_addons, allow_special_notes,
           min_quantity, max_quantity, step_quantity,
           is_available, is_recommended, is_bestseller, is_new,
           display_order, is_active, is_global, is_open_item, kitchen_station_id, counter_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           outletId, categoryId, itemSku, name, shortName, itemSlug, description,
-          itemType, basePrice, costPrice, taxGroupId,
+          itemType, basePrice, costPrice, taxGroupId || null, taxEnabled ? 1 : 0,
           imageUrl, preparationTimeMins, spiceLevel, calories, allergens, tags,
           isCustomizable, hasVariants, hasAddons, allowSpecialNotes,
           minQuantity, maxQuantity, stepQuantity,
@@ -473,8 +473,8 @@ const itemService = {
       const fieldMap = {
         categoryId: 'category_id', sku: 'sku', name: 'name', shortName: 'short_name',
         description: 'description', itemType: 'item_type', basePrice: 'base_price',
-        costPrice: 'cost_price', taxGroupId: 'tax_group_id', imageUrl: 'image_url',
-        preparationTimeMins: 'preparation_time_mins', spiceLevel: 'spice_level',
+        costPrice: 'cost_price', taxGroupId: 'tax_group_id', taxEnabled: 'tax_enabled',
+        imageUrl: 'image_url', preparationTimeMins: 'preparation_time_mins', spiceLevel: 'spice_level',
         calories: 'calories', allergens: 'allergens', tags: 'tags',
         isCustomizable: 'is_customizable', hasVariants: 'has_variants', hasAddons: 'has_addons',
         allowSpecialNotes: 'allow_special_notes', minQuantity: 'min_quantity',
@@ -488,7 +488,12 @@ const itemService = {
       for (const [key, column] of Object.entries(fieldMap)) {
         if (data[key] !== undefined) {
           fields.push(`${column} = ?`);
-          values.push(data[key]);
+          // Convert empty string to null for taxGroupId
+          if (key === 'taxGroupId' && (data[key] === '' || data[key] === 0)) {
+            values.push(null);
+          } else {
+            values.push(data[key]);
+          }
         }
       }
 

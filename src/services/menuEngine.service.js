@@ -396,12 +396,17 @@ const menuEngineService = {
     // Get base price (variant or item)
     let basePrice;
     let taxGroupId = item.tax_group_id;
+    let taxEnabled = item.tax_enabled !== 0 && item.tax_enabled !== false;
 
     if (variantId) {
       const [variants] = await pool.query('SELECT * FROM variants WHERE id = ?', [variantId]);
       if (!variants[0]) throw new Error('Variant not found');
       basePrice = variants[0].price;
       if (variants[0].tax_group_id) taxGroupId = variants[0].tax_group_id;
+      // Variant can override item's tax_enabled setting
+      if (variants[0].tax_enabled !== undefined && variants[0].tax_enabled !== null) {
+        taxEnabled = variants[0].tax_enabled !== 0 && variants[0].tax_enabled !== false;
+      }
     } else {
       basePrice = item.base_price;
     }
@@ -430,9 +435,9 @@ const menuEngineService = {
     const unitPrice = priceResult.finalPrice + addonTotal;
     const subtotal = unitPrice * quantity;
 
-    // Calculate tax
+    // Calculate tax (only if tax is enabled for this item)
     let taxResult = { taxAmount: 0, breakdown: [] };
-    if (taxGroupId) {
+    if (taxGroupId && taxEnabled) {
       taxResult = await taxService.calculateTax(
         [{ price: unitPrice, quantity }],
         taxGroupId
