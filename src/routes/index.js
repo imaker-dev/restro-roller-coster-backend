@@ -11,37 +11,38 @@ router.get('/health', (req, res) => {
 });
 
 // Sentry test endpoint (for verifying Sentry integration)
-router.get('/debug/sentry-test', (req, res) => {
+router.get('/debug/sentry-test', async (req, res) => {
   const Sentry = require('../instrument');
   
-  if (!process.env.SENTRY_DSN) {
-    return res.status(400).json({
+  try {
+    // Capture a test message
+    const messageId = Sentry.captureMessage('Sentry test message from Restaurant POS', 'info');
+    console.log('Sentry message captured, ID:', messageId);
+    
+    // Capture a test exception
+    const error = new Error('Sentry test error - this is intentional');
+    const exceptionId = Sentry.captureException(error);
+    console.log('Sentry exception captured, ID:', exceptionId);
+    
+    // Flush to ensure events are sent before response
+    await Sentry.flush(2000);
+    console.log('Sentry events flushed');
+    
+    res.json({
+      success: true,
+      message: 'Test error sent to Sentry. Check your Sentry dashboard.',
+      environment: process.env.NODE_ENV || 'development',
+      messageId: messageId,
+      exceptionId: exceptionId
+    });
+  } catch (err) {
+    console.error('Sentry test error:', err);
+    res.status(500).json({
       success: false,
-      message: 'Sentry is not configured. Add SENTRY_DSN to .env'
+      message: 'Failed to send test error to Sentry',
+      error: err.message
     });
   }
-  
-  // Test span with profiling
-  Sentry.startSpan({
-    op: "test",
-    name: "Sentry Test Span",
-  }, () => {
-    try {
-      // Capture a test message
-      Sentry.captureMessage('Sentry test message from Restaurant POS', 'info');
-      
-      // Intentionally throw error to test exception capture
-      throw new Error('Sentry test error - this is intentional');
-    } catch (error) {
-      Sentry.captureException(error);
-    }
-  });
-  
-  res.json({
-    success: true,
-    message: 'Test error sent to Sentry. Check your Sentry dashboard.',
-    environment: process.env.NODE_ENV || 'development'
-  });
 });
 
 // API Routes

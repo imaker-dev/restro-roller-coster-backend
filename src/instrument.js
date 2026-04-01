@@ -25,8 +25,13 @@ if (dsn) {
     integrations.push(nodeProfilingIntegration());
   }
 
+  console.log('🔧 Initializing Sentry with DSN:', dsn.substring(0, 30) + '...');
+  
   Sentry.init({
     dsn: dsn,
+    
+    // Enable debug mode to see what's happening
+    debug: process.env.SENTRY_DEBUG === 'true',
     
     integrations: integrations,
 
