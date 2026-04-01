@@ -1,13 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const reportsController = require('../controllers/reports.controller');
+const discountReportController = require('../controllers/discountReport.controller');
 const { authenticate, authorize } = require('../middlewares/auth.middleware');
 
 // All routes require authentication
 router.use(authenticate);
 
 // Roles that can access reports
-const REPORT_ROLES = ['super_admin', 'admin', 'manager', 'cashier', 'captain'];
+const REPORT_ROLES = ['super_admin', 'admin', 'manager', 'cashier'];
 
 /**
  * @route   GET /api/v1/reports/dashboard
@@ -187,5 +188,70 @@ router.get('/running-tables/export', authorize(...REPORT_ROLES), reportsControll
  * @query   outletId - Required
  */
 router.get('/running-orders/export', authorize(...REPORT_ROLES), reportsController.exportRunningOrders);
+
+// ========================
+// DISCOUNT REPORT ENDPOINTS
+// ========================
+
+/**
+ * @route   GET /api/v1/reports/discounts/:outletId/summary
+ * @desc    Get discount summary report with totals and breakdowns
+ * @access  Private (admin, manager)
+ * @query   startDate, endDate - Date range (YYYY-MM-DD)
+ */
+router.get('/discounts/:outletId/summary', authorize('super_admin', 'admin', 'manager'), discountReportController.getDiscountSummary);
+
+/**
+ * @route   GET /api/v1/reports/discounts/:outletId/details
+ * @desc    Get detailed discount report with pagination and filters
+ * @access  Private (admin, manager)
+ * @query   startDate, endDate - Date range
+ * @query   page, limit - Pagination
+ * @query   search - Search in code, name, order number
+ * @query   discountType - percentage | flat
+ * @query   discountCode - Filter by specific code
+ * @query   givenBy - Filter by staff user ID
+ * @query   sortBy, sortOrder - Sorting
+ */
+router.get('/discounts/:outletId/details', authorize('super_admin', 'admin', 'manager'), discountReportController.getDiscountDetails);
+
+/**
+ * @route   GET /api/v1/reports/discounts/:outletId/codes
+ * @desc    Get discount code performance report
+ * @access  Private (admin, manager)
+ * @query   startDate, endDate - Date range
+ * @query   page, limit - Pagination
+ * @query   search - Search in code, name
+ * @query   sortBy, sortOrder - Sorting
+ */
+router.get('/discounts/:outletId/codes', authorize('super_admin', 'admin', 'manager'), discountReportController.getDiscountCodeReport);
+
+/**
+ * @route   GET /api/v1/reports/discounts/:outletId/staff
+ * @desc    Get staff discount report - who gave how much discount
+ * @access  Private (admin, manager)
+ * @query   startDate, endDate - Date range
+ * @query   page, limit - Pagination
+ * @query   search - Search by staff name
+ * @query   sortBy, sortOrder - Sorting
+ */
+router.get('/discounts/:outletId/staff', authorize('super_admin', 'admin', 'manager'), discountReportController.getStaffDiscountReport);
+
+/**
+ * @route   GET /api/v1/reports/discounts/:outletId/export
+ * @desc    Export discount report as CSV
+ * @access  Private (admin, manager)
+ * @query   startDate, endDate - Date range
+ * @query   reportType - details | summary | staff
+ * @query   discountType, discountCode, givenBy - Filters
+ */
+router.get('/discounts/:outletId/export', authorize('super_admin', 'admin', 'manager'), discountReportController.exportDiscountReport);
+
+/**
+ * @route   GET /api/v1/reports/discounts/:outletId/filters
+ * @desc    Get available filter options (codes, staff list)
+ * @access  Private (admin, manager)
+ */
+router.get('/discounts/:outletId/filters', authorize('super_admin', 'admin', 'manager'), discountReportController.getFilterOptions);
 
 module.exports = router;

@@ -1317,7 +1317,7 @@ const printerService = {
     const dash = '-'.repeat(w);
     const cmd = this.getEscPosCommands();
     const FONT_B = '\x1B\x4D\x01'; // Condensed font (9x17, 64 chars/line on 80mm)
-    const LS_BODY = '\x1B\x33\x1C'; // 28-dot line spacing — readable on all printers (Font B = 17 dots + 11 gap)
+    const LS_BODY = '\x1B\x33\x28'; // 40-dot line spacing — ensures no overlap on all printers (Font B height varies 17-30 dots depending on printer)
 
     // ── 1. HEADER ───────────────────────────────
     if (billData.isDuplicate) {
