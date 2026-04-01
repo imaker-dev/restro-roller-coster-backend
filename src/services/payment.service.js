@@ -236,9 +236,14 @@ const paymentService = {
       if (dueAmount <= 0) {
         paymentStatus = 'completed';
         orderStatus = 'completed';
-      } else if (paidAmount > 0) {
+      } else if (paidAmount >= 0) {
         paymentStatus = 'partial';
         orderStatus = 'completed'; // Always complete order on any payment — table freed, KOTs served
+      } else if (dueAmount > 0 ) {
+        // Zero payment with customer info = full due payment scenario
+        // Complete the order, release table, mark KOTs served, but payment status is pending (due)
+        paymentStatus = 'pending';
+        orderStatus = 'completed';
       }
 
       await connection.query(
@@ -301,8 +306,8 @@ const paymentService = {
         });
       }
 
-      // Release table on any payment (full or partial) — order is completed, table should be freed
-      const shouldReleaseTable = (paymentStatus === 'completed' || paymentStatus === 'partial') && tableId;
+      // Release table when order is completed (full payment, partial payment, or 0 payment with due)
+      const shouldReleaseTable = orderStatus === 'completed' && tableId;
       if (shouldReleaseTable) {
         // Unmerge any merged tables and restore capacity
         const [activeMerges] = await connection.query(
@@ -356,8 +361,8 @@ const paymentService = {
         }
       }
 
-      // Mark all KOTs and order items as served on any payment (full or partial)
-      if (paymentStatus === 'completed' || paymentStatus === 'partial') {
+      // Mark all KOTs and order items as served when order is completed (full, partial, or 0 payment with due)
+      if (orderStatus === 'completed') {
         await connection.query(
           `UPDATE kot_tickets SET status = 'served', served_at = NOW(), served_by = ?
            WHERE order_id = ? AND status NOT IN ('served', 'cancelled')`,
@@ -401,6 +406,13 @@ const paymentService = {
     });
 
     // Emit bill status for Captain real-time tracking
+    // For 0 payment (due), billStatus should be 'due' to indicate full amount is due
+    let billStatus = 'partial';
+    if (paymentStatus === 'completed') {
+      billStatus = 'paid';
+    } else if (paymentStatus === 'pending' && orderStatus === 'completed') {
+      billStatus = 'due'; // 0 payment - full amount goes to due
+    }
     await publishMessage('bill:status', {
       outletId,
       orderId,
@@ -408,13 +420,13 @@ const paymentService = {
       tableNumber: order.table_number,
       captainId: order.created_by,
       invoiceId,
-      billStatus: paymentStatus === 'completed' ? 'paid' : 'partial',
+      billStatus,
       amountPaid: totalAmount,
       timestamp: new Date().toISOString()
     });
 
-    // Emit table update if released - table now available (on any payment)
-    if ((paymentStatus === 'completed' || paymentStatus === 'partial') && tableId) {
+    // Emit table update if released - table now available (on any payment including 0 payment with due)
+    if (orderStatus === 'completed' && tableId) {
       // Check if there were merged tables and emit unmerge event
       const pool = getPool();
       const [mergeCheck] = await pool.query(
@@ -455,8 +467,8 @@ const paymentService = {
       });
     }
 
-    // Emit KOT served events for real-time kitchen display - remove from all stations (on any payment)
-    if (paymentStatus === 'completed' || paymentStatus === 'partial') {
+    // Emit KOT served events for real-time kitchen display - remove from all stations (on any payment including 0 payment)
+    if (orderStatus === 'completed') {
       try {
         const kots = await kotService.getKotsByOrder(orderId);
         logger.info(`[Payment] Emitting kot:served for ${kots.length} KOTs of order ${orderId}`);
