@@ -698,42 +698,117 @@ const orderService = {
   /**
    * Recalculate order totals
    * NC items are excluded from subtotal - only chargeable items count
+   * Tax is calculated AFTER discount is applied (GST/VAT compliance)
    */
   async recalculateTotals(orderId, connection = null) {
     const pool = connection || getPool();
 
-    // Get all non-cancelled items, separating NC and non-NC
-    const [items] = await pool.query(
-      `SELECT 
-        SUM(CASE WHEN is_nc = 1 THEN 0 ELSE total_price END) as subtotal,
-        SUM(CASE WHEN is_nc = 1 THEN 0 ELSE tax_amount END) as tax_total,
-        SUM(CASE WHEN is_nc = 1 THEN COALESCE(nc_amount, total_price) ELSE 0 END) as nc_amount
+    // Get all non-cancelled items with their tax details
+    const [orderItems] = await pool.query(
+      `SELECT total_price, tax_amount, tax_details, is_nc, nc_amount
        FROM order_items WHERE order_id = ? AND status != 'cancelled'`,
       [orderId]
     );
 
-    // Subtotal excludes NC items
-    const subtotal = parseFloat(items[0].subtotal) || 0;
-    const originalTaxAmount = parseFloat(items[0].tax_total) || 0;
-    const ncAmount = parseFloat(items[0].nc_amount) || 0;
+    // Calculate subtotal and NC amount, collect tax rates (only for non-NC items)
+    let subtotal = 0;
+    let ncAmount = 0;
+    const itemsWithTax = [];
 
-    // Get discount
-    const [discounts] = await pool.query(
-      'SELECT SUM(discount_amount) as total FROM order_discounts WHERE order_id = ?',
+    for (const item of orderItems) {
+      const itemTotal = parseFloat(item.total_price) || 0;
+      
+      if (item.is_nc) {
+        ncAmount += parseFloat(item.nc_amount || item.total_price) || 0;
+        continue;
+      }
+
+      subtotal += itemTotal;
+
+      // Extract tax rates for recalculation after discount
+      if (item.tax_details) {
+        const taxDetails = typeof item.tax_details === 'string' 
+          ? JSON.parse(item.tax_details) 
+          : item.tax_details;
+        if (Array.isArray(taxDetails) && taxDetails.length > 0) {
+          itemsWithTax.push({ amount: itemTotal, taxDetails });
+        }
+      }
+    }
+
+    // Get all discounts and recalculate percentage-based discounts on new subtotal
+    const [discountRows] = await pool.query(
+      `SELECT id, discount_type, discount_value, discount_amount, applied_on, order_item_id
+       FROM order_discounts WHERE order_id = ?`,
       [orderId]
     );
-    const discountAmount = parseFloat(discounts[0].total) || 0;
 
-    // Calculate taxable amount after discount (subtotal already excludes NC)
-    const taxableAmount = subtotal - discountAmount;
+    let totalDiscountAmount = 0;
+    for (const discount of discountRows) {
+      let newDiscountAmount = parseFloat(discount.discount_amount) || 0;
+      
+      // Recalculate percentage discounts based on new subtotal
+      if (discount.discount_type === 'percentage') {
+        const discountValue = parseFloat(discount.discount_value) || 0;
+        
+        if (discount.applied_on === 'item' && discount.order_item_id) {
+          // Item-level discount - check if item is NC
+          const [itemCheck] = await pool.query(
+            `SELECT total_price, is_nc FROM order_items WHERE id = ? AND status != 'cancelled'`,
+            [discount.order_item_id]
+          );
+          if (itemCheck[0] && !itemCheck[0].is_nc) {
+            const itemPrice = parseFloat(itemCheck[0].total_price) || 0;
+            newDiscountAmount = (itemPrice * discountValue) / 100;
+          } else {
+            // Item is NC or cancelled, discount becomes 0
+            newDiscountAmount = 0;
+          }
+        } else {
+          // Subtotal-level percentage discount - recalculate on new subtotal
+          newDiscountAmount = (subtotal * discountValue) / 100;
+        }
+        
+        // Cap discount to not exceed subtotal
+        newDiscountAmount = Math.min(newDiscountAmount, subtotal - totalDiscountAmount);
+        newDiscountAmount = Math.max(0, newDiscountAmount);
+        newDiscountAmount = parseFloat(newDiscountAmount.toFixed(2));
+        
+        // Update the discount record with new amount
+        if (Math.abs(newDiscountAmount - (parseFloat(discount.discount_amount) || 0)) > 0.01) {
+          await pool.query(
+            'UPDATE order_discounts SET discount_amount = ? WHERE id = ?',
+            [newDiscountAmount, discount.id]
+          );
+        }
+      } else {
+        // Flat discount - cap to available subtotal
+        newDiscountAmount = Math.min(newDiscountAmount, subtotal - totalDiscountAmount);
+        newDiscountAmount = Math.max(0, newDiscountAmount);
+      }
+      
+      totalDiscountAmount += newDiscountAmount;
+    }
+
+    // Calculate taxable amount after discount
+    const taxableAmount = Math.max(0, subtotal - totalDiscountAmount);
     
-    // Apply discount ratio to tax (same as calculateBillDetails in billing.service.js)
-    // Tax should be proportionally reduced when discount is applied
+    // Calculate discount ratio for proportional tax distribution
     const discountRatio = subtotal > 0 ? (taxableAmount / subtotal) : 1;
-    const adjustedTaxAmount = parseFloat((originalTaxAmount * discountRatio).toFixed(2));
 
-    // Calculate total: taxableAmount + adjustedTax (NC already excluded from subtotal)
-    const preRoundTotal = taxableAmount + adjustedTaxAmount;
+    // Recalculate tax on the TAXABLE AMOUNT (after discount)
+    let totalTax = 0;
+    for (const itemData of itemsWithTax) {
+      const itemTaxableAmount = itemData.amount * discountRatio;
+      for (const tax of itemData.taxDetails) {
+        const rate = parseFloat(tax.rate) || 0;
+        totalTax += (itemTaxableAmount * rate) / 100;
+      }
+    }
+    totalTax = parseFloat(totalTax.toFixed(2));
+
+    // Calculate total: taxableAmount + tax (NC already excluded from subtotal)
+    const preRoundTotal = taxableAmount + totalTax;
     const totalAmount = Math.round(preRoundTotal);
     const roundOff = totalAmount - preRoundTotal;
 
@@ -743,7 +818,7 @@ const orderService = {
         subtotal = ?, discount_amount = ?, tax_amount = ?,
         round_off = ?, total_amount = ?, nc_amount = ?, updated_at = NOW()
        WHERE id = ?`,
-      [subtotal, discountAmount, adjustedTaxAmount, roundOff, totalAmount, ncAmount, orderId]
+      [subtotal, totalDiscountAmount, totalTax, roundOff, totalAmount, ncAmount, orderId]
     );
   },
 
@@ -868,17 +943,18 @@ const orderService = {
               const taxRate = parseFloat(tax.rate) || 0;
               const itemTotal = parseFloat(item.total_price) || 0;
               
-              // Add to tax breakup
-              if (!taxBreakup[taxCode]) {
-                taxBreakup[taxCode] = {
+              // Add to tax breakup (composite key to separate same code at different rates)
+              const breakupKey = taxCode + '@' + taxRate;
+              if (!taxBreakup[breakupKey]) {
+                taxBreakup[breakupKey] = {
                   name: taxName,
                   rate: taxRate,
                   taxableAmount: 0,
                   taxAmount: 0
                 };
               }
-              taxBreakup[taxCode].taxableAmount += itemTotal;
-              taxBreakup[taxCode].taxAmount += taxAmt;
+              taxBreakup[breakupKey].taxableAmount += itemTotal;
+              taxBreakup[breakupKey].taxAmount += taxAmt;
               
               // Categorize by tax type
               const codeUpper = taxCode.toUpperCase();
@@ -906,7 +982,7 @@ const orderService = {
         variantName: item.variant_name,
         itemType: item.item_type,
         categoryName: item.category_name,
-        quantity: item.quantity,
+        quantity: parseFloat(item.quantity) || 0,
         unitPrice: parseFloat(item.unit_price) || 0,
         totalPrice: parseFloat(item.total_price) || 0,
         taxAmount: parseFloat(item.tax_amount) || 0,
@@ -1760,18 +1836,20 @@ const orderService = {
     // Recalculate totals
     const totalPrice = item.unit_price * newQuantity;
     let taxAmount = 0;
+    let taxDetails = null;
 
-    if (item.tax_group_id) {
+    if (item.tax_group_id && item.tax_details) {
       const taxResult = await taxService.calculateTax(
         [{ price: item.unit_price, quantity: newQuantity }],
         item.tax_group_id
       );
       taxAmount = taxResult.taxAmount;
+      taxDetails = taxResult.breakdown || null;
     }
 
     await pool.query(
-      `UPDATE order_items SET quantity = ?, total_price = ?, tax_amount = ? WHERE id = ?`,
-      [newQuantity, totalPrice, taxAmount, orderItemId]
+      `UPDATE order_items SET quantity = ?, total_price = ?, tax_amount = ?, tax_details = ? WHERE id = ?`,
+      [newQuantity, totalPrice, taxAmount, taxDetails ? JSON.stringify(taxDetails) : null, orderItemId]
     );
 
     // Recalculate order totals
@@ -1851,15 +1929,27 @@ const orderService = {
           [userId, reason, cancelQuantity, orderItemId]
         );
       } else {
-        // Partial cancel - reduce quantity
+        // Partial cancel - reduce quantity and recalculate tax
         const newQuantity = item.quantity - cancelQuantity;
         const newTotal = item.unit_price * newQuantity;
+        
+        // Recalculate tax for new quantity (only if item originally had tax)
+        let newTaxAmount = 0;
+        let newTaxDetails = null;
+        if (item.tax_group_id && item.tax_details) {
+          const taxResult = await taxService.calculateTax(
+            [{ price: item.unit_price, quantity: newQuantity }],
+            item.tax_group_id
+          );
+          newTaxAmount = taxResult.taxAmount;
+          newTaxDetails = taxResult.breakdown || null;
+        }
 
         await connection.query(
           `UPDATE order_items SET 
-            quantity = ?, total_price = ?, cancel_quantity = ?
+            quantity = ?, total_price = ?, tax_amount = ?, tax_details = ?, cancel_quantity = ?
            WHERE id = ?`,
-          [newQuantity, newTotal, cancelQuantity, orderItemId]
+          [newQuantity, newTotal, newTaxAmount, newTaxDetails ? JSON.stringify(newTaxDetails) : null, cancelQuantity, orderItemId]
         );
       }
 
@@ -3660,7 +3750,7 @@ const orderService = {
         categoryName: item.category_name,
         variantId: item.variant_id,
         variantName: item.variant_name,
-        quantity: item.quantity,
+        quantity: parseFloat(item.quantity) || 0,
         unitPrice: parseFloat(item.unit_price) || 0,
         totalPrice: parseFloat(item.total_price) || 0,
         discountAmount: parseFloat(item.discount_amount) || 0,

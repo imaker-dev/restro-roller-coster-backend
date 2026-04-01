@@ -105,33 +105,38 @@ function formatInvoice(invoice) {
     ? (typeof invoice.tax_breakup === 'string' ? JSON.parse(invoice.tax_breakup) : invoice.tax_breakup)
     : null;
   
-  // Transform taxBreakup for interstate: convert CGST+SGST to IGST
+  // Transform taxBreakup for interstate: convert CGST+SGST to IGST per rate group
   if (isInterstate && taxBreakup) {
     const transformedBreakup = {};
-    let totalGstRate = 0;
-    let totalGstTaxable = 0;
-    let totalGstAmount = 0;
+    // Group GST components by rate to create proper IGST entries per rate group
+    const gstByRate = {};
     
     for (const [code, data] of Object.entries(taxBreakup)) {
       const codeUpper = code.toUpperCase();
       if (codeUpper.includes('CGST') || codeUpper.includes('SGST')) {
-        totalGstRate += parseFloat(data.rate) || 0;
-        totalGstTaxable = Math.max(totalGstTaxable, parseFloat(data.taxableAmount) || 0);
-        totalGstAmount += parseFloat(data.taxAmount) || 0;
+        const rate = parseFloat(data.rate) || 0;
+        const rateKey = String(rate);
+        if (!gstByRate[rateKey]) {
+          gstByRate[rateKey] = { totalRate: 0, taxableAmount: 0, taxAmount: 0 };
+        }
+        gstByRate[rateKey].totalRate += rate;
+        gstByRate[rateKey].taxableAmount = Math.max(gstByRate[rateKey].taxableAmount, parseFloat(data.taxableAmount) || 0);
+        gstByRate[rateKey].taxAmount += parseFloat(data.taxAmount) || 0;
       } else {
-        // Keep non-GST taxes (VAT, CESS, etc.)
+        // Keep non-GST taxes (VAT, CESS, IGST, etc.)
         transformedBreakup[code] = data;
       }
     }
     
-    // Add combined IGST if there was any GST
-    if (totalGstAmount > 0) {
-      transformedBreakup['IGST'] = {
-        name: `IGST ${totalGstRate}%`,
-        rate: totalGstRate,
-        taxableAmount: totalGstTaxable,
-        taxAmount: totalGstAmount
-      };
+    // Create IGST entries for each rate group (e.g., CGST@2.5+SGST@2.5 → IGST@5)
+    for (const [, gstData] of Object.entries(gstByRate)) {
+      const igstRate = gstData.totalRate;
+      const igstKey = 'IGST@' + igstRate;
+      if (!transformedBreakup[igstKey]) {
+        transformedBreakup[igstKey] = { name: 'IGST', rate: igstRate, taxableAmount: 0, taxAmount: 0 };
+      }
+      transformedBreakup[igstKey].taxableAmount += gstData.taxableAmount;
+      transformedBreakup[igstKey].taxAmount += gstData.taxAmount;
     }
     
     taxBreakup = transformedBreakup;
@@ -392,15 +397,27 @@ const billingService = {
       customerGstState: invoice.customerGstState || order.customer_gst_state || null,
       customerGstStateCode: invoice.customerGstStateCode || order.customer_gst_state_code || null,
       isInterstate: invoice.isInterstate || order.is_interstate || false,
-      items: this._consolidateItems((invoice.items || []).filter(i => i.status !== 'cancelled').map(item => ({
-        itemName: item.name || item.item_name || item.itemName,
-        variantName: item.variantName || item.variant_name || null,
-        quantity: parseInt(item.quantity) || 0,
-        unitPrice: parseFloat(item.unitPrice || item.unit_price || 0),
-        totalPrice: parseFloat(item.totalPrice || item.total_price || 0),
-        isNC: !!(item.isNC || item.is_nc),
-        ncAmount: parseFloat(item.ncAmount || item.nc_amount || 0)
-      }))),
+      items: this._consolidateItems((invoice.items || []).filter(i => i.status !== 'cancelled').map(item => {
+        // Compute total tax rate from item's tax details for bill print
+        let taxRate = 0;
+        const itemTaxDetails = item.taxDetails || item.tax_details;
+        if (itemTaxDetails) {
+          const details = typeof itemTaxDetails === 'string' ? JSON.parse(itemTaxDetails) : itemTaxDetails;
+          if (Array.isArray(details)) {
+            taxRate = details.reduce((sum, t) => sum + (parseFloat(t.rate) || 0), 0);
+          }
+        }
+        return {
+          itemName: item.name || item.item_name || item.itemName,
+          variantName: item.variantName || item.variant_name || null,
+          quantity: parseInt(item.quantity) || 0,
+          unitPrice: parseFloat(item.unitPrice || item.unit_price || 0),
+          totalPrice: parseFloat(item.totalPrice || item.total_price || 0),
+          isNC: !!(item.isNC || item.is_nc),
+          ncAmount: parseFloat(item.ncAmount || item.nc_amount || 0),
+          taxRate
+        };
+      })),
       subtotal: parseFloat(invoice.subtotal || 0).toFixed(2),
       taxes: Object.values(invoice.taxBreakup || {}).map(t => ({
         name: t.name || 'Tax',
@@ -444,12 +461,12 @@ const billingService = {
 
   /**
    * Consolidate same items into single lines (e.g., 4x Chilli Fish Dry → 1 line qty 4)
-   * Groups by itemName + variantName + unitPrice + isNC
+   * Groups by itemName + variantName + unitPrice + isNC + taxRate
    */
   _consolidateItems(items) {
     const map = new Map();
     for (const item of items) {
-      const key = `${item.itemName}|${item.variantName || ''}|${item.unitPrice}|${item.isNC}`;
+      const key = `${item.itemName}|${item.variantName || ''}|${item.unitPrice}|${item.isNC}|${item.taxRate || 0}`;
       if (map.has(key)) {
         const existing = map.get(key);
         existing.quantity += item.quantity;
@@ -837,6 +854,7 @@ const billingService = {
 
   /**
    * Calculate bill details with tax breakup
+   * Tax is calculated AFTER discount is applied (GST/VAT compliance)
    * @param {Object} order - Order object with items
    * @param {Object} options - { applyServiceCharge, isInterstate }
    */
@@ -848,18 +866,16 @@ const billingService = {
     const isInterstate = options.isInterstate || order.is_interstate || false;
 
     let subtotal = 0;
-    let cgstAmount = 0;
-    let sgstAmount = 0;
-    let igstAmount = 0;
-    let vatAmount = 0;
-    let cessAmount = 0;
     const taxBreakup = {};
     const hsnSummary = {};
 
     // Track NC amounts
     let ncAmount = 0;
 
-    // Process each item
+    // Track items with their tax rates for recalculation after discount
+    const itemsWithTax = [];
+
+    // Process each item - collect subtotal and tax rates
     for (const item of order.items) {
       if (item.status === 'cancelled') continue;
 
@@ -876,132 +892,162 @@ const billingService = {
       // Add to subtotal (only non-NC items)
       subtotal += itemTotal;
 
-      // Tax calculation — only for non-NC items
+      // Extract tax rates from item for recalculation after discount
       const itemTaxDetails = item.tax_details || item.taxDetails;
       if (itemTaxDetails) {
         const taxDetails = typeof itemTaxDetails === 'string' 
           ? JSON.parse(itemTaxDetails) 
           : itemTaxDetails;
 
-        if (Array.isArray(taxDetails)) {
-          // For interstate: convert CGST+SGST to IGST
-          if (isInterstate) {
-            // Calculate total GST rate from components
-            let totalGstRate = 0;
-            let totalGstAmount = 0;
-            for (const tax of taxDetails) {
-              const codeUpper = (tax.componentCode || tax.code || '').toUpperCase();
-              if (codeUpper.includes('CGST') || codeUpper.includes('SGST')) {
-                totalGstRate += parseFloat(tax.rate) || 0;
-                totalGstAmount += parseFloat(tax.amount) || 0;
-              } else if (codeUpper.includes('IGST')) {
-                // Already IGST
-                totalGstRate += parseFloat(tax.rate) || 0;
-                totalGstAmount += parseFloat(tax.amount) || 0;
-              } else {
-                // VAT, CESS etc - keep as is
-                const taxCode = tax.componentCode || tax.code || tax.componentName || tax.name || 'TAX';
-                const taxName = tax.componentName || tax.name || taxCode;
-                const taxAmt = parseFloat(tax.amount) || (itemTotal * tax.rate / 100);
-                if (!taxBreakup[taxCode]) {
-                  taxBreakup[taxCode] = { name: taxName, rate: tax.rate, taxableAmount: 0, taxAmount: 0 };
-                }
-                taxBreakup[taxCode].taxableAmount += itemTotal;
-                taxBreakup[taxCode].taxAmount += taxAmt;
-                const cUpper = taxCode.toUpperCase();
-                if (cUpper.includes('VAT')) vatAmount += taxAmt;
-                else if (cUpper.includes('CESS')) cessAmount += taxAmt;
-              }
-            }
-            // Add combined IGST
-            if (totalGstRate > 0) {
-              if (!taxBreakup['IGST']) {
-                taxBreakup['IGST'] = { name: 'IGST', rate: totalGstRate, taxableAmount: 0, taxAmount: 0 };
-              }
-              taxBreakup['IGST'].taxableAmount += itemTotal;
-              taxBreakup['IGST'].taxAmount += totalGstAmount;
-              igstAmount += totalGstAmount;
-            }
+        if (Array.isArray(taxDetails) && taxDetails.length > 0) {
+          itemsWithTax.push({
+            amount: itemTotal,
+            taxDetails: taxDetails
+          });
+        }
+      }
+    }
+
+    // Recalculate discount amount based on current subtotal (after NC exclusion)
+    // This ensures percentage discounts are correctly calculated on the new subtotal
+    let discountAmount = 0;
+    if (order.discounts && Array.isArray(order.discounts)) {
+      for (const discount of order.discounts) {
+        const discountType = discount.discount_type || discount.discountType;
+        const discountValue = parseFloat(discount.discount_value || discount.discountValue) || 0;
+        const appliedOn = discount.applied_on || discount.appliedOn || 'subtotal';
+        
+        if (discountType === 'percentage') {
+          if (appliedOn === 'item') {
+            // Item-level discount - use stored amount (item price doesn't change)
+            discountAmount += parseFloat(discount.discount_amount || discount.discountAmount) || 0;
           } else {
-            // Normal intrastate: CGST + SGST
-            for (const tax of taxDetails) {
-              const taxCode = tax.componentCode || tax.code || tax.componentName || tax.name || 'TAX';
-              const taxName = tax.componentName || tax.name || taxCode;
-              const taxAmt = tax.amount || (itemTotal * tax.rate / 100);
+            // Subtotal-level percentage discount - recalculate on current subtotal
+            discountAmount += (subtotal * discountValue) / 100;
+          }
+        } else {
+          // Flat discount
+          discountAmount += parseFloat(discount.discount_amount || discount.discountAmount) || 0;
+        }
+      }
+    } else {
+      // Fallback to order.discount_amount if discounts array not available
+      discountAmount = parseFloat(order.discount_amount) || 0;
+    }
+    
+    // Cap discount to not exceed subtotal
+    discountAmount = Math.min(discountAmount, subtotal);
+    discountAmount = parseFloat(discountAmount.toFixed(2));
+    
+    // Taxable amount = subtotal - discount (tax is calculated on this)
+    const taxableAmount = Math.max(0, subtotal - discountAmount);
 
-              if (!taxBreakup[taxCode]) {
-                taxBreakup[taxCode] = {
-                  name: taxName,
-                  rate: tax.rate,
-                  taxableAmount: 0,
-                  taxAmount: 0
-                };
-              }
-              taxBreakup[taxCode].taxableAmount += itemTotal;
-              taxBreakup[taxCode].taxAmount += taxAmt;
+    // Calculate discount ratio for proportional distribution
+    const discountRatio = subtotal > 0 ? (taxableAmount / subtotal) : 1;
 
-              // Categorize tax by code
-              const codeUpper = taxCode.toUpperCase();
-              if (codeUpper.includes('CGST')) {
-                cgstAmount += taxAmt;
-              } else if (codeUpper.includes('SGST')) {
-                sgstAmount += taxAmt;
-              } else if (codeUpper.includes('IGST')) {
-                igstAmount += taxAmt;
-              } else if (codeUpper.includes('VAT')) {
-                vatAmount += taxAmt;
-              } else if (codeUpper.includes('CESS')) {
-                cessAmount += taxAmt;
-              }
+    // Now calculate tax on the TAXABLE AMOUNT (after discount)
+    let cgstAmount = 0;
+    let sgstAmount = 0;
+    let igstAmount = 0;
+    let vatAmount = 0;
+    let cessAmount = 0;
+
+    // Process each item's tax, applying discount ratio to get correct taxable base
+    for (const itemData of itemsWithTax) {
+      const itemTaxableAmount = itemData.amount * discountRatio;
+
+      if (isInterstate) {
+        // For interstate: combine CGST+SGST into IGST
+        let totalGstRate = 0;
+        for (const tax of itemData.taxDetails) {
+          const codeUpper = (tax.componentCode || tax.code || '').toUpperCase();
+          if (codeUpper.includes('CGST') || codeUpper.includes('SGST') || codeUpper.includes('IGST')) {
+            totalGstRate += parseFloat(tax.rate) || 0;
+          } else {
+            // VAT, CESS etc - calculate on discounted amount
+            const taxCode = tax.componentCode || tax.code || tax.componentName || tax.name || 'TAX';
+            const taxName = tax.componentName || tax.name || taxCode;
+            const rate = parseFloat(tax.rate) || 0;
+            const taxAmt = (itemTaxableAmount * rate) / 100;
+            
+            const breakupKey = taxCode + '@' + rate;
+            if (!taxBreakup[breakupKey]) {
+              taxBreakup[breakupKey] = { name: taxName, rate: rate, taxableAmount: 0, taxAmount: 0 };
             }
+            taxBreakup[breakupKey].taxableAmount += itemTaxableAmount;
+            taxBreakup[breakupKey].taxAmount += taxAmt;
+            
+            const cUpper = taxCode.toUpperCase();
+            if (cUpper.includes('VAT')) vatAmount += taxAmt;
+            else if (cUpper.includes('CESS')) cessAmount += taxAmt;
+          }
+        }
+        // Add combined IGST calculated on discounted amount
+        if (totalGstRate > 0) {
+          const igstAmt = (itemTaxableAmount * totalGstRate) / 100;
+          const igstKey = 'IGST@' + totalGstRate;
+          if (!taxBreakup[igstKey]) {
+            taxBreakup[igstKey] = { name: 'IGST', rate: totalGstRate, taxableAmount: 0, taxAmount: 0 };
+          }
+          taxBreakup[igstKey].taxableAmount += itemTaxableAmount;
+          taxBreakup[igstKey].taxAmount += igstAmt;
+          igstAmount += igstAmt;
+        }
+      } else {
+        // Normal intrastate: CGST + SGST - calculate on discounted amount
+        for (const tax of itemData.taxDetails) {
+          const taxCode = tax.componentCode || tax.code || tax.componentName || tax.name || 'TAX';
+          const taxName = tax.componentName || tax.name || taxCode;
+          const rate = parseFloat(tax.rate) || 0;
+          // Calculate tax on the discounted item amount
+          const taxAmt = (itemTaxableAmount * rate) / 100;
+
+          const breakupKey = taxCode + '@' + rate;
+          if (!taxBreakup[breakupKey]) {
+            taxBreakup[breakupKey] = {
+              name: taxName,
+              rate: rate,
+              taxableAmount: 0,
+              taxAmount: 0
+            };
+          }
+          taxBreakup[breakupKey].taxableAmount += itemTaxableAmount;
+          taxBreakup[breakupKey].taxAmount += taxAmt;
+
+          // Categorize tax by code
+          const codeUpper = taxCode.toUpperCase();
+          if (codeUpper.includes('CGST')) {
+            cgstAmount += taxAmt;
+          } else if (codeUpper.includes('SGST')) {
+            sgstAmount += taxAmt;
+          } else if (codeUpper.includes('IGST')) {
+            igstAmount += taxAmt;
+          } else if (codeUpper.includes('VAT')) {
+            vatAmount += taxAmt;
+          } else if (codeUpper.includes('CESS')) {
+            cessAmount += taxAmt;
           }
         }
       }
     }
 
-    // Get discount amount and calculate discount ratio
-    const discountAmount = parseFloat(order.discount_amount) || 0;
-    // Subtotal already excludes NC items, so taxableAmount = subtotal - discount
-    const taxableAmount = subtotal - discountAmount;
-    
-    // Calculate discount ratio to proportionally reduce tax
-    const discountRatio = subtotal > 0 ? (taxableAmount / subtotal) : 1;
+    // Round tax amounts
+    cgstAmount = parseFloat(cgstAmount.toFixed(2));
+    sgstAmount = parseFloat(sgstAmount.toFixed(2));
+    igstAmount = parseFloat(igstAmount.toFixed(2));
+    vatAmount = parseFloat(vatAmount.toFixed(2));
+    cessAmount = parseFloat(cessAmount.toFixed(2));
 
-    // Apply discount ratio to all tax amounts (tax on discounted subtotal)
+    // Round taxBreakup amounts
     for (const key of Object.keys(taxBreakup)) {
-      taxBreakup[key].taxableAmount = parseFloat((taxBreakup[key].taxableAmount * discountRatio).toFixed(2));
-      taxBreakup[key].taxAmount = parseFloat((taxBreakup[key].taxAmount * discountRatio).toFixed(2));
+      taxBreakup[key].taxableAmount = parseFloat(taxBreakup[key].taxableAmount.toFixed(2));
+      taxBreakup[key].taxAmount = parseFloat(taxBreakup[key].taxAmount.toFixed(2));
     }
 
-    // Recalculate tax amounts after discount adjustment
-    cgstAmount = parseFloat((cgstAmount * discountRatio).toFixed(2));
-    sgstAmount = parseFloat((sgstAmount * discountRatio).toFixed(2));
-    igstAmount = parseFloat((igstAmount * discountRatio).toFixed(2));
-    vatAmount = parseFloat((vatAmount * discountRatio).toFixed(2));
-    cessAmount = parseFloat((cessAmount * discountRatio).toFixed(2));
-
-    // totalTax: sum of individual tax amounts (ensures consistency)
-    // This must equal cgstAmount + sgstAmount + igstAmount + vatAmount + cessAmount
+    // totalTax: sum of individual tax amounts
     let totalTax = cgstAmount + sgstAmount + igstAmount + vatAmount + cessAmount;
-    
-    // Also sync taxBreakup amounts with individual amounts for consistency
-    // Recalculate taxBreakup from individual amounts to ensure they match
-    for (const key of Object.keys(taxBreakup)) {
-      const codeUpper = key.toUpperCase();
-      if (codeUpper.includes('CGST')) {
-        // CGST entries should sum to cgstAmount
-      } else if (codeUpper.includes('SGST')) {
-        // SGST entries should sum to sgstAmount  
-      } else if (codeUpper.includes('IGST')) {
-        // IGST entries should sum to igstAmount
-      } else if (codeUpper.includes('VAT')) {
-        // VAT entries should sum to vatAmount
-      } else if (codeUpper.includes('CESS')) {
-        // CESS entries should sum to cessAmount
-      }
-    }
 
-    // Service charge (applied on subtotal which already excludes NC items)
+    // Service charge (applied on taxable amount after discount)
     let serviceCharge = 0;
     if (applyServiceCharge && order.order_type === 'dine_in') {
       const [charges] = await pool.query(
@@ -1010,7 +1056,7 @@ const billingService = {
       );
       if (charges[0]) {
         if (charges[0].is_percentage) {
-          serviceCharge = (subtotal * parseFloat(charges[0].rate)) / 100;
+          serviceCharge = (taxableAmount * parseFloat(charges[0].rate)) / 100;
         } else {
           serviceCharge = parseFloat(charges[0].rate);
         }
@@ -1020,7 +1066,7 @@ const billingService = {
     const packagingCharge = parseFloat(order.packaging_charge) || 0;
     const deliveryCharge = parseFloat(order.delivery_charge) || 0;
 
-    // grandTotal = taxableAmount (non-NC minus discount) + tax (non-NC only) + charges
+    // grandTotal = taxableAmount (after discount) + tax (on taxable amount) + charges
     const preRoundTotal = taxableAmount + totalTax + serviceCharge + packagingCharge + deliveryCharge;
     const grandTotal = Math.max(0, Math.round(preRoundTotal));
     const roundOff = grandTotal - preRoundTotal;
@@ -2082,6 +2128,7 @@ const billingService = {
       `UPDATE invoices SET
         subtotal = ?, discount_amount = ?, taxable_amount = ?,
         cgst_amount = ?, sgst_amount = ?, igst_amount = ?,
+        vat_amount = ?, cess_amount = ?,
         total_tax = ?, service_charge = ?,
         grand_total = ?, round_off = ?,
         amount_in_words = ?, tax_breakup = ?, hsn_summary = ?,
@@ -2090,6 +2137,7 @@ const billingService = {
       [
         billDetails.subtotal, billDetails.discountAmount, billDetails.taxableAmount,
         billDetails.cgstAmount, billDetails.sgstAmount, billDetails.igstAmount,
+        billDetails.vatAmount, billDetails.cessAmount,
         billDetails.totalTax, billDetails.serviceCharge,
         billDetails.grandTotal, billDetails.roundOff,
         this.numberToWords(billDetails.grandTotal),

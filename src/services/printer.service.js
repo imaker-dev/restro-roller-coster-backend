@@ -1317,7 +1317,7 @@ const printerService = {
     const dash = '-'.repeat(w);
     const cmd = this.getEscPosCommands();
     const FONT_B = '\x1B\x4D\x01'; // Condensed font (9x17, 64 chars/line on 80mm)
-    const LS_BODY = '\x1B\x33\x28'; // 40-dot line spacing — ensures no overlap on all printers (Font B height varies 17-30 dots depending on printer)
+    const LS_BODY = '\x1B\x33\x30'; // 48-dot line spacing — extra space to prevent text merging on thermal printers
 
     // ── 1. HEADER ───────────────────────────────
     if (billData.isDuplicate) {
@@ -1409,6 +1409,7 @@ const printerService = {
         this.rAlign(amount, cA);
       let name = item.itemName || '';
       if (item.variantName) name += ' (' + item.variantName + ')';
+      if (item.taxRate && item.taxRate >= 18) name += ' \u2022';
       if (item.isNC) name += ' [NC]';
 
       if (name.length <= cN) {
