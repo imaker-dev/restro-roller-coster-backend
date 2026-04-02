@@ -8,13 +8,14 @@
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '..', '..', '.env') });
 const mysql = require('mysql2/promise');
+const dbConfigBase = require('../../config/database.config');
 
 const dbConfig = {
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT) || 3306,
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'restro',
+  host: dbConfigBase.host,
+  port: dbConfigBase.port,
+  user: dbConfigBase.user,
+  password: dbConfigBase.password,
+  database: dbConfigBase.database,
   multipleStatements: true
 };
 
