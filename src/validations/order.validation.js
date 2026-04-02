@@ -164,7 +164,10 @@ module.exports = {
     upiId: Joi.string().max(100).allow('', null),
     walletName: Joi.string().max(50).allow('', null),
     bankName: Joi.string().max(100).allow('', null),
-    notes: Joi.string().max(255).allow('', null)
+    notes: Joi.string().max(255).allow('', null),
+    adjustment: Joi.alternatives().try(Joi.boolean(), Joi.string().valid('true', 'false')).default(false),
+    adjustmentAmount: Joi.number().min(0).default(0),
+    adjustmentReason: Joi.string().max(500).allow('', null)
   }),
 
   splitPayment: Joi.object({
@@ -179,7 +182,10 @@ module.exports = {
       cardLastFour: Joi.string().max(4).allow('', null),
       upiId: Joi.string().max(100).allow('', null),
       notes: Joi.string().max(255).allow('', null)
-    })).min(2).required()
+    })).min(2).required(),
+    adjustment: Joi.alternatives().try(Joi.boolean(), Joi.string().valid('true', 'false')).default(false),
+    adjustmentAmount: Joi.number().min(0).default(0),
+    adjustmentReason: Joi.string().max(500).allow('', null)
   }),
 
   initiateRefund: Joi.object({

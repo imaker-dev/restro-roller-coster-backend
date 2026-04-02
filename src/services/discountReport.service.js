@@ -7,21 +7,51 @@ const { getPool } = require('../database');
 const logger = require('../utils/logger');
 
 /**
- * Get local date string (YYYY-MM-DD)
+ * Business day starts at this hour (IST). Orders before this hour belong to the previous business day.
+ */
+const BUSINESS_DAY_START_HOUR = 4;
+
+/**
+ * Get local date string (YYYY-MM-DD) for the current business day.
+ * If the current time is before BUSINESS_DAY_START_HOUR (e.g. 4 AM),
+ * the business day is still "yesterday".
  */
 function getLocalDate(date = new Date()) {
   const d = date instanceof Date ? date : new Date(date);
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
+  const shifted = new Date(d.getTime() - BUSINESS_DAY_START_HOUR * 60 * 60 * 1000);
+  const year = shifted.getFullYear();
+  const month = String(shifted.getMonth() + 1).padStart(2, '0');
+  const day = String(shifted.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 }
 
 /**
- * Extract DATE from a timestamp column
+ * Extract the business-day DATE from a timestamp column.
+ * Subtracts BUSINESS_DAY_START_HOUR hours so pre-cutoff orders map to previous business day.
  */
 function toISTDate(column) {
-  return `DATE(${column})`;
+  return `DATE(DATE_SUB(${column}, INTERVAL ${BUSINESS_DAY_START_HOUR} HOUR))`;
+}
+
+/**
+ * Convert inclusive business-day date range to index-friendly datetime bounds.
+ */
+function businessDayRange(startDate, endDate) {
+  const h = String(BUSINESS_DAY_START_HOUR).padStart(2, '0') + ':00:00';
+  const startDt = `${startDate} ${h}`;
+  const ed = new Date(endDate + 'T00:00:00');
+  ed.setDate(ed.getDate() + 1);
+  const endStr = ed.getFullYear() + '-' + String(ed.getMonth() + 1).padStart(2, '0') + '-' + String(ed.getDate()).padStart(2, '0');
+  const endDt = `${endStr} ${h}`;
+  return { startDt, endDt };
+}
+
+/**
+ * SQL snippet for index-friendly business-day WHERE condition.
+ * Params: [startDt, endDt] from businessDayRange().
+ */
+function bdWhere(column) {
+  return `${column} >= ? AND ${column} < ?`;
 }
 
 const discountReportService = {
@@ -31,7 +61,8 @@ const discountReportService = {
   _dateRange(startDate, endDate) {
     const start = startDate || getLocalDate();
     const end = endDate || start;
-    return { start, end };
+    const { startDt, endDt } = businessDayRange(start, end);
+    return { start, end, startDt, endDt };
   },
 
   /**
@@ -45,7 +76,7 @@ const discountReportService = {
    */
   async getDiscountSummary(outletId, startDate, endDate, options = {}) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
 
     // Summary totals (no pagination)
     const [summaryRows] = await pool.query(
@@ -62,9 +93,9 @@ const discountReportService = {
        FROM order_discounts od
        INNER JOIN orders o ON od.order_id = o.id
        WHERE o.outlet_id = ? 
-         AND ${toISTDate('od.created_at')} BETWEEN ? AND ?
+         AND ${bdWhere('od.created_at')}
          AND o.status NOT IN ('cancelled')`,
-      [outletId, start, end]
+      [outletId, startDt, endDt]
     );
 
     // Order totals for comparison
@@ -76,9 +107,9 @@ const discountReportService = {
         SUM(discount_amount) as total_order_discount
        FROM orders 
        WHERE outlet_id = ? 
-         AND ${toISTDate('created_at')} BETWEEN ? AND ?
+         AND ${bdWhere('created_at')}
          AND status NOT IN ('cancelled')`,
-      [outletId, start, end]
+      [outletId, startDt, endDt]
     );
 
     // Top discount codes
@@ -92,13 +123,13 @@ const discountReportService = {
        FROM order_discounts od
        INNER JOIN orders o ON od.order_id = o.id
        WHERE o.outlet_id = ? 
-         AND ${toISTDate('od.created_at')} BETWEEN ? AND ?
+         AND ${bdWhere('od.created_at')}
          AND o.status NOT IN ('cancelled')
          AND od.discount_code IS NOT NULL
        GROUP BY od.discount_code, od.discount_name
        ORDER BY total_amount DESC
        LIMIT 10`,
-      [outletId, start, end]
+      [outletId, startDt, endDt]
     );
 
     // Top staff giving discounts
@@ -113,12 +144,12 @@ const discountReportService = {
        INNER JOIN orders o ON od.order_id = o.id
        LEFT JOIN users u ON od.created_by = u.id
        WHERE o.outlet_id = ? 
-         AND ${toISTDate('od.created_at')} BETWEEN ? AND ?
+         AND ${bdWhere('od.created_at')}
          AND o.status NOT IN ('cancelled')
        GROUP BY od.created_by, u.name
        ORDER BY total_amount DESC
        LIMIT 10`,
-      [outletId, start, end]
+      [outletId, startDt, endDt]
     );
 
     // Daily breakdown
@@ -131,11 +162,11 @@ const discountReportService = {
        FROM order_discounts od
        INNER JOIN orders o ON od.order_id = o.id
        WHERE o.outlet_id = ? 
-         AND ${toISTDate('od.created_at')} BETWEEN ? AND ?
+         AND ${bdWhere('od.created_at')}
          AND o.status NOT IN ('cancelled')
        GROUP BY ${toISTDate('od.created_at')}
        ORDER BY date DESC`,
-      [outletId, start, end]
+      [outletId, startDt, endDt]
     );
 
     const summary = summaryRows[0];
@@ -200,7 +231,7 @@ const discountReportService = {
    */
   async getDiscountDetails(outletId, startDate, endDate, options = {}) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
 
     // Parse options
     const page = Math.max(1, parseInt(options.page) || 1);
@@ -217,10 +248,10 @@ const discountReportService = {
     // Build WHERE conditions
     const conditions = [
       'o.outlet_id = ?',
-      `${toISTDate('od.created_at')} BETWEEN ? AND ?`,
+      `${bdWhere('od.created_at')}`,
       "o.status NOT IN ('cancelled')"
     ];
-    const params = [outletId, start, end];
+    const params = [outletId, startDt, endDt];
 
     if (search) {
       conditions.push(`(
@@ -407,7 +438,7 @@ const discountReportService = {
    */
   async getDiscountCodeReport(outletId, startDate, endDate, options = {}) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
 
     const page = Math.max(1, parseInt(options.page) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(options.limit) || 50));
@@ -419,11 +450,11 @@ const discountReportService = {
     // Build WHERE conditions
     const conditions = [
       'o.outlet_id = ?',
-      `${toISTDate('od.created_at')} BETWEEN ? AND ?`,
+      `${bdWhere('od.created_at')}`,
       "o.status NOT IN ('cancelled')",
       'od.discount_code IS NOT NULL'
     ];
-    const params = [outletId, start, end];
+    const params = [outletId, startDt, endDt];
 
     if (search) {
       conditions.push('(od.discount_code LIKE ? OR od.discount_name LIKE ?)');
@@ -540,7 +571,7 @@ const discountReportService = {
    */
   async getStaffDiscountReport(outletId, startDate, endDate, options = {}) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
 
     const page = Math.max(1, parseInt(options.page) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(options.limit) || 50));
@@ -552,10 +583,10 @@ const discountReportService = {
     // Build WHERE conditions
     const conditions = [
       'o.outlet_id = ?',
-      `${toISTDate('od.created_at')} BETWEEN ? AND ?`,
+      `${bdWhere('od.created_at')}`,
       "o.status NOT IN ('cancelled')"
     ];
-    const params = [outletId, start, end];
+    const params = [outletId, startDt, endDt];
 
     if (search) {
       conditions.push('u.name LIKE ?');
@@ -658,7 +689,7 @@ const discountReportService = {
    */
   async exportDiscountReport(outletId, startDate, endDate, options = {}) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
 
     const reportType = options.reportType || 'details';
     const discountType = (options.discountType || '').trim();
@@ -668,10 +699,10 @@ const discountReportService = {
     // Build WHERE conditions
     const conditions = [
       'o.outlet_id = ?',
-      `${toISTDate('od.created_at')} BETWEEN ? AND ?`,
+      `${bdWhere('od.created_at')}`,
       "o.status NOT IN ('cancelled')"
     ];
-    const params = [outletId, start, end];
+    const params = [outletId, startDt, endDt];
 
     if (discountType) {
       conditions.push('od.discount_type = ?');

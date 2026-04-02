@@ -412,6 +412,7 @@ const customerService = {
     return {
       customers: rows.map((r) => ({
         ...this.formatCustomer(r),
+        dueBalance: parseFloat(r.total_due) || 0,
         firstOrderAt: r.first_order_at || null,
         avgOrderValue: parseFloat(r.avg_order_value) || 0,
         totalDue: parseFloat(r.total_due) || 0,
@@ -446,7 +447,7 @@ const customerService = {
     const [orders] = await pool.query(
       `SELECT o.id, o.uuid, o.order_number, o.order_type, o.status, o.payment_status,
               o.subtotal, o.discount_amount, o.tax_amount, o.total_amount,
-              o.paid_amount, o.due_amount,
+              o.paid_amount, o.due_amount, o.is_adjustment, o.adjustment_amount,
               o.is_interstate, o.customer_gstin, o.customer_company_name,
               o.created_at, o.billed_at,
               t.table_number, t.name as table_name,
@@ -482,6 +483,8 @@ const customerService = {
           totalAmount: parseFloat(o.total_amount) || 0,
           paidAmount: parseFloat(o.paid_amount) || 0,
           dueAmount: parseFloat(o.due_amount) || 0,
+          isAdjustment: !!o.is_adjustment,
+          adjustmentAmount: parseFloat(o.adjustment_amount) || 0,
           isInterstate,
           taxType: isInterstate ? 'IGST' : 'CGST+SGST',
           cgstAmount: parseFloat(o.cgst_amount) || 0,
@@ -529,7 +532,8 @@ const customerService = {
          COALESCE(os.total_spent, c.total_spent, 0) AS total_spent,
          COALESCE(os.last_order_at, c.last_order_at) AS last_order_at,
          os.first_order_at,
-         COALESCE(os.avg_order_value, 0) AS avg_order_value
+         COALESCE(os.avg_order_value, 0) AS avg_order_value,
+         COALESCE(os.total_due, 0) AS total_due
        FROM customers c
        LEFT JOIN (
          SELECT
@@ -538,7 +542,8 @@ const customerService = {
            SUM(COALESCE(o.total_amount, 0)) AS total_spent,
            MAX(o.created_at) AS last_order_at,
            MIN(o.created_at) AS first_order_at,
-           AVG(COALESCE(o.total_amount, 0)) AS avg_order_value
+           AVG(COALESCE(o.total_amount, 0)) AS avg_order_value,
+           SUM(COALESCE(o.due_amount, 0)) AS total_due
          FROM orders o
          WHERE o.customer_id IS NOT NULL
            AND o.status != 'cancelled'
@@ -556,6 +561,7 @@ const customerService = {
     const customerRow = customerRows[0];
     const customer = {
       ...this.formatCustomer(customerRow),
+      dueBalance: parseFloat(customerRow.total_due) || 0,
       firstOrderAt: customerRow.first_order_at || null,
       avgOrderValue: parseFloat(customerRow.avg_order_value) || 0
     };
@@ -667,7 +673,7 @@ const customerService = {
       ? `SELECT
            o.id, o.uuid, o.order_number, o.order_type, o.status, o.payment_status,
            o.subtotal, o.discount_amount, o.tax_amount, o.total_amount,
-           o.paid_amount, o.due_amount,
+           o.paid_amount, o.due_amount, o.is_adjustment, o.adjustment_amount,
            o.is_nc, o.nc_amount, o.nc_reason,
            o.service_charge, o.packaging_charge, o.delivery_charge, o.round_off,
            o.is_interstate, o.customer_gstin, o.customer_company_name,
@@ -683,7 +689,7 @@ const customerService = {
       : `SELECT
            o.id, o.uuid, o.order_number, o.order_type, o.status, o.payment_status,
            o.subtotal, o.discount_amount, o.tax_amount, o.total_amount,
-           o.paid_amount, o.due_amount,
+           o.paid_amount, o.due_amount, o.is_adjustment, o.adjustment_amount,
            o.is_nc, o.nc_amount, o.nc_reason,
            o.service_charge, o.packaging_charge, o.delivery_charge, o.round_off,
            o.is_interstate, o.customer_gstin, o.customer_company_name,
@@ -793,6 +799,8 @@ const customerService = {
         totalAmount: parseFloat(o.total_amount) || 0,
         paidAmount: parseFloat(o.paid_amount) || 0,
         dueAmount: parseFloat(o.due_amount) || 0,
+        isAdjustment: !!o.is_adjustment,
+        adjustmentAmount: parseFloat(o.adjustment_amount) || 0,
         isNc: !!o.is_nc,
         ncAmount: parseFloat(o.nc_amount) || 0,
         ncReason: o.nc_reason || null,

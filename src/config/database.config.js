@@ -16,8 +16,8 @@ module.exports = {
     : (process.env.DB_PASSWORD || ''),
   connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT, 10) || 100,
   pool: {
-    min: parseInt(process.env.DB_POOL_MIN, 10) || 2,
-    max: parseInt(process.env.DB_POOL_MAX, 10) || 10,
+    min: parseInt(process.env.DB_POOL_MIN, 10) || 5,
+    max: parseInt(process.env.DB_POOL_MAX, 10) || 50,
   },
   waitForConnections: true,
   queueLimit: 0,

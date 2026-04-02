@@ -421,7 +421,9 @@ const orderController = {
         ...rest,
         // Service charge always OFF — override any client value
         applyServiceCharge: false,
-        generatedBy: req.user.userId
+        generatedBy: req.user.userId,
+        // Skip auto-print — user will print via /invoice/:id/print endpoint
+        skipPrint: true
       });
       res.json({ success: true, message: 'Bill generated', data: invoice });
     } catch (error) {

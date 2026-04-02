@@ -751,7 +751,7 @@ const exportDayEndSummaryDetail = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'outletId is required' });
     }
 
-    const targetDate = date || startDate || endDate || new Date().toISOString().split('T')[0];
+    const targetDate = date || startDate || endDate;
     const scope = await getUserDataScope(req.user, parseInt(outletId));
     const result = await reportsService.getDayEndSummaryDetail(parseInt(outletId), targetDate, targetDate, scope.floorIds);
     

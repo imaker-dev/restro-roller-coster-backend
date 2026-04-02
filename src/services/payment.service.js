@@ -90,6 +90,8 @@ function formatPayment(payment) {
     refundAmount: parseFloat(payment.refund_amount) || 0,
     refundedAt: payment.refunded_at || null,
     refundReason: payment.refund_reason || null,
+    isAdjustment: !!payment.is_adjustment,
+    adjustmentAmount: parseFloat(payment.adjustment_amount) || 0,
     orderNumber: payment.order_number || null,
     invoiceNumber: payment.invoice_number || null,
     createdAt: payment.created_at || null,
@@ -135,15 +137,18 @@ const paymentService = {
     let paymentId, outletId, orderId, invoiceId, orderStatus, paymentStatus;
     let totalAmount, tableId, tableSessionId;
     let order;
+    let adjustmentRecord = null;
+    const { outletId: requestOutletId, orderId: reqOrderId, invoiceId: reqInvoiceId,
+            paymentMode, amount, tipAmount = 0,
+            transactionId, referenceNumber,
+            cardLastFour, cardType, upiId, walletName, bankName,
+            notes, receivedBy,
+            adjustment = false, adjustmentAmount: reqAdjustmentAmount = 0, adjustmentReason
+          } = data;
+    const isAdjustment = adjustment === true || adjustment === 'true';
+    const adjustmentAmount = isAdjustment ? parseFloat(reqAdjustmentAmount) || 0 : 0;
 
     try {
-      const {
-        outletId: requestOutletId, orderId: reqOrderId, invoiceId: reqInvoiceId,
-        paymentMode, amount, tipAmount = 0,
-        transactionId, referenceNumber,
-        cardLastFour, cardType, upiId, walletName, bankName,
-        notes, receivedBy
-      } = data;
 
       orderId = reqOrderId;
       invoiceId = reqInvoiceId;
@@ -186,14 +191,14 @@ const paymentService = {
           payment_mode, amount, tip_amount, total_amount, status,
           transaction_id, reference_number,
           card_last_four, card_type, upi_id, wallet_name, bank_name,
-          notes, received_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          notes, received_by, is_adjustment, adjustment_amount
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           uuid, outletId, orderId, invoiceId, paymentNumber,
           paymentMode, amount, tipAmount, totalAmount,
           transactionId, referenceNumber,
           cardLastFour, cardType, upiId, walletName, bankName,
-          notes, receivedBy
+          notes, receivedBy, isAdjustment ? 1 : 0, adjustmentAmount
         ]
       );
 
@@ -223,17 +228,25 @@ const paymentService = {
           isNCOrder = !!invRow[0].is_nc;
         }
       }
-      const dueAmount = orderTotal - paidAmount;
+
+      // When adjustment is applied, the adjustment covers the remaining amount
+      // So effective due = 0, payment is considered complete
+      const effectivePaid = paidAmount + adjustmentAmount;
+      const dueAmount = isAdjustment ? Math.max(0, orderTotal - effectivePaid) : (orderTotal - paidAmount);
 
       // Check if customer info exists for due payment support
       const customerId = order.customer_id;
       const hasCustomerInfo = customerId && order.customer_phone;
-      const isDuePayment = dueAmount > 0 && hasCustomerInfo;
+      const isDuePayment = !isAdjustment && dueAmount > 0 && hasCustomerInfo;
 
       paymentStatus = 'pending';
       orderStatus = order.status;
 
-      if (dueAmount <= 0) {
+      if (isAdjustment) {
+        // Adjustment always completes the order — remaining is written off
+        paymentStatus = 'completed';
+        orderStatus = 'completed';
+      } else if (dueAmount <= 0) {
         paymentStatus = 'completed';
         orderStatus = 'completed';
       } else if (paidAmount >= 0) {
@@ -248,21 +261,42 @@ const paymentService = {
 
       await connection.query(
         `UPDATE orders SET 
-          paid_amount = ?, due_amount = ?, payment_status = ?, status = ?
+          paid_amount = ?, due_amount = ?, adjustment_amount = ?, is_adjustment = ?, payment_status = ?, status = ?
          WHERE id = ?`,
-        [paidAmount, Math.max(0, dueAmount), paymentStatus, orderStatus, orderId]
+        [paidAmount, Math.max(0, isAdjustment ? 0 : dueAmount), adjustmentAmount, isAdjustment ? 1 : 0, paymentStatus, orderStatus, orderId]
       );
 
       // Update invoice if exists
       if (invoiceId) {
         await connection.query(
-          `UPDATE invoices SET payment_status = ?, paid_amount = ?, due_amount = ?, is_due_payment = ? WHERE id = ?`,
-          [paymentStatus === 'completed' ? 'paid' : paymentStatus, paidAmount, Math.max(0, dueAmount), isDuePayment ? 1 : 0, invoiceId]
+          `UPDATE invoices SET payment_status = ?, paid_amount = ?, due_amount = ?, adjustment_amount = ?, is_due_payment = ? WHERE id = ?`,
+          [paymentStatus === 'completed' ? 'paid' : paymentStatus, paidAmount, Math.max(0, isAdjustment ? 0 : dueAmount), adjustmentAmount, isDuePayment ? 1 : 0, invoiceId]
         );
       }
 
-      // Create due transaction if payment is partial and customer exists
-      if (isDuePayment && dueAmount > 0) {
+      // Create adjustment record if adjustment is applied
+      if (isAdjustment && adjustmentAmount > 0) {
+        const [adjResult] = await connection.query(
+          `INSERT INTO payment_adjustments (
+            outlet_id, order_id, invoice_id, payment_id, order_number,
+            total_amount, paid_amount, adjustment_amount, reason, adjusted_by
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [outletId, orderId, invoiceId, paymentId, order.order_number,
+           orderTotal, paidAmount, adjustmentAmount, adjustmentReason || null, receivedBy]
+        );
+        adjustmentRecord = {
+          id: Number(adjResult.insertId),
+          adjustmentAmount,
+          reason: adjustmentReason || null
+        };
+      }
+
+      // Read previous due BEFORE deciding to create new due or collect
+      const previousDue = parseFloat(order.due_amount) || 0;
+
+      // Create due transaction ONLY on first partial payment (no previous due existed)
+      // On subsequent payments, just collect from the existing due — don't add a new one
+      if (isDuePayment && dueAmount > 0 && previousDue <= 0) {
         await this.createDueTransaction(connection, {
           outletId,
           customerId,
@@ -276,21 +310,63 @@ const paymentService = {
       }
 
       // Check if this payment is settling a previous due (due collection)
-      const previousDue = parseFloat(order.due_amount) || 0;
       if (previousDue > 0 && customerId) {
-        // This is a due collection payment - record the transaction
-        const collectedAmount = Math.min(totalAmount, previousDue);
-        await this.createDueCollectionTransaction(connection, {
-          outletId,
-          customerId,
-          orderId,
-          invoiceId,
-          paymentId,
-          amount: collectedAmount,
-          paymentMode,
-          userId: receivedBy,
-          notes: `Due collected for order ${order.order_number}`
-        });
+        if (isAdjustment) {
+          // Adjustment settles the full remaining due:
+          // cash portion is collected, adjustment portion is waived
+          // NOTE: Adjustment payments are NOT marked as due collections — they appear in adjustment reports only
+          const cashPortion = Math.min(totalAmount, previousDue);
+          const adjustedPortion = previousDue - cashPortion;
+
+          if (cashPortion > 0) {
+            await this.createDueCollectionTransaction(connection, {
+              outletId, customerId, orderId, invoiceId, paymentId,
+              amount: cashPortion,
+              paymentMode,
+              userId: receivedBy,
+              notes: `Due settled via adjustment for order ${order.order_number}`
+            });
+          }
+
+          // Write off remaining due covered by adjustment
+          if (adjustedPortion > 0) {
+            const [custBal] = await connection.query(
+              'SELECT due_balance FROM customers WHERE id = ? FOR UPDATE', [customerId]
+            );
+            const currentBal = parseFloat(custBal[0]?.due_balance) || 0;
+            const newBal = Math.max(0, currentBal - adjustedPortion);
+            const waiveUuid = uuidv4();
+            await connection.query(
+              `INSERT INTO customer_due_transactions (
+                uuid, outlet_id, customer_id, order_id, invoice_id, payment_id,
+                transaction_type, amount, balance_before, balance_after, notes, created_by
+              ) VALUES (?, ?, ?, ?, ?, ?, 'due_waived', ?, ?, ?, ?, ?)`,
+              [waiveUuid, outletId, customerId, orderId, invoiceId, paymentId,
+               -adjustedPortion, currentBal, newBal,
+               `Adjustment on order ${order.order_number} - ${adjustmentReason || 'Adjustment'}`, receivedBy]
+            );
+            await connection.query(
+              'UPDATE customers SET due_balance = ? WHERE id = ?',
+              [newBal, customerId]
+            );
+          }
+        } else {
+          // Normal payment - collect what was actually paid toward the due
+          const collectedAmount = Math.min(totalAmount, previousDue);
+          await this.createDueCollectionTransaction(connection, {
+            outletId, customerId, orderId, invoiceId, paymentId,
+            amount: collectedAmount,
+            paymentMode,
+            userId: receivedBy,
+            notes: `Due collected for order ${order.order_number}`
+          });
+
+          // Mark payment as due collection (only for non-adjustment payments)
+          await connection.query(
+            'UPDATE payments SET is_due_collection = 1 WHERE id = ?',
+            [paymentId]
+          );
+        }
       }
 
       // Record cash drawer transaction if cash payment
@@ -422,6 +498,8 @@ const paymentService = {
       invoiceId,
       billStatus,
       amountPaid: totalAmount,
+      isAdjustment,
+      adjustmentAmount,
       timestamp: new Date().toISOString()
     });
 
@@ -490,7 +568,11 @@ const paymentService = {
     }
 
     // Build detailed response for all scenarios
-    return this.buildPaymentResponse(payment, orderId, invoiceId, orderStatus, paymentStatus, tableId);
+    const response = await this.buildPaymentResponse(payment, orderId, invoiceId, orderStatus, paymentStatus, tableId);
+    if (adjustmentRecord) {
+      response.adjustment = adjustmentRecord;
+    }
+    return response;
   },
 
   /**
@@ -503,7 +585,11 @@ const paymentService = {
     // Variables needed after transaction for event publishing
     let paymentId, paymentStatus, orderStatus, paidAmount, dueAmount;
     let order, tableId, customerId, isDuePayment;
-    const { outletId, orderId, invoiceId, splits, receivedBy } = data;
+    let adjustmentRecord = null;
+    const { outletId, orderId, invoiceId, splits, receivedBy,
+            adjustment = false, adjustmentAmount: reqAdjustmentAmount = 0, adjustmentReason } = data;
+    const isAdjustment = adjustment === true || adjustment === 'true';
+    const adjustmentAmount = isAdjustment ? parseFloat(reqAdjustmentAmount) || 0 : 0;
 
     try {
       // Validate order BEFORE transaction
@@ -531,9 +617,10 @@ const paymentService = {
       const [mainResult] = await connection.query(
         `INSERT INTO payments (
           uuid, outlet_id, order_id, invoice_id, payment_number,
-          payment_mode, amount, total_amount, status, received_by
-        ) VALUES (?, ?, ?, ?, ?, 'split', ?, ?, 'completed', ?)`,
-        [uuid, outletId, orderId, invoiceId, paymentNumber, splitTotalAmount, splitTotalAmount, receivedBy]
+          payment_mode, amount, total_amount, status, received_by, is_adjustment, adjustment_amount
+        ) VALUES (?, ?, ?, ?, ?, 'split', ?, ?, 'completed', ?, ?, ?)`,
+        [uuid, outletId, orderId, invoiceId, paymentNumber, splitTotalAmount, splitTotalAmount, receivedBy,
+         isAdjustment ? 1 : 0, adjustmentAmount]
       );
 
       paymentId = Number(mainResult.insertId);
@@ -587,16 +674,22 @@ const paymentService = {
             ? parseFloat(invRow[0].grand_total) : orderTotal;
         }
       }
-      dueAmount = orderTotal - paidAmount;
+      // When adjustment is applied, the adjustment covers the remaining amount
+      const effectivePaid = paidAmount + adjustmentAmount;
+      dueAmount = isAdjustment ? Math.max(0, orderTotal - effectivePaid) : (orderTotal - paidAmount);
 
       // Check if customer info exists for due payment support
       const hasCustomerInfo = customerId && order.customer_phone;
-      isDuePayment = dueAmount > 0 && hasCustomerInfo;
+      isDuePayment = !isAdjustment && dueAmount > 0 && hasCustomerInfo;
 
       paymentStatus = 'pending';
       orderStatus = order.status;
 
-      if (dueAmount <= 0) {
+      if (isAdjustment) {
+        // Adjustment always completes the order — remaining is written off
+        paymentStatus = 'completed';
+        orderStatus = 'completed';
+      } else if (dueAmount <= 0) {
         paymentStatus = 'completed';
         orderStatus = 'completed';
       } else if (paidAmount > 0) {
@@ -607,20 +700,41 @@ const paymentService = {
       // Update order status
       await connection.query(
         `UPDATE orders SET 
-          paid_amount = ?, due_amount = ?, payment_status = ?, status = ?
+          paid_amount = ?, due_amount = ?, adjustment_amount = ?, is_adjustment = ?, payment_status = ?, status = ?
          WHERE id = ?`,
-        [paidAmount, Math.max(0, dueAmount), paymentStatus, orderStatus, orderId]
+        [paidAmount, Math.max(0, isAdjustment ? 0 : dueAmount), adjustmentAmount, isAdjustment ? 1 : 0, paymentStatus, orderStatus, orderId]
       );
 
       if (invoiceId) {
         await connection.query(
-          `UPDATE invoices SET payment_status = ?, paid_amount = ?, due_amount = ?, is_due_payment = ? WHERE id = ?`,
-          [paymentStatus === 'completed' ? 'paid' : paymentStatus, paidAmount, Math.max(0, dueAmount), isDuePayment ? 1 : 0, invoiceId]
+          `UPDATE invoices SET payment_status = ?, paid_amount = ?, due_amount = ?, adjustment_amount = ?, is_due_payment = ? WHERE id = ?`,
+          [paymentStatus === 'completed' ? 'paid' : paymentStatus, paidAmount, Math.max(0, isAdjustment ? 0 : dueAmount), adjustmentAmount, isDuePayment ? 1 : 0, invoiceId]
         );
       }
 
-      // Create due transaction if payment is partial and customer exists
-      if (isDuePayment && dueAmount > 0) {
+      // Create adjustment record if adjustment is applied
+      if (isAdjustment && adjustmentAmount > 0) {
+        const [adjResult] = await connection.query(
+          `INSERT INTO payment_adjustments (
+            outlet_id, order_id, invoice_id, payment_id, order_number,
+            total_amount, paid_amount, adjustment_amount, reason, adjusted_by
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [outletId, orderId, invoiceId, paymentId, order.order_number,
+           orderTotal, paidAmount, adjustmentAmount, adjustmentReason || null, receivedBy]
+        );
+        adjustmentRecord = {
+          id: Number(adjResult.insertId),
+          adjustmentAmount,
+          reason: adjustmentReason || null
+        };
+      }
+
+      // Read previous due BEFORE deciding to create new due or collect
+      const previousDue = parseFloat(order.due_amount) || 0;
+
+      // Create due transaction ONLY on first partial payment (no previous due existed)
+      // On subsequent payments, just collect from the existing due — don't add a new one
+      if (isDuePayment && dueAmount > 0 && previousDue <= 0) {
         await this.createDueTransaction(connection, {
           outletId,
           customerId,
@@ -634,21 +748,62 @@ const paymentService = {
       }
 
       // Check if this payment is settling a previous due (due collection)
-      const previousDue = parseFloat(order.due_amount) || 0;
       if (previousDue > 0 && customerId) {
-        // This is a due collection payment - record the transaction
-        const collectedAmount = Math.min(splitTotalAmount, previousDue);
-        await this.createDueCollectionTransaction(connection, {
-          outletId,
-          customerId,
-          orderId,
-          invoiceId,
-          paymentId,
-          amount: collectedAmount,
-          paymentMode: 'split',
-          userId: receivedBy,
-          notes: `Due collected via split payment for order ${order.order_number}`
-        });
+        if (isAdjustment) {
+          // Adjustment settles the full remaining due:
+          // cash portion is collected, adjustment portion is waived
+          const cashPortion = Math.min(splitTotalAmount, previousDue);
+          const adjustedPortion = previousDue - cashPortion;
+
+          if (cashPortion > 0) {
+            await this.createDueCollectionTransaction(connection, {
+              outletId, customerId, orderId, invoiceId, paymentId,
+              amount: cashPortion,
+              paymentMode: 'split',
+              userId: receivedBy,
+              notes: `Due collected via split payment for order ${order.order_number}`
+            });
+          }
+
+          // Write off remaining due covered by adjustment
+          if (adjustedPortion > 0) {
+            const [custBal] = await connection.query(
+              'SELECT due_balance FROM customers WHERE id = ? FOR UPDATE', [customerId]
+            );
+            const currentBal = parseFloat(custBal[0]?.due_balance) || 0;
+            const newBal = Math.max(0, currentBal - adjustedPortion);
+            const waiveUuid = uuidv4();
+            await connection.query(
+              `INSERT INTO customer_due_transactions (
+                uuid, outlet_id, customer_id, order_id, invoice_id, payment_id,
+                transaction_type, amount, balance_before, balance_after, notes, created_by
+              ) VALUES (?, ?, ?, ?, ?, ?, 'due_waived', ?, ?, ?, ?, ?)`,
+              [waiveUuid, outletId, customerId, orderId, invoiceId, paymentId,
+               -adjustedPortion, currentBal, newBal,
+               `Adjustment on order ${order.order_number} - ${adjustmentReason || 'Adjustment'}`, receivedBy]
+            );
+            await connection.query(
+              'UPDATE customers SET due_balance = ? WHERE id = ?',
+              [newBal, customerId]
+            );
+          }
+        } else {
+          // Normal split payment - collect what was actually paid toward the due
+          const collectedAmount = Math.min(splitTotalAmount, previousDue);
+          await this.createDueCollectionTransaction(connection, {
+            outletId, customerId, orderId, invoiceId, paymentId,
+            amount: collectedAmount,
+            paymentMode: 'split',
+            userId: receivedBy,
+            notes: `Due collected via split payment for order ${order.order_number}`
+          });
+
+          // Mark payment as due collection (only for non-adjustment payments)
+          await connection.query(
+            'UPDATE payments SET is_due_collection = 1 WHERE id = ?',
+            [paymentId]
+          );
+        }
       }
 
       // Release table on any payment (full or partial) — order is completed, table should be freed
@@ -761,6 +916,8 @@ const paymentService = {
       billStatus: paymentStatus === 'completed' ? 'paid' : 'partial',
       amountPaid: paidAmount,
       dueAmount: Math.max(0, dueAmount),
+      isAdjustment,
+      adjustmentAmount,
       timestamp: new Date().toISOString()
     });
 
@@ -797,7 +954,11 @@ const paymentService = {
       );
     }
 
-    return this.buildPaymentResponse(payment, orderId, invoiceId, orderStatus, paymentStatus, tableId);
+    const response = await this.buildPaymentResponse(payment, orderId, invoiceId, orderStatus, paymentStatus, tableId);
+    if (adjustmentRecord) {
+      response.adjustment = adjustmentRecord;
+    }
+    return response;
   },
 
   // ========================
@@ -899,8 +1060,9 @@ const paymentService = {
     // Fetch all payments for this order
     const allPayments = await this.getPaymentsByOrder(orderId);
     const totalPaid = allPayments.reduce((s, p) => s + p.totalAmount, 0);
+    const totalAdjustment = allPayments.reduce((s, p) => s + (p.adjustmentAmount || 0), 0);
     const orderTotal = invoice ? invoice.grandTotal : (parseFloat(updatedOrder?.total_amount) || 0);
-    const dueAmount = Math.max(0, orderTotal - totalPaid);
+    const dueAmount = Math.max(0, orderTotal - totalPaid - totalAdjustment);
 
     // Table info
     let tableInfo = null;
@@ -942,6 +1104,7 @@ const paymentService = {
       paymentSummary: {
         orderTotal,
         totalPaid: parseFloat(totalPaid.toFixed(2)),
+        adjustmentAmount: parseFloat(totalAdjustment.toFixed(2)),
         dueAmount: parseFloat(dueAmount.toFixed(2)),
         paymentStatus,
         paymentCount: allPayments.length,
@@ -1952,6 +2115,43 @@ const paymentService = {
   },
 
   // ========================
+  // SHIFT HELPERS
+  // ========================
+
+  /**
+   * Merge regular + split payment rows by payment_mode (sum counts and totals).
+   * Prevents duplicate "cash", "upi" etc. entries in paymentBreakdown.
+   */
+  _mergePaymentsByMode(regularPayments, splitPayments) {
+    const map = {};
+    for (const p of [...regularPayments, ...splitPayments]) {
+      const mode = p.payment_mode;
+      if (!map[mode]) {
+        map[mode] = { payment_mode: mode, count: 0, total: 0 };
+      }
+      map[mode].count += parseInt(p.count) || 0;
+      map[mode].total += parseFloat(p.total) || 0;
+    }
+    return Object.values(map);
+  },
+
+  /**
+   * Calculate payment totals from merged breakdown
+   */
+  _calcPaymentTotals(paymentBreakdown) {
+    let totalCash = 0, totalCard = 0, totalUpi = 0, totalOther = 0, total = 0;
+    for (const p of paymentBreakdown) {
+      const amount = parseFloat(p.total) || 0;
+      total += amount;
+      if (p.payment_mode === 'cash') totalCash += amount;
+      else if (p.payment_mode === 'card' || p.payment_mode === 'credit_card' || p.payment_mode === 'debit_card') totalCard += amount;
+      else if (p.payment_mode === 'upi') totalUpi += amount;
+      else totalOther += amount;
+    }
+    return { totalCash, totalCard, totalUpi, totalOther, total };
+  },
+
+  // ========================
   // SHIFT HISTORY
   // ========================
 
@@ -2119,17 +2319,9 @@ const paymentService = {
         [shift.outlet_id, shiftStartTime, shiftEndTime, ...floorParams]
       );
 
-      // Calculate totals
-      let totalCashSales = 0, totalCardSales = 0, totalUpiSales = 0, totalOtherSales = 0;
-      let totalSales = 0;
-      for (const p of [...regularPayments, ...splitPayments]) {
-        const amount = parseFloat(p.total) || 0;
-        totalSales += amount;
-        if (p.payment_mode === 'cash') totalCashSales += amount;
-        else if (p.payment_mode === 'card' || p.payment_mode === 'credit_card' || p.payment_mode === 'debit_card') totalCardSales += amount;
-        else if (p.payment_mode === 'upi') totalUpiSales += amount;
-        else totalOtherSales += amount;
-      }
+      // Merge regular + split payments by mode to avoid duplicate entries
+      const mergedPayments = this._mergePaymentsByMode(regularPayments, splitPayments);
+      const { totalCash: totalCashSales, totalCard: totalCardSales, totalUpi: totalUpiSales, totalOther: totalOtherSales, total: totalSales } = this._calcPaymentTotals(mergedPayments);
 
       // NC stats for this shift
       const ncFloorCond = shift.floor_id ? ' AND (floor_id = ? OR (floor_id IS NULL AND order_type IN (\'takeaway\', \'delivery\')))' : '';
@@ -2364,8 +2556,8 @@ const paymentService = {
       splitParams
     );
 
-    // Combine regular and split payments
-    const paymentBreakdown = [...regularPayments, ...splitPayments];
+    // Merge regular + split payments by mode to avoid duplicate entries (cash+cash, upi+upi)
+    const paymentBreakdown = this._mergePaymentsByMode(regularPayments, splitPayments);
 
     // Get order statistics (filtered by shift time range)
     // Also calculate real-time total_sales and total_orders for open shifts
@@ -2383,7 +2575,10 @@ const paymentService = {
         MAX(CASE WHEN status != 'cancelled' THEN total_amount ELSE NULL END) as max_order_value,
         MIN(CASE WHEN status != 'cancelled' AND total_amount > 0 THEN total_amount ELSE NULL END) as min_order_value,
         COUNT(CASE WHEN is_nc = 1 THEN 1 END) as nc_orders,
-        SUM(CASE WHEN status != 'cancelled' THEN COALESCE(nc_amount, 0) ELSE 0 END) as nc_amount
+        SUM(CASE WHEN status != 'cancelled' THEN COALESCE(nc_amount, 0) ELSE 0 END) as nc_amount,
+        COUNT(CASE WHEN is_adjustment = 1 AND status != 'cancelled' THEN 1 END) as adjustment_count,
+        SUM(CASE WHEN status != 'cancelled' THEN COALESCE(adjustment_amount, 0) ELSE 0 END) as total_adjustment_amount,
+        SUM(CASE WHEN status != 'cancelled' THEN COALESCE(due_amount, 0) ELSE 0 END) as total_due_amount
       FROM orders
       WHERE outlet_id = ? AND created_at >= ? AND created_at <= ?`;
     const orderParams = [shift.outlet_id, shiftStartTime, shiftEndTime];
@@ -2396,17 +2591,8 @@ const paymentService = {
     
     const [orderStats] = await pool.query(orderQuery, orderParams);
     
-    // Calculate payment totals from payment breakdown (handles split payments correctly)
-    let totalCashSales = 0, totalCardSales = 0, totalUpiSales = 0, totalOtherSales = 0;
-    let calculatedTotalSales = 0;
-    for (const p of paymentBreakdown) {
-      const amount = parseFloat(p.total) || 0;
-      calculatedTotalSales += amount;
-      if (p.payment_mode === 'cash') totalCashSales += amount;
-      else if (p.payment_mode === 'card' || p.payment_mode === 'credit_card' || p.payment_mode === 'debit_card') totalCardSales += amount;
-      else if (p.payment_mode === 'upi') totalUpiSales += amount;
-      else totalOtherSales += amount;
-    }
+    // Calculate payment totals from merged payment breakdown
+    const { totalCash: totalCashSales, totalCard: totalCardSales, totalUpi: totalUpiSales, totalOther: totalOtherSales, total: calculatedTotalSales } = this._calcPaymentTotals(paymentBreakdown);
 
     const openingCash = parseFloat(shift.opening_cash) || 0;
     const closingCash = parseFloat(shift.closing_cash) || 0;
@@ -2420,26 +2606,74 @@ const paymentService = {
 
     logger.info(`Shift ${shiftId} detail calc - Time: ${shiftStartTime} to ${shiftEndTime}, Opening: ${openingCash}, Cash: ${totalCashSales}, UPI: ${totalUpiSales}, Card: ${totalCardSales}, Total: ${calculatedTotalSales}, Expected: ${expectedAmount}, ExpectedCash: ${expectedCash}, ClosingCash: ${closingCash}, Variance: ${cashVariance}`);
 
-    // Get staff who worked during this shift (filtered by shift time range)
-    // Include takeaway/delivery orders even with floor filter
-    let staffQuery = `
-      SELECT 
-        u.id as user_id,
-        u.name as user_name,
-        COUNT(DISTINCT CASE WHEN o.status != 'cancelled' THEN o.id ELSE NULL END) as orders_handled,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.total_amount ELSE 0 END) as total_sales
-      FROM orders o
-      JOIN users u ON o.created_by = u.id
-      WHERE o.outlet_id = ? AND o.created_at >= ? AND o.created_at <= ?`;
-    const staffParams = [shift.outlet_id, shiftStartTime, shiftEndTime];
-    
+    // Get staff activity: shift cashier + captains assigned to this floor
+    // Only shows users assigned to the shift's floor (cashier + captain roles), not all order creators
+    let staffActivity = [];
     if (floorId) {
-      staffQuery += ` AND (o.floor_id = ? OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`;
-      staffParams.push(floorId);
+      const [staffRows] = await pool.query(
+        `SELECT 
+          u.id as user_id,
+          u.name as user_name,
+          (SELECT GROUP_CONCAT(DISTINCT r.slug) FROM user_roles ur
+           JOIN roles r ON ur.role_id = r.id
+           WHERE ur.user_id = u.id AND ur.outlet_id = ? AND ur.is_active = 1
+             AND r.slug IN ('cashier', 'captain')
+          ) as role,
+          (SELECT COUNT(DISTINCT o.id) FROM orders o
+           WHERE o.created_by = u.id AND o.outlet_id = ? AND o.status != 'cancelled'
+             AND o.created_at >= ? AND o.created_at <= ?
+             AND (o.floor_id = ? OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))
+          ) as orders_created,
+          (SELECT COALESCE(SUM(o2.total_amount), 0) FROM orders o2
+           WHERE o2.created_by = u.id AND o2.outlet_id = ? AND o2.status != 'cancelled'
+             AND o2.created_at >= ? AND o2.created_at <= ?
+             AND (o2.floor_id = ? OR (o2.floor_id IS NULL AND o2.order_type IN ('takeaway', 'delivery')))
+          ) as order_sales,
+          (SELECT COUNT(DISTINCT p2.id) FROM payments p2
+           WHERE p2.received_by = u.id AND p2.outlet_id = ? AND p2.status = 'completed'
+             AND p2.created_at >= ? AND p2.created_at <= ?
+          ) as payments_received,
+          (SELECT COALESCE(SUM(p3.total_amount), 0) FROM payments p3
+           WHERE p3.received_by = u.id AND p3.outlet_id = ? AND p3.status = 'completed'
+             AND p3.created_at >= ? AND p3.created_at <= ?
+          ) as amount_collected
+         FROM users u
+         JOIN user_floors uf ON u.id = uf.user_id AND uf.floor_id = ? AND uf.outlet_id = ? AND uf.is_active = 1
+         WHERE EXISTS (
+           SELECT 1 FROM user_roles ur2 JOIN roles r2 ON ur2.role_id = r2.id
+           WHERE ur2.user_id = u.id AND ur2.outlet_id = ? AND ur2.is_active = 1
+             AND r2.slug IN ('cashier', 'captain')
+         )
+         ORDER BY amount_collected DESC`,
+        [shift.outlet_id,
+         shift.outlet_id, shiftStartTime, shiftEndTime, floorId,
+         shift.outlet_id, shiftStartTime, shiftEndTime, floorId,
+         shift.outlet_id, shiftStartTime, shiftEndTime,
+         shift.outlet_id, shiftStartTime, shiftEndTime,
+         floorId, shift.outlet_id,
+         shift.outlet_id]
+      );
+      staffActivity = staffRows;
+    } else {
+      // Outlet-level shift (no floor): show all staff who created orders during this shift
+      const [staffRows] = await pool.query(
+        `SELECT 
+          u.id as user_id,
+          u.name as user_name,
+          NULL as role,
+          COUNT(DISTINCT CASE WHEN o.status != 'cancelled' THEN o.id END) as orders_created,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.total_amount ELSE 0 END) as order_sales,
+          0 as payments_received,
+          0 as amount_collected
+         FROM orders o
+         JOIN users u ON o.created_by = u.id
+         WHERE o.outlet_id = ? AND o.created_at >= ? AND o.created_at <= ?
+         GROUP BY u.id, u.name
+         ORDER BY order_sales DESC`,
+        [shift.outlet_id, shiftStartTime, shiftEndTime]
+      );
+      staffActivity = staffRows;
     }
-    staffQuery += ` GROUP BY u.id, u.name ORDER BY total_sales DESC`;
-    
-    const [staffActivity] = await pool.query(staffQuery, staffParams);
 
     // Get orders with items and payment status during this shift
     // Include takeaway/delivery orders even with floor filter
@@ -2449,10 +2683,12 @@ const paymentService = {
         o.customer_name, o.customer_phone,
         o.subtotal, o.tax_amount, o.discount_amount, o.total_amount,
         o.is_nc, o.nc_amount, o.nc_reason, o.due_amount, o.paid_amount as order_paid_amount,
+        o.is_adjustment, o.adjustment_amount,
         o.created_at, o.updated_at,
         u.name as created_by_name,
         t.table_number, t.name as table_name,
-        p.payment_mode, p.total_amount as paid_amount, p.status as payment_record_status
+        p.payment_mode, p.total_amount as paid_amount, p.status as payment_record_status,
+        p.is_due_collection
       FROM orders o
       LEFT JOIN users u ON o.created_by = u.id
       LEFT JOIN tables t ON o.table_id = t.id
@@ -2521,6 +2757,9 @@ const paymentService = {
           ncReason: row.nc_reason || null,
           paidAmount: parseFloat(row.order_paid_amount) || 0,
           dueAmount: parseFloat(row.due_amount) || 0,
+          isAdjustment: !!row.is_adjustment,
+          adjustmentAmount: parseFloat(row.adjustment_amount) || 0,
+          isDueCollection: !!row.is_due_collection,
           createdByName: row.created_by_name,
           createdAt: row.created_at,
           updatedAt: row.updated_at,
@@ -2531,6 +2770,37 @@ const paymentService = {
       }
     }
     const shiftOrders = Array.from(ordersMap.values());
+
+    // Due collections during this shift — from customer_due_transactions for accurate collected amounts
+    let dueCollQuery = `
+      SELECT cdt.payment_id, cdt.order_id, ABS(cdt.amount) as collected_amount,
+        p.payment_mode, cdt.created_at,
+        o.order_number, o.customer_name, o.customer_phone, o.total_amount as order_total
+      FROM customer_due_transactions cdt
+      JOIN orders o ON cdt.order_id = o.id
+      LEFT JOIN payments p ON cdt.payment_id = p.id
+      WHERE cdt.outlet_id = ? AND cdt.transaction_type = 'due_collected'
+        AND cdt.created_at >= ? AND cdt.created_at <= ?
+        AND (p.is_adjustment IS NULL OR p.is_adjustment = 0)`;
+    const dueCollParams = [shift.outlet_id, shiftStartTime, shiftEndTime];
+    if (floorId) {
+      dueCollQuery += ` AND (o.floor_id = ? OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`;
+      dueCollParams.push(floorId);
+    }
+    dueCollQuery += ` ORDER BY cdt.created_at DESC`;
+    const [dueCollRows] = await pool.query(dueCollQuery, dueCollParams);
+    const dueCollections = dueCollRows.map(r => ({
+      paymentId: r.payment_id,
+      orderId: r.order_id,
+      orderNumber: r.order_number,
+      customerName: r.customer_name || null,
+      customerPhone: r.customer_phone || null,
+      orderTotal: parseFloat(r.order_total) || 0,
+      collectedAmount: parseFloat(r.collected_amount) || 0,
+      paymentMode: r.payment_mode,
+      createdAt: r.created_at
+    }));
+    const totalDueCollected = dueCollections.reduce((s, d) => s + d.collectedAmount, 0);
 
     // Cost/Profit data for this shift
     let costQuery = `
@@ -2647,13 +2917,26 @@ const paymentService = {
         maxOrderValue: parseFloat(orderStats[0]?.max_order_value) || 0,
         minOrderValue: parseFloat(orderStats[0]?.min_order_value) || 0,
         ncOrders: parseInt(orderStats[0]?.nc_orders) || 0,
-        ncAmount: parseFloat(orderStats[0]?.nc_amount) || 0
+        ncAmount: parseFloat(orderStats[0]?.nc_amount) || 0,
+        adjustmentCount: parseInt(orderStats[0]?.adjustment_count) || 0,
+        adjustmentAmount: parseFloat(orderStats[0]?.total_adjustment_amount) || 0,
+        totalDueAmount: parseFloat(orderStats[0]?.total_due_amount) || 0
+      },
+      dueCollections: {
+        totalCollected: parseFloat(totalDueCollected.toFixed(2)),
+        count: dueCollections.length,
+        orders: dueCollections
       },
       staffActivity: staffActivity.map(s => ({
         userId: s.user_id,
         userName: s.user_name,
-        ordersHandled: s.orders_handled,
-        totalSales: parseFloat(s.total_sales) || 0
+        role: s.role || null,
+        ordersHandled: parseInt(s.orders_created) || 0,
+        totalSales: parseFloat(s.order_sales) || 0,
+        ordersCreated: parseInt(s.orders_created) || 0,
+        orderSales: parseFloat(s.order_sales) || 0,
+        paymentsReceived: parseInt(s.payments_received) || 0,
+        amountCollected: parseFloat(s.amount_collected) || 0
       })),
       orders: shiftOrders,
       createdAt: shift.created_at,
@@ -2745,7 +3028,10 @@ const paymentService = {
         MAX(CASE WHEN status != 'cancelled' THEN total_amount ELSE NULL END) as max_order_value,
         MIN(CASE WHEN status != 'cancelled' AND total_amount > 0 THEN total_amount ELSE NULL END) as min_order_value,
         COUNT(CASE WHEN is_nc = 1 THEN 1 END) as nc_orders,
-        SUM(CASE WHEN status != 'cancelled' THEN COALESCE(nc_amount, 0) ELSE 0 END) as nc_amount
+        SUM(CASE WHEN status != 'cancelled' THEN COALESCE(nc_amount, 0) ELSE 0 END) as nc_amount,
+        COUNT(CASE WHEN is_adjustment = 1 AND status != 'cancelled' THEN 1 END) as adjustment_count,
+        SUM(CASE WHEN status != 'cancelled' THEN COALESCE(adjustment_amount, 0) ELSE 0 END) as total_adjustment_amount,
+        SUM(CASE WHEN status != 'cancelled' THEN COALESCE(due_amount, 0) ELSE 0 END) as total_due_amount
       FROM orders
       WHERE outlet_id = ? AND created_at >= ? AND created_at <= ?`;
     const orderParams = [shift.outlet_id, shiftStartTime, shiftEndTime];
@@ -2796,20 +3082,9 @@ const paymentService = {
       splitParams
     );
 
-    // Combine regular and split payments
-    const paymentBreakdown = [...regularPayments, ...splitPayments];
-
-    // Calculate payment totals from combined payment breakdown
-    let totalCashSales = 0, totalCardSales = 0, totalUpiSales = 0, totalOtherSales = 0;
-    let totalPayments = 0;
-    for (const p of paymentBreakdown) {
-      const amount = parseFloat(p.total) || 0;
-      totalPayments += amount;
-      if (p.payment_mode === 'cash') totalCashSales += amount;
-      else if (p.payment_mode === 'card' || p.payment_mode === 'credit_card' || p.payment_mode === 'debit_card') totalCardSales += amount;
-      else if (p.payment_mode === 'upi') totalUpiSales += amount;
-      else totalOtherSales += amount;
-    }
+    // Merge regular + split payments by mode to avoid duplicate entries
+    const paymentBreakdown = this._mergePaymentsByMode(regularPayments, splitPayments);
+    const { totalCash: totalCashSales, totalCard: totalCardSales, totalUpi: totalUpiSales, totalOther: totalOtherSales, total: totalPayments } = this._calcPaymentTotals(paymentBreakdown);
 
     // Calculate values
     const openingCash = parseFloat(shift.opening_cash) || 0;
@@ -2862,7 +3137,10 @@ const paymentService = {
         maxOrderValue: parseFloat(orderStats[0]?.max_order_value) || 0,
         minOrderValue: parseFloat(orderStats[0]?.min_order_value) || 0,
         ncOrders: parseInt(orderStats[0]?.nc_orders) || 0,
-        ncAmount: parseFloat(orderStats[0]?.nc_amount) || 0
+        ncAmount: parseFloat(orderStats[0]?.nc_amount) || 0,
+        adjustmentCount: parseInt(orderStats[0]?.adjustment_count) || 0,
+        adjustmentAmount: parseFloat(orderStats[0]?.total_adjustment_amount) || 0,
+        totalDueAmount: parseFloat(orderStats[0]?.total_due_amount) || 0
       },
       paymentBreakdown: paymentBreakdown.map(p => ({
         mode: p.payment_mode,

@@ -2,7 +2,9 @@ const express = require('express');
 const router = express.Router();
 const reportsController = require('../controllers/reports.controller');
 const discountReportController = require('../controllers/discountReport.controller');
+const adjustmentReportController = require('../controllers/adjustmentReport.controller');
 const { authenticate, authorize } = require('../middlewares/auth.middleware');
+const { reportCache } = require('../middleware/reportCache');
 
 // All routes require authentication
 router.use(authenticate);
@@ -16,7 +18,7 @@ const REPORT_ROLES = ['super_admin', 'admin', 'manager', 'cashier'];
  * @access  Private (admin, manager, cashier, captain)
  * @query   outletId - Required
  */
-router.get('/dashboard', authorize(...REPORT_ROLES), reportsController.getLiveDashboard);
+router.get('/dashboard', authorize(...REPORT_ROLES), reportCache('dashboard', 60), reportsController.getLiveDashboard);
 
 /**
  * @route   GET /api/v1/reports/running-orders
@@ -24,7 +26,7 @@ router.get('/dashboard', authorize(...REPORT_ROLES), reportsController.getLiveDa
  * @access  Private (admin, manager, cashier, captain)
  * @query   outletId - Required
  */
-router.get('/running-orders', authorize(...REPORT_ROLES), reportsController.getRunningOrders);
+router.get('/running-orders', authorize(...REPORT_ROLES), reportCache('running-orders', 30), reportsController.getRunningOrders);
 
 /**
  * @route   GET /api/v1/reports/running-tables
@@ -32,7 +34,7 @@ router.get('/running-orders', authorize(...REPORT_ROLES), reportsController.getR
  * @access  Private (admin, manager, cashier, captain)
  * @query   outletId - Required
  */
-router.get('/running-tables', authorize(...REPORT_ROLES), reportsController.getRunningTables);
+router.get('/running-tables', authorize(...REPORT_ROLES), reportCache('running-tables', 30), reportsController.getRunningTables);
 
 /**
  * @route   GET /api/v1/reports/day-end-summary
@@ -42,7 +44,7 @@ router.get('/running-tables', authorize(...REPORT_ROLES), reportsController.getR
  * @query   startDate - Start date (YYYY-MM-DD)
  * @query   endDate - End date (YYYY-MM-DD)
  */
-router.get('/day-end-summary', authorize(...REPORT_ROLES), reportsController.getDayEndSummary);
+router.get('/day-end-summary', authorize(...REPORT_ROLES), reportCache('day-end-summary', 300), reportsController.getDayEndSummary);
 
 /**
  * @route   GET /api/v1/reports/day-end-summary/detail
@@ -51,7 +53,7 @@ router.get('/day-end-summary', authorize(...REPORT_ROLES), reportsController.get
  * @query   outletId - Required
  * @query   date - Target date (YYYY-MM-DD), defaults to today
  */
-router.get('/day-end-summary/detail', authorize(...REPORT_ROLES), reportsController.getDayEndSummaryDetail);
+router.get('/day-end-summary/detail', authorize(...REPORT_ROLES), reportCache('day-end-detail', 300), reportsController.getDayEndSummaryDetail);
 
 /**
  * @route   GET /api/v1/reports/day-end-summary/export
@@ -79,7 +81,7 @@ router.get('/day-end-summary/detail/export', authorize(...REPORT_ROLES), reports
  * @query   outletId - Required
  * @query   startDate, endDate - Date range
  */
-router.get('/daily-sales', authorize(...REPORT_ROLES), reportsController.getDailySalesReport);
+router.get('/daily-sales', authorize(...REPORT_ROLES), reportCache('daily-sales', 300), reportsController.getDailySalesReport);
 
 /**
  * @route   GET /api/v1/reports/daily-sales-detail
@@ -87,7 +89,7 @@ router.get('/daily-sales', authorize(...REPORT_ROLES), reportsController.getDail
  * @access  Private (admin, manager)
  * @query   outletId, startDate, endDate, page, limit, filters
  */
-router.get('/daily-sales-detail', authorize('super_admin', 'admin', 'manager'), reportsController.getDailySalesDetail);
+router.get('/daily-sales-detail', authorize('super_admin', 'admin', 'manager'), reportCache('daily-sales-detail', 120), reportsController.getDailySalesDetail);
 
 /**
  * @route   GET /api/v1/reports/item-sales
@@ -95,7 +97,7 @@ router.get('/daily-sales-detail', authorize('super_admin', 'admin', 'manager'), 
  * @access  Private (admin, manager)
  * @query   outletId, startDate, endDate, limit, serviceType
  */
-router.get('/item-sales', authorize('super_admin', 'admin', 'manager'), reportsController.getItemSalesReport);
+router.get('/item-sales', authorize('super_admin', 'admin', 'manager'), reportCache('item-sales', 300), reportsController.getItemSalesReport);
 
 /**
  * @route   GET /api/v1/reports/category-sales
@@ -103,7 +105,7 @@ router.get('/item-sales', authorize('super_admin', 'admin', 'manager'), reportsC
  * @access  Private (admin, manager)
  * @query   outletId, startDate, endDate, serviceType
  */
-router.get('/category-sales', authorize('super_admin', 'admin', 'manager'), reportsController.getCategorySalesReport);
+router.get('/category-sales', authorize('super_admin', 'admin', 'manager'), reportCache('category-sales', 300), reportsController.getCategorySalesReport);
 
 /**
  * @route   GET /api/v1/reports/biller-wise
@@ -111,7 +113,7 @@ router.get('/category-sales', authorize('super_admin', 'admin', 'manager'), repo
  * @access  Private (admin, manager, cashier)
  * @query   outletId, startDate, endDate
  */
-router.get('/biller-wise', authorize(...REPORT_ROLES), reportsController.getBillerWiseReport);
+router.get('/biller-wise', authorize(...REPORT_ROLES), reportCache('biller-wise', 300), reportsController.getBillerWiseReport);
 
 /**
  * @route   GET /api/v1/reports/staff
@@ -119,7 +121,7 @@ router.get('/biller-wise', authorize(...REPORT_ROLES), reportsController.getBill
  * @access  Private (admin, manager)
  * @query   outletId, startDate, endDate
  */
-router.get('/staff', authorize('super_admin', 'admin', 'manager'), reportsController.getStaffReport);
+router.get('/staff', authorize('super_admin', 'admin', 'manager'), reportCache('staff', 300), reportsController.getStaffReport);
 
 /**
  * @route   GET /api/v1/reports/tax
@@ -127,7 +129,7 @@ router.get('/staff', authorize('super_admin', 'admin', 'manager'), reportsContro
  * @access  Private (admin, manager)
  * @query   outletId, startDate, endDate
  */
-router.get('/tax', authorize('super_admin', 'admin', 'manager'), reportsController.getTaxReport);
+router.get('/tax', authorize('super_admin', 'admin', 'manager'), reportCache('tax', 300), reportsController.getTaxReport);
 
 /**
  * @route   GET /api/v1/reports/payment-modes
@@ -135,7 +137,7 @@ router.get('/tax', authorize('super_admin', 'admin', 'manager'), reportsControll
  * @access  Private (admin, manager, cashier)
  * @query   outletId, startDate, endDate
  */
-router.get('/payment-modes', authorize(...REPORT_ROLES), reportsController.getPaymentModeReport);
+router.get('/payment-modes', authorize(...REPORT_ROLES), reportCache('payment-modes', 300), reportsController.getPaymentModeReport);
 
 /**
  * @route   GET /api/v1/reports/cancellations
@@ -143,7 +145,7 @@ router.get('/payment-modes', authorize(...REPORT_ROLES), reportsController.getPa
  * @access  Private (admin, manager)
  * @query   outletId, startDate, endDate
  */
-router.get('/cancellations', authorize('super_admin', 'admin', 'manager'), reportsController.getCancellationReport);
+router.get('/cancellations', authorize('super_admin', 'admin', 'manager'), reportCache('cancellations', 300), reportsController.getCancellationReport);
 
 /**
  * @route   GET /api/v1/reports/floor-section
@@ -151,7 +153,7 @@ router.get('/cancellations', authorize('super_admin', 'admin', 'manager'), repor
  * @access  Private (admin, manager)
  * @query   outletId, startDate, endDate
  */
-router.get('/floor-section', authorize('super_admin', 'admin', 'manager'), reportsController.getFloorSectionReport);
+router.get('/floor-section', authorize('super_admin', 'admin', 'manager'), reportCache('floor-section', 300), reportsController.getFloorSectionReport);
 
 /**
  * @route   GET /api/v1/reports/hourly
@@ -159,7 +161,7 @@ router.get('/floor-section', authorize('super_admin', 'admin', 'manager'), repor
  * @access  Private (admin, manager)
  * @query   outletId, reportDate
  */
-router.get('/hourly', authorize('super_admin', 'admin', 'manager'), reportsController.getHourlySalesReport);
+router.get('/hourly', authorize('super_admin', 'admin', 'manager'), reportCache('hourly', 300), reportsController.getHourlySalesReport);
 
 /**
  * @route   GET /api/v1/reports/counter-sales
@@ -167,7 +169,7 @@ router.get('/hourly', authorize('super_admin', 'admin', 'manager'), reportsContr
  * @access  Private (admin, manager)
  * @query   outletId, startDate, endDate
  */
-router.get('/counter-sales', authorize('super_admin', 'admin', 'manager'), reportsController.getCounterSalesReport);
+router.get('/counter-sales', authorize('super_admin', 'admin', 'manager'), reportCache('counter-sales', 300), reportsController.getCounterSalesReport);
 
 // ========================
 // CSV EXPORT ENDPOINTS
@@ -199,7 +201,7 @@ router.get('/running-orders/export', authorize(...REPORT_ROLES), reportsControll
  * @access  Private (admin, manager)
  * @query   startDate, endDate - Date range (YYYY-MM-DD)
  */
-router.get('/discounts/:outletId/summary', authorize('super_admin', 'admin', 'manager'), discountReportController.getDiscountSummary);
+router.get('/discounts/:outletId/summary', authorize('super_admin', 'admin', 'manager'), reportCache('discount-summary', 300), discountReportController.getDiscountSummary);
 
 /**
  * @route   GET /api/v1/reports/discounts/:outletId/details
@@ -213,7 +215,7 @@ router.get('/discounts/:outletId/summary', authorize('super_admin', 'admin', 'ma
  * @query   givenBy - Filter by staff user ID
  * @query   sortBy, sortOrder - Sorting
  */
-router.get('/discounts/:outletId/details', authorize('super_admin', 'admin', 'manager'), discountReportController.getDiscountDetails);
+router.get('/discounts/:outletId/details', authorize('super_admin', 'admin', 'manager'), reportCache('discount-details', 300), discountReportController.getDiscountDetails);
 
 /**
  * @route   GET /api/v1/reports/discounts/:outletId/codes
@@ -224,7 +226,7 @@ router.get('/discounts/:outletId/details', authorize('super_admin', 'admin', 'ma
  * @query   search - Search in code, name
  * @query   sortBy, sortOrder - Sorting
  */
-router.get('/discounts/:outletId/codes', authorize('super_admin', 'admin', 'manager'), discountReportController.getDiscountCodeReport);
+router.get('/discounts/:outletId/codes', authorize('super_admin', 'admin', 'manager'), reportCache('discount-codes', 300), discountReportController.getDiscountCodeReport);
 
 /**
  * @route   GET /api/v1/reports/discounts/:outletId/staff
@@ -235,7 +237,7 @@ router.get('/discounts/:outletId/codes', authorize('super_admin', 'admin', 'mana
  * @query   search - Search by staff name
  * @query   sortBy, sortOrder - Sorting
  */
-router.get('/discounts/:outletId/staff', authorize('super_admin', 'admin', 'manager'), discountReportController.getStaffDiscountReport);
+router.get('/discounts/:outletId/staff', authorize('super_admin', 'admin', 'manager'), reportCache('discount-staff', 300), discountReportController.getStaffDiscountReport);
 
 /**
  * @route   GET /api/v1/reports/discounts/:outletId/export
@@ -253,5 +255,32 @@ router.get('/discounts/:outletId/export', authorize('super_admin', 'admin', 'man
  * @access  Private (admin, manager)
  */
 router.get('/discounts/:outletId/filters', authorize('super_admin', 'admin', 'manager'), discountReportController.getFilterOptions);
+
+// ========================
+// ADJUSTMENT REPORTS
+// ========================
+
+/**
+ * @route   GET /api/v1/reports/adjustments/:outletId/export
+ * @desc    Export adjustments as CSV
+ * @access  Private (admin, manager)
+ * @query   startDate, endDate, staffId
+ */
+router.get('/adjustments/:outletId/export', authorize('super_admin', 'admin', 'manager'), adjustmentReportController.exportAdjustments);
+
+/**
+ * @route   GET /api/v1/reports/adjustments/:outletId/:id
+ * @desc    Get single adjustment detail
+ * @access  Private (admin, manager, cashier)
+ */
+router.get('/adjustments/:outletId/:id', authorize(...REPORT_ROLES), reportCache('adjustment-detail', 150), adjustmentReportController.getAdjustmentById);
+
+/**
+ * @route   GET /api/v1/reports/adjustments/:outletId
+ * @desc    List adjustments with filters and pagination
+ * @access  Private (admin, manager, cashier)
+ * @query   startDate, endDate, staffId, page, limit, sortBy, sortOrder
+ */
+router.get('/adjustments/:outletId', authorize(...REPORT_ROLES), reportCache('adjustments', 150), adjustmentReportController.getAdjustments);
 
 module.exports = router;

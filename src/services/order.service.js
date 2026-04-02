@@ -105,13 +105,21 @@ const orderService = {
 
     const { cashierId, password } = cashierAuth;
 
-    // Get user with password hash and verify they belong to this outlet
-    const [users] = await pool.query(
-      `SELECT u.id, u.name, u.password_hash, u.is_active
-       FROM users u
-       WHERE u.id = ? AND u.is_active = 1`,
-      [cashierId]
-    );
+    // Get user with password hash and roles in parallel
+    const [[users], [roles]] = await Promise.all([
+      pool.query(
+        `SELECT u.id, u.name, u.password_hash, u.is_active
+         FROM users u
+         WHERE u.id = ? AND u.is_active = 1`,
+        [cashierId]
+      ),
+      pool.query(
+        `SELECT r.slug FROM user_roles ur
+         JOIN roles r ON ur.role_id = r.id
+         WHERE ur.user_id = ? AND ur.is_active = 1`,
+        [cashierId]
+      )
+    ]);
 
     if (!users[0]) {
       throw new Error('Cashier not found or inactive');
@@ -129,14 +137,6 @@ const orderService = {
       logger.warn(`Post-bill modification: Invalid password attempt for cashier ${cashierId} (${user.name})`);
       throw new Error('Invalid cashier password');
     }
-
-    // Verify cashier role (cashier, manager, admin, super_admin)
-    const [roles] = await pool.query(
-      `SELECT r.slug FROM user_roles ur
-       JOIN roles r ON ur.role_id = r.id
-       WHERE ur.user_id = ? AND ur.is_active = 1`,
-      [cashierId]
-    );
 
     const allowedRoles = ['cashier', 'manager', 'admin', 'super_admin'];
     const hasRole = roles.some(r => allowedRoles.includes(r.slug));
@@ -434,16 +434,18 @@ const orderService = {
 
       // Verify captain ownership for dine-in orders
       if (order.table_session_id && order.order_type === 'dine_in') {
-        const [sessionOwner] = await connection.query(
-          'SELECT started_by FROM table_sessions WHERE id = ?',
-          [order.table_session_id]
-        );
-        const [userRoles] = await connection.query(
-          `SELECT r.slug as role_name FROM user_roles ur 
-           JOIN roles r ON ur.role_id = r.id 
-           WHERE ur.user_id = ? AND ur.is_active = 1`,
-          [createdBy]
-        );
+        const [[sessionOwner], [userRoles]] = await Promise.all([
+          connection.query(
+            'SELECT started_by FROM table_sessions WHERE id = ?',
+            [order.table_session_id]
+          ),
+          connection.query(
+            `SELECT r.slug as role_name FROM user_roles ur 
+             JOIN roles r ON ur.role_id = r.id 
+             WHERE ur.user_id = ? AND ur.is_active = 1`,
+            [createdBy]
+          )
+        ]);
         const isPrivileged = userRoles.some(r => ['admin', 'manager', 'super_admin', 'cashier'].includes(r.role_name));
         
         // Convert to numbers for comparison (handle type mismatch)
@@ -594,17 +596,17 @@ const orderService = {
           basePrice = itemDetails.base_price;
         }
 
-        // Calculate addon total
+        // Calculate addon total — batch fetch all addons in one query
         let addonTotal = 0;
-        const addonDetails = [];
-        for (const addonId of addons) {
+        let addonDetails = [];
+        if (addons.length > 0) {
           const [addonRows] = await connection.query(
-            'SELECT a.*, ag.name as group_name FROM addons a JOIN addon_groups ag ON a.addon_group_id = ag.id WHERE a.id = ?',
-            [addonId]
+            'SELECT a.*, ag.name as group_name FROM addons a JOIN addon_groups ag ON a.addon_group_id = ag.id WHERE a.id IN (?)',
+            [addons]
           );
-          if (addonRows[0]) {
-            addonTotal += parseFloat(addonRows[0].price);
-            addonDetails.push(addonRows[0]);
+          addonDetails = addonRows;
+          for (const addon of addonRows) {
+            addonTotal += parseFloat(addon.price);
           }
         }
 
@@ -881,22 +883,63 @@ const orderService = {
     if (!orderRows[0]) return null;
     const order = orderRows[0];
 
-    // Get items with full details
-    const [items] = await pool.query(
-      `SELECT oi.*, 
-        i.short_name, i.image_url, i.item_type,
-        ks.name as station_name, ks.station_type,
-        c.name as counter_name,
-        cat.name as category_name
-       FROM order_items oi
-       LEFT JOIN items i ON oi.item_id = i.id
-       LEFT JOIN kitchen_stations ks ON i.kitchen_station_id = ks.id
-       LEFT JOIN counters c ON i.counter_id = c.id
-       LEFT JOIN categories cat ON i.category_id = cat.id
-       WHERE oi.order_id = ? 
-       ORDER BY oi.created_at`,
-      [orderId]
-    );
+    // Run independent queries in parallel (items, discounts, payments, invoice, KOTs)
+    const [
+      [items],
+      [discounts],
+      [payments],
+      [invoiceRows],
+      kotRows
+    ] = await Promise.all([
+      pool.query(
+        `SELECT oi.*, 
+          i.short_name, i.image_url, i.item_type,
+          ks.name as station_name, ks.station_type,
+          c.name as counter_name,
+          cat.name as category_name
+         FROM order_items oi
+         LEFT JOIN items i ON oi.item_id = i.id
+         LEFT JOIN kitchen_stations ks ON i.kitchen_station_id = ks.id
+         LEFT JOIN counters c ON i.counter_id = c.id
+         LEFT JOIN categories cat ON i.category_id = cat.id
+         WHERE oi.order_id = ? 
+         ORDER BY oi.created_at`,
+        [orderId]
+      ),
+      pool.query(
+        `SELECT od.*, u.name as approved_by_name, uc.name as created_by_name
+         FROM order_discounts od
+         LEFT JOIN users u ON od.approved_by = u.id
+         LEFT JOIN users uc ON od.created_by = uc.id
+         WHERE od.order_id = ?`,
+        [orderId]
+      ),
+      pool.query(
+        `SELECT p.*, u.name as received_by_name
+         FROM payments p
+         LEFT JOIN users u ON p.received_by = u.id
+         WHERE p.order_id = ? 
+         ORDER BY p.created_at DESC`,
+        [orderId]
+      ),
+      pool.query(
+        `SELECT i.*, u.name as generated_by_name
+         FROM invoices i
+         LEFT JOIN users u ON i.generated_by = u.id
+         WHERE i.order_id = ? AND i.is_cancelled = 0
+         ORDER BY i.created_at DESC LIMIT 1`,
+        [orderId]
+      ),
+      pool.query(
+        `SELECT k.id, k.kot_number, k.status, k.station_id, k.created_at,
+          ks.name as station_name
+         FROM kot k
+         LEFT JOIN kitchen_stations ks ON k.station_id = ks.id
+         WHERE k.order_id = ?
+         ORDER BY k.created_at DESC`,
+        [orderId]
+      ).then(([rows]) => rows).catch(() => [])
+    ]);
 
     // Get addons for ALL items in one query (avoids N+1)
     const itemIds = items.map(i => i.id);
@@ -915,6 +958,31 @@ const orderService = {
           quantity: addon.quantity,
           unitPrice: parseFloat(addon.unit_price) || 0,
           totalPrice: parseFloat(addon.total_price) || 0
+        });
+      }
+    }
+
+    // Batch-fetch split payment breakdowns (avoids N+1)
+    const splitPaymentIds = payments.filter(p => p.payment_mode === 'split').map(p => p.id);
+    let splitMap = {};
+    if (splitPaymentIds.length > 0) {
+      const [allSplits] = await pool.query(
+        'SELECT * FROM split_payments WHERE payment_id IN (?)',
+        [splitPaymentIds]
+      );
+      for (const sp of allSplits) {
+        if (!splitMap[sp.payment_id]) splitMap[sp.payment_id] = [];
+        splitMap[sp.payment_id].push({
+          id: sp.id,
+          paymentMode: sp.payment_mode,
+          amount: parseFloat(sp.amount) || 0,
+          transactionId: sp.transaction_id,
+          referenceNumber: sp.reference_number,
+          cardLastFour: sp.card_last_four,
+          cardType: sp.card_type,
+          upiId: sp.upi_id,
+          walletProvider: sp.wallet_provider,
+          notes: sp.notes
         });
       }
     }
@@ -1021,16 +1089,6 @@ const orderService = {
       taxBreakup[key].taxableAmount = parseFloat((taxBreakup[key].taxableAmount * discountRatio).toFixed(2));
       taxBreakup[key].taxAmount = parseFloat((taxBreakup[key].taxAmount * discountRatio).toFixed(2));
     }
-
-    // Get applied discounts with approver info
-    const [discounts] = await pool.query(
-      `SELECT od.*, u.name as approved_by_name, uc.name as created_by_name
-       FROM order_discounts od
-       LEFT JOIN users u ON od.approved_by = u.id
-       LEFT JOIN users uc ON od.created_by = uc.id
-       WHERE od.order_id = ?`,
-      [orderId]
-    );
     
     const formattedDiscounts = discounts.map(d => ({
       id: d.id,
@@ -1049,18 +1107,8 @@ const orderService = {
       createdAt: d.created_at
     }));
 
-    // Get payments with full details and split breakdown
-    const [payments] = await pool.query(
-      `SELECT p.*, u.name as received_by_name
-       FROM payments p
-       LEFT JOIN users u ON p.received_by = u.id
-       WHERE p.order_id = ? 
-       ORDER BY p.created_at DESC`,
-      [orderId]
-    );
-    
-    const formattedPayments = [];
-    for (const payment of payments) {
+    // Format payments with pre-fetched split breakdowns
+    const formattedPayments = payments.map(payment => {
       const formatted = {
         id: payment.id,
         invoiceId: payment.invoice_id,
@@ -1077,41 +1125,19 @@ const orderService = {
         walletProvider: payment.wallet_provider,
         receivedBy: payment.received_by,
         receivedByName: payment.received_by_name,
+        isAdjustment: !!payment.is_adjustment,
+        adjustmentAmount: parseFloat(payment.adjustment_amount) || 0,
+        isDueCollection: !!payment.is_due_collection,
         notes: payment.notes,
         createdAt: payment.created_at
       };
-      
-      // For split payments, fetch the breakdown
       if (payment.payment_mode === 'split') {
-        const [splitDetails] = await pool.query(
-          'SELECT * FROM split_payments WHERE payment_id = ?', [payment.id]
-        );
-        formatted.splitBreakdown = splitDetails.map(sp => ({
-          id: sp.id,
-          paymentMode: sp.payment_mode,
-          amount: parseFloat(sp.amount) || 0,
-          transactionId: sp.transaction_id,
-          referenceNumber: sp.reference_number,
-          cardLastFour: sp.card_last_four,
-          cardType: sp.card_type,
-          upiId: sp.upi_id,
-          walletProvider: sp.wallet_provider,
-          notes: sp.notes
-        }));
+        formatted.splitBreakdown = splitMap[payment.id] || [];
       }
-      formattedPayments.push(formatted);
-    }
+      return formatted;
+    });
 
-    // Get invoice details if exists
-    const [invoiceRows] = await pool.query(
-      `SELECT i.*, u.name as generated_by_name
-       FROM invoices i
-       LEFT JOIN users u ON i.generated_by = u.id
-       WHERE i.order_id = ? AND i.is_cancelled = 0
-       ORDER BY i.created_at DESC LIMIT 1`,
-      [orderId]
-    );
-    
+    // Format invoice
     let invoice = null;
     if (invoiceRows[0]) {
       const inv = invoiceRows[0];
@@ -1153,6 +1179,10 @@ const orderService = {
         taxBreakup,
         hsnSummary,
         isInterstate: !!inv.is_interstate,
+        isAdjustment: (parseFloat(inv.adjustment_amount) || 0) > 0,
+        adjustmentAmount: parseFloat(inv.adjustment_amount) || 0,
+        paidAmount: parseFloat(inv.paid_amount) || 0,
+        dueAmount: parseFloat(inv.due_amount) || 0,
         generatedBy: inv.generated_by,
         generatedByName: inv.generated_by_name,
         notes: inv.notes,
@@ -1160,27 +1190,15 @@ const orderService = {
       };
     }
 
-    // Get KOTs for this order (if table exists)
-    let kots = [];
-    try {
-      const [kotRows] = await pool.query(
-        `SELECT k.id, k.kot_number, k.status, k.station_id, k.created_at,
-          ks.name as station_name
-         FROM kot k
-         LEFT JOIN kitchen_stations ks ON k.station_id = ks.id
-         WHERE k.order_id = ?
-         ORDER BY k.created_at DESC`,
-        [orderId]
-      );
-      kots = kotRows;
-    } catch (e) { /* KOT table may not exist */ }
+    const kots = kotRows;
 
     // Calculate totals and summary
     const totalDiscount = formattedDiscounts.reduce((sum, d) => sum + d.discountAmount, 0);
     const totalPaid = formattedPayments.filter(p => p.status === 'completed').reduce((sum, p) => sum + p.totalAmount, 0);
     // Use invoice grandTotal (reflects NC deduction) if available, else order total_amount
     const effectiveTotal = invoice ? parseFloat(invoice.grandTotal) : (parseFloat(order.total_amount) || 0);
-    const balanceDue = effectiveTotal - totalPaid;
+    const adjustmentAmt = parseFloat(order.adjustment_amount) || 0;
+    const balanceDue = effectiveTotal - totalPaid - adjustmentAmt;
 
     // Build comprehensive response
     return {
@@ -1221,6 +1239,9 @@ const orderService = {
       roundOff: parseFloat(order.round_off) || 0,
       totalAmount: parseFloat(order.total_amount) || 0,
       paidAmount: parseFloat(order.paid_amount) || 0,
+      dueAmount: parseFloat(order.due_amount) || 0,
+      isAdjustment: !!order.is_adjustment,
+      adjustmentAmount: parseFloat(order.adjustment_amount) || 0,
       
       // NC (No Charge) info
       isNC: !!order.is_nc,
@@ -2674,6 +2695,15 @@ const orderService = {
       totalItems: activeItems.length,
       chargeableItems: chargeableItems.length,
       chargeableTotal: chargeableSubtotal
+    };
+
+    // Adjustment summary — expose camelCase adjustment fields
+    order.adjustmentSummary = {
+      isAdjustment: !!order.is_adjustment,
+      adjustmentAmount: parseFloat(order.adjustment_amount) || 0,
+      paidAmount: parseFloat(order.paid_amount) || 0,
+      dueAmount: parseFloat(order.due_amount) || 0,
+      paymentStatus: order.payment_status
     };
 
     // Override order subtotal/total with correct values (excluding NC items)

@@ -329,13 +329,21 @@ const tableService = {
               [order.id]
             );
 
-            // Get addons for each item
-            for (const item of items) {
-              const [addons] = await pool.query(
-                'SELECT * FROM order_item_addons WHERE order_item_id = ?',
-                [item.id]
+            // Batch-fetch addons for ALL items in one query (eliminates N+1)
+            const itemIds = items.map(i => i.id);
+            let addonsMap = {};
+            if (itemIds.length > 0) {
+              const [allAddons] = await pool.query(
+                'SELECT * FROM order_item_addons WHERE order_item_id IN (?)',
+                [itemIds]
               );
-              item.addons = addons;
+              for (const addon of allAddons) {
+                if (!addonsMap[addon.order_item_id]) addonsMap[addon.order_item_id] = [];
+                addonsMap[addon.order_item_id].push(addon);
+              }
+            }
+            for (const item of items) {
+              item.addons = addonsMap[item.id] || [];
             }
 
             // Build internal items with full data (for charges computation)
@@ -577,15 +585,17 @@ const tableService = {
             result.order.activeItemCount = activeItems.length;
             result.order.cancelledItemCount = cancelledItems.length;
 
-            // Get KOT tickets
+            // Get KOT tickets — single JOIN instead of 3 correlated subqueries per row
             const [kots] = await pool.query(
               `SELECT kt.*, u.name as accepted_by_name,
-                (SELECT COUNT(*) FROM kot_items ki WHERE ki.kot_id = kt.id AND ki.status != 'cancelled') as item_count,
-                (SELECT COUNT(*) FROM kot_items ki WHERE ki.kot_id = kt.id) as total_item_count,
-                (SELECT COUNT(*) FROM kot_items ki WHERE ki.kot_id = kt.id AND ki.status = 'cancelled') as cancelled_item_count
+                COUNT(ki.id) as total_item_count,
+                SUM(CASE WHEN ki.status != 'cancelled' THEN 1 ELSE 0 END) as item_count,
+                SUM(CASE WHEN ki.status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_item_count
                FROM kot_tickets kt
                LEFT JOIN users u ON kt.accepted_by = u.id
+               LEFT JOIN kot_items ki ON ki.kot_id = kt.id
                WHERE kt.order_id = ?
+               GROUP BY kt.id
                ORDER BY kt.created_at`,
               [order.id]
             );
@@ -608,14 +618,25 @@ const tableService = {
           }
         }
 
-        // Get merged tables
-        const [merges] = await pool.query(
-          `SELECT tm.*, t.table_number, t.name as table_name, t.capacity
-           FROM table_merges tm
-           JOIN tables t ON tm.merged_table_id = t.id
-           WHERE tm.primary_table_id = ? AND tm.unmerged_at IS NULL`,
-          [id]
-        );
+        // Run merged tables + history in parallel (independent queries)
+        const [mergesResult, historyResult] = await Promise.all([
+          pool.query(
+            `SELECT tm.*, t.table_number, t.name as table_name, t.capacity
+             FROM table_merges tm
+             JOIN tables t ON tm.merged_table_id = t.id
+             WHERE tm.primary_table_id = ? AND tm.unmerged_at IS NULL`,
+            [id]
+          ),
+          pool.query(
+            `SELECT * FROM table_history 
+             WHERE table_id = ? 
+             ORDER BY created_at DESC LIMIT 10`,
+            [id]
+          )
+        ]);
+        const [merges] = mergesResult;
+        const [history] = historyResult;
+
         result.mergedTables = merges.map(m => ({
           tableId: m.merged_table_id,
           tableNumber: m.table_number,
@@ -623,25 +644,35 @@ const tableService = {
           capacity: m.capacity,
           mergedAt: m.merged_at
         }));
-      }
-    }
 
-    // Get recent history/timeline
-    const [history] = await pool.query(
-      `SELECT * FROM table_history 
-       WHERE table_id = ? 
-       ORDER BY created_at DESC LIMIT 10`,
-      [id]
-    );
-    result.timeline = history.map(h => {
-      const action = h.event_type || h.action || null;
-      let details = null;
-      const raw = h.event_data || h.details;
-      if (raw) {
-        try { details = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) {}
+        result.timeline = history.map(h => {
+          const action = h.event_type || h.action || null;
+          let details = null;
+          const raw = h.event_data || h.details;
+          if (raw) {
+            try { details = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) {}
+          }
+          return { action, details, timestamp: h.created_at };
+        });
       }
-      return { action, details, timestamp: h.created_at };
-    });
+    } else {
+      // Table not occupied — just fetch history
+      const [history] = await pool.query(
+        `SELECT * FROM table_history 
+         WHERE table_id = ? 
+         ORDER BY created_at DESC LIMIT 10`,
+        [id]
+      );
+      result.timeline = history.map(h => {
+        const action = h.event_type || h.action || null;
+        let details = null;
+        const raw = h.event_data || h.details;
+        if (raw) {
+          try { details = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) {}
+        }
+        return { action, details, timestamp: h.created_at };
+      });
+    }
 
     // Add status-specific summary
     result.statusSummary = this.getStatusSummary(result);

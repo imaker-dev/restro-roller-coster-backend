@@ -86,6 +86,8 @@ function formatPaymentEntry(payment) {
     tipAmount: parseFloat(payment.tip_amount) || 0,
     totalAmount: parseFloat(payment.total_amount) || 0,
     status: payment.status,
+    isAdjustment: !!payment.is_adjustment,
+    adjustmentAmount: parseFloat(payment.adjustment_amount) || 0,
     transactionId: payment.transaction_id || null,
     referenceNumber: payment.reference_number || null,
     createdAt: payment.created_at || null,
@@ -186,6 +188,8 @@ function formatInvoice(invoice) {
     ncAmount: parseFloat(invoice.nc_amount) || 0,
     paidAmount: parseFloat(invoice.paid_amount) || 0,
     dueAmount: parseFloat(invoice.due_amount) || 0,
+    isAdjustment: !!invoice.is_adjustment || (parseFloat(invoice.adjustment_amount) || 0) > 0,
+    adjustmentAmount: parseFloat(invoice.adjustment_amount) || 0,
     isDuePayment: !!invoice.is_due_payment,
     amountInWords: invoice.amount_in_words || null,
     paymentStatus: invoice.payment_status,
@@ -677,12 +681,14 @@ const billingService = {
           );
         }
 
-        const existingInv = await this.getInvoiceById(ei.id);
-        // Non-blocking print for existing invoice
+        const existingInv = await this.getInvoiceById(ei.id, order);
+        // Non-blocking print for existing invoice (skip if skipPrint is true)
         // Use floorCashierId for correct printer routing (generatedBy may be captain)
-        this.printBillToThermal(existingInv, order, floorCashierId || data.generatedBy).catch(printErr => {
-          logger.error(`Reprint existing invoice ${existingInv?.invoiceNumber} failed:`, printErr.message);
-        });
+        if (!data.skipPrint) {
+          this.printBillToThermal(existingInv, order, floorCashierId || data.generatedBy).catch(printErr => {
+            logger.error(`Reprint existing invoice ${existingInv?.invoiceNumber} failed:`, printErr.message);
+          });
+        }
         return existingInv;
       }
 
@@ -767,7 +773,7 @@ const billingService = {
       await connection.commit();
 
       // Try pool first, fall back to connection read for visibility lag
-      let invoice = await this.getInvoiceById(invoiceId);
+      let invoice = await this.getInvoiceById(invoiceId, order);
       if (!invoice) {
         // Fallback: read invoice directly via connection
         const [invRows] = await connection.query(
@@ -838,10 +844,13 @@ const billingService = {
       }).catch(err => logger.error('Bill status emit error:', err.message));
 
       // Print bill to thermal printer (non-blocking - don't wait for print)
+      // Skip if skipPrint is true (user will print via /invoice/:id/print endpoint)
       // Use floorCashierId for correct printer routing (generatedBy may be captain, not cashier)
-      this.printBillToThermal(invoice, order, floorCashierId || generatedBy).catch(printError => {
-        logger.error(`Bill print failed for ${invoiceNumber}:`, printError.message);
-      });
+      if (!data.skipPrint) {
+        this.printBillToThermal(invoice, order, floorCashierId || generatedBy).catch(printError => {
+          logger.error(`Bill print failed for ${invoiceNumber}:`, printError.message);
+        });
+      }
 
       return invoice;
     } catch (error) {
@@ -1097,48 +1106,61 @@ const billingService = {
   // INVOICE RETRIEVAL
   // ========================
 
-  async getInvoiceById(id) {
+  async getInvoiceById(id, preloadedOrder = null) {
     const pool = getPool();
-    const [rows] = await pool.query(
-      `SELECT i.*, o.order_number, o.order_type, o.table_id, o.floor_id,
-        t.table_number, t.name as table_name,
-        f.name as floor_name,
-        u.name as generated_by_name
-       FROM invoices i
-       LEFT JOIN orders o ON i.order_id = o.id
-       LEFT JOIN tables t ON o.table_id = t.id
-       LEFT JOIN floors f ON o.floor_id = f.id
-       LEFT JOIN users u ON i.generated_by = u.id
-       WHERE i.id = ?`,
-      [id]
-    );
 
+    // Run invoice query and payments query in parallel
+    const [invoiceResult, paymentsResult] = await Promise.all([
+      pool.query(
+        `SELECT i.*, o.order_number, o.order_type, o.table_id, o.floor_id,
+          t.table_number, t.name as table_name,
+          f.name as floor_name,
+          u.name as generated_by_name
+         FROM invoices i
+         LEFT JOIN orders o ON i.order_id = o.id
+         LEFT JOIN tables t ON o.table_id = t.id
+         LEFT JOIN floors f ON o.floor_id = f.id
+         LEFT JOIN users u ON i.generated_by = u.id
+         WHERE i.id = ?`,
+        [id]
+      ),
+      pool.query(
+        'SELECT * FROM payments WHERE invoice_id = ?',
+        [id]
+      )
+    ]);
+
+    const [rows] = invoiceResult;
     if (!rows[0]) return null;
 
     const invoice = rows[0];
+    const [payments] = paymentsResult;
 
-    // Get order items — exclude cancelled items from bill/invoice view
-    const order = await orderService.getOrderWithItems(invoice.order_id);
+    // Use preloaded order if available, otherwise fetch (avoids double getOrderWithItems in generateBill)
+    const order = preloadedOrder || await orderService.getOrderWithItems(invoice.order_id);
     invoice.items = (order.items || []).filter(item => item.status !== 'cancelled');
     invoice.discounts = order.discounts;
 
-    // Get payments
-    const [payments] = await pool.query(
-      'SELECT * FROM payments WHERE invoice_id = ?',
-      [id]
-    );
-    
-    // For split payments, fetch the breakdown from split_payments table
-    for (const payment of payments) {
-      if (payment.payment_mode === 'split') {
-        const [splitDetails] = await pool.query(
-          'SELECT * FROM split_payments WHERE payment_id = ?', [payment.id]
-        );
-        payment.splitBreakdown = splitDetails.map(sp => ({
+    // Batch-fetch split payment breakdowns (avoids N+1)
+    const splitPaymentIds = payments.filter(p => p.payment_mode === 'split').map(p => p.id);
+    if (splitPaymentIds.length > 0) {
+      const [allSplits] = await pool.query(
+        'SELECT * FROM split_payments WHERE payment_id IN (?)',
+        [splitPaymentIds]
+      );
+      const splitMap = {};
+      for (const sp of allSplits) {
+        if (!splitMap[sp.payment_id]) splitMap[sp.payment_id] = [];
+        splitMap[sp.payment_id].push({
           paymentMode: sp.payment_mode,
           amount: parseFloat(sp.amount) || 0,
           reference: sp.reference_number
-        }));
+        });
+      }
+      for (const payment of payments) {
+        if (payment.payment_mode === 'split') {
+          payment.splitBreakdown = splitMap[payment.id] || [];
+        }
       }
     }
     

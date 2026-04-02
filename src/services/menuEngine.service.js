@@ -87,35 +87,81 @@ const menuEngineService = {
 
     const menuContext = { floorId, sectionId, timeSlotId, time, skipTimeSlotFilter, serviceType };
 
-    // Get visible categories (filtered by serviceType if provided)
-    const categories = await categoryService.getVisibleCategories(outletId, menuContext);
+    // Parallel: fetch categories + ALL visible items in one go (instead of per-category)
+    const [categories, allItems] = await Promise.all([
+      categoryService.getVisibleCategories(outletId, menuContext),
+      itemService.getVisibleItems(outletId, menuContext)
+    ]);
 
-    // Build menu structure
+    // Group items by category_id
+    const itemsByCat = {};
+    for (const item of allItems) {
+      if (!itemsByCat[item.category_id]) itemsByCat[item.category_id] = [];
+      itemsByCat[item.category_id].push(item);
+    }
+
+    // Batch fetch ALL variants + addon group mappings in parallel
+    let variantsByItemId = {};
+    let addonGroupsByItemId = {};
+    let addonsByGroupId = {};
+
+    if (includeDetails && allItems.length > 0) {
+      const variantItemIds = allItems.filter(i => i.has_variants).map(i => i.id);
+      const addonItemIds = allItems.filter(i => i.has_addons).map(i => i.id);
+
+      const [variantRows, addonGroupRows] = await Promise.all([
+        variantItemIds.length > 0 ? pool.query(
+          `SELECT v.*, tg.name as tax_group_name, tg.total_rate as tax_rate
+           FROM variants v
+           LEFT JOIN tax_groups tg ON v.tax_group_id = tg.id
+           WHERE v.item_id IN (?) AND v.is_active = 1
+           ORDER BY v.display_order, v.name`,
+          [variantItemIds]
+        ).then(([r]) => r) : [],
+        addonItemIds.length > 0 ? pool.query(
+          `SELECT ag.*, iag.item_id, iag.is_required as item_required, iag.display_order as item_display_order
+           FROM item_addon_groups iag
+           JOIN addon_groups ag ON iag.addon_group_id = ag.id
+           WHERE iag.item_id IN (?) AND iag.is_active = 1 AND ag.is_active = 1
+           ORDER BY iag.display_order, ag.name`,
+          [addonItemIds]
+        ).then(([r]) => r) : []
+      ]);
+
+      // Build variant lookup
+      for (const v of variantRows) {
+        if (!variantsByItemId[v.item_id]) variantsByItemId[v.item_id] = [];
+        variantsByItemId[v.item_id].push(v);
+      }
+
+      // Build addon group lookup + batch fetch ALL addons
+      const addonGroupIds = [...new Set(addonGroupRows.map(g => g.id))];
+      if (addonGroupIds.length > 0) {
+        const [addonRows] = await pool.query(
+          'SELECT * FROM addons WHERE addon_group_id IN (?) AND is_active = 1 ORDER BY display_order, name',
+          [addonGroupIds]
+        );
+        for (const a of addonRows) {
+          if (!addonsByGroupId[a.addon_group_id]) addonsByGroupId[a.addon_group_id] = [];
+          addonsByGroupId[a.addon_group_id].push(a);
+        }
+      }
+      for (const g of addonGroupRows) {
+        if (!addonGroupsByItemId[g.item_id]) addonGroupsByItemId[g.item_id] = [];
+        addonGroupsByItemId[g.item_id].push(g);
+      }
+    }
+
+    // Build menu structure (pure in-memory — no more DB calls)
     const menu = [];
 
     for (const category of categories) {
-      // Get visible items for this category
-      const items = await itemService.getVisibleItems(outletId, {
-        ...menuContext,
-        categoryId: category.id
-      });
+      const items = itemsByCat[category.id];
+      if (!items || items.length === 0) continue;
 
-      if (items.length === 0) continue;
-
-      const categoryItems = [];
-
-      for (const item of items) {
-        // Get effective price
-        const effectivePrice = await itemService.getEffectivePrice(
-          item.id, null, menuContext
-        );
-
-        // Apply price rules
-        const priceResult = await priceRuleService.calculatePrice(
-          effectivePrice || item.base_price,
-          outletId, item.id, null, menuContext
-        );
-
+      const categoryItems = items.map(item => {
+        // Price rules and effective price are currently disabled — use base_price directly
+        const basePrice = parseFloat(item.base_price);
         const menuItem = {
           id: item.id,
           name: item.name,
@@ -123,10 +169,10 @@ const menuEngineService = {
           description: item.description,
           imageUrl: prefixImageUrl(item.image_url),
           itemType: item.item_type,
-          basePrice: priceResult.basePrice,
-          price: priceResult.finalPrice,
-          hasDiscount: priceResult.hasDiscount,
-          appliedRules: priceResult.appliedRules,
+          basePrice: basePrice,
+          price: Math.max(0, parseFloat(basePrice.toFixed(2))),
+          hasDiscount: false,
+          appliedRules: [],
           hasVariants: item.has_variants,
           hasAddons: item.has_addons,
           isRecommended: item.is_recommended,
@@ -144,33 +190,39 @@ const menuEngineService = {
           isOpenItem: !!item.is_open_item
         };
 
-        // Include variants if item has variants
+        // Include variants from batch lookup
         if (includeDetails && item.has_variants) {
-          const variants = await itemService.getVariants(item.id);
-          menuItem.variants = await Promise.all(variants.map(async (v) => {
-            const variantPrice = await priceRuleService.calculatePrice(
-              v.price, outletId, item.id, v.id, menuContext
-            );
-            return {
-              id: v.id,
-              name: v.name,
-              basePrice: variantPrice.basePrice,
-              price: variantPrice.finalPrice,
-              hasDiscount: variantPrice.hasDiscount,
-              isDefault: v.is_default,
-              taxGroupId: v.tax_group_id || item.tax_group_id,
-              taxRate: v.tax_rate || item.tax_rate
-            };
-          }));
+          const variants = variantsByItemId[item.id];
+          if (variants && variants.length > 0) {
+            menuItem.variants = variants.map(v => {
+              const vPrice = parseFloat(v.price);
+              return {
+                id: v.id,
+                name: v.name,
+                basePrice: vPrice,
+                price: Math.max(0, parseFloat(vPrice.toFixed(2))),
+                hasDiscount: false,
+                isDefault: v.is_default,
+                taxGroupId: v.tax_group_id || item.tax_group_id,
+                taxRate: v.tax_rate || item.tax_rate
+              };
+            });
+          }
         }
 
-        // Include addon groups if item has addons
+        // Include addon groups from batch lookup
         if (includeDetails && item.has_addons) {
-          menuItem.addonGroups = await addonService.getItemAddonGroups(item.id);
+          const groups = addonGroupsByItemId[item.id];
+          if (groups && groups.length > 0) {
+            menuItem.addonGroups = groups.map(g => ({
+              ...g,
+              addons: addonsByGroupId[g.id] || []
+            }));
+          }
         }
 
-        categoryItems.push(menuItem);
-      }
+        return menuItem;
+      });
 
       if (categoryItems.length > 0) {
         menu.push({
@@ -205,6 +257,11 @@ const menuEngineService = {
    */
   async getCaptainMenu(outletId, context = {}) {
     const { filter, serviceType } = context;
+
+    // Check cache first (5-minute TTL)
+    const cacheKey = `menu:captain:${outletId}:${filter || 'all'}:${serviceType || 'all'}`;
+    const cached = await cache.get(cacheKey);
+    if (cached) return cached;
     
     // Skip time slot filtering for captain - show all items
     // Pass serviceType to filter categories at database level
@@ -248,7 +305,7 @@ const menuEngineService = {
     const totalItems = filteredCategories.reduce((sum, cat) => sum + cat.items.length, 0);
 
     // Clean, flat structure for captain - easy to read and use
-    return {
+    const result = {
       outletId: menu.outletId,
       generatedAt: menu.generatedAt,
       filter: filter || null,
@@ -332,6 +389,11 @@ const menuEngineService = {
         })
       }))
     };
+
+    // Store in cache (5-minute TTL = 300 seconds)
+    await cache.set(cacheKey, result, 300);
+
+    return result;
   },
 
   /**
@@ -506,19 +568,24 @@ const menuEngineService = {
   async searchItems(outletId, query, context = {}) {
     const pool = getPool();
     const { floorId, sectionId, timeSlotId, limit = 50, filter } = context;
+
+    // Check cache first (5-minute TTL)
+    const cacheKey = `menu:search:${outletId}:${query}:${filter || 'all'}:${floorId || 0}:${sectionId || 0}:${timeSlotId || 0}:${limit}`;
+    const cached = await cache.get(cacheKey);
+    if (cached) return cached;
+
     const searchTerm = `%${query}%`;
     
     // Build item type filter
     const typeFilter = buildItemTypeFilter(filter, 'i', 'c');
 
-    // 1. Search for matching categories (apply liquor filter if needed)
+    // 1. Build category search SQL
     let catSql = `SELECT DISTINCT c.id, c.name, c.description, c.image_url, c.icon, c.color_code
        FROM categories c
        WHERE c.outlet_id = ? AND c.is_active = 1 AND c.deleted_at IS NULL
        AND c.name LIKE ?`;
     let catParams = [outletId, searchTerm];
     
-    // Apply category filter for liquor/veg
     if (filter) {
       const filterLower = filter.toLowerCase();
       if (filterLower === 'liquor') {
@@ -526,17 +593,27 @@ const menuEngineService = {
         catSql += ` AND (${liquorPattern})`;
         catParams.push(...LIQUOR_KEYWORDS.map(k => `%${k}%`));
       } else if (filterLower === 'veg') {
-        // Exclude liquor categories for veg filter
         const liquorPattern = LIQUOR_KEYWORDS.map(() => 'c.name NOT LIKE ?').join(' AND ');
         catSql += ` AND (${liquorPattern})`;
         catParams.push(...LIQUOR_KEYWORDS.map(k => `%${k}%`));
       }
-      // non_veg doesn't filter categories, only items
     }
-    
-    const [matchingCategories] = await pool.query(catSql, catParams);
 
-    // 2. Search for matching items (by name, short_name, sku, tags)
+    // Parallel: category search + variant match search (both independent)
+    const [matchingCategories, variantMatches] = await Promise.all([
+      pool.query(catSql, catParams).then(([r]) => r),
+      pool.query(
+        `SELECT DISTINCT i.id
+         FROM items i
+         JOIN variants v ON v.item_id = i.id
+         WHERE i.outlet_id = ? AND i.is_active = 1 AND i.deleted_at IS NULL
+         AND v.name LIKE ?`,
+        [outletId, searchTerm]
+      ).then(([r]) => r)
+    ]);
+
+    // 2. Build item search SQL (depends on variant matches)
+    const variantItemIds = variantMatches.map(v => v.id);
     let itemSql = `
       SELECT DISTINCT i.id, i.name, i.short_name, i.description, i.base_price,
         i.image_url, i.item_type, i.has_variants, i.has_addons,
@@ -546,34 +623,21 @@ const menuEngineService = {
       FROM items i
       JOIN categories c ON i.category_id = c.id
       WHERE i.outlet_id = ? AND i.is_active = 1 AND i.is_available = 1 AND i.deleted_at IS NULL
-      AND (i.name LIKE ? OR i.short_name LIKE ? OR i.sku LIKE ? OR i.tags LIKE ?)
+      AND (i.name LIKE ? OR i.short_name LIKE ? OR i.sku LIKE ? OR i.tags LIKE ?
     `;
     let itemParams = [outletId, searchTerm, searchTerm, searchTerm, searchTerm];
 
-    // Apply item type filter (veg/non_veg/liquor)
+    if (variantItemIds.length > 0) {
+      itemSql += ` OR i.id IN (${variantItemIds.map(() => '?').join(',')})`;
+      itemParams.push(...variantItemIds);
+    }
+    itemSql += ')';
+
     if (typeFilter.sql) {
       itemSql += typeFilter.sql;
       itemParams.push(...typeFilter.params);
     }
 
-    // 3. Search for matching variants and get their parent items
-    const [variantMatches] = await pool.query(
-      `SELECT DISTINCT i.id
-       FROM items i
-       JOIN variants v ON v.item_id = i.id
-       WHERE i.outlet_id = ? AND i.is_active = 1 AND i.deleted_at IS NULL
-       AND v.name LIKE ?`,
-      [outletId, searchTerm]
-    );
-    const variantItemIds = variantMatches.map(v => v.id);
-
-    // Add variant matches to query
-    if (variantItemIds.length > 0) {
-      itemSql += ` OR i.id IN (${variantItemIds.map(() => '?').join(',')})`;
-      itemParams.push(...variantItemIds);
-    }
-
-    // Apply visibility filters
     if (floorId) {
       itemSql += `
         AND (
@@ -583,7 +647,6 @@ const menuEngineService = {
       `;
       itemParams.push(floorId);
     }
-
     if (sectionId) {
       itemSql += `
         AND (
@@ -593,7 +656,6 @@ const menuEngineService = {
       `;
       itemParams.push(sectionId);
     }
-
     if (timeSlotId) {
       itemSql += `
         AND (
@@ -607,74 +669,8 @@ const menuEngineService = {
     itemSql += ' ORDER BY i.is_bestseller DESC, i.name LIMIT ?';
     itemParams.push(limit);
 
-    const [matchingItems] = await pool.query(itemSql, itemParams);
-
-    // 4. Get full details for matching items (variants, addons)
-    const itemsWithDetails = await Promise.all(matchingItems.map(async (item) => {
-      const result = {
-        id: item.id,
-        name: item.name,
-        short: item.short_name,
-        description: item.description,
-        price: parseFloat(item.base_price),
-        type: item.item_type,
-        img: prefixImageUrl(item.image_url),
-        categoryId: item.category_id,
-        categoryName: item.category_name,
-        taxGroupId: item.tax_group_id,
-        isOpenItem: !!item.is_open_item
-      };
-
-      // Add badges
-      if (item.is_bestseller) result.bestseller = true;
-      if (item.is_recommended) result.recommended = true;
-      if (item.is_new) result.isNew = true;
-      if (item.spice_level) result.spiceLevel = item.spice_level;
-      if (item.preparation_time_mins) result.prepTime = item.preparation_time_mins;
-
-      // Get variants if has_variants
-      if (item.has_variants) {
-        const [variants] = await pool.query(
-          'SELECT id, name, price, is_default, tax_group_id FROM variants WHERE item_id = ? AND is_active = 1',
-          [item.id]
-        );
-        if (variants.length > 0) {
-          result.variants = variants.map(v => ({
-            id: v.id,
-            name: v.name,
-            price: parseFloat(v.price),
-            isDefault: v.is_default ? true : false,
-            taxGroupId: v.tax_group_id
-          }));
-        }
-      }
-
-      // Get addons if has_addons
-      if (item.has_addons) {
-        const addonGroups = await addonService.getItemAddonGroups(item.id);
-        if (addonGroups && addonGroups.length > 0) {
-          result.addons = addonGroups.map(g => ({
-            id: g.id,
-            name: g.name,
-            required: g.is_required || g.item_required || false,
-            min: g.min_selection || 0,
-            max: g.max_selection || 10,
-            options: g.addons?.map(a => ({
-              id: a.id,
-              name: a.name,
-              price: parseFloat(a.price) || 0,
-              type: a.item_type || 'veg'
-            })) || []
-          }));
-        }
-      }
-
-      return result;
-    }));
-
-    // 5. Get full category details for matching categories
-    const categoriesWithItems = await Promise.all(matchingCategories.map(async (cat) => {
-      // Get all items in this category
+    // 3. Parallel: item search + category items queries
+    const catItemQueries = matchingCategories.map(cat => {
       let catItemSql = `
         SELECT i.id, i.name, i.short_name, i.description, i.base_price,
           i.image_url, i.item_type, i.has_variants, i.has_addons,
@@ -684,8 +680,6 @@ const menuEngineService = {
         WHERE i.category_id = ? AND i.is_active = 1 AND i.is_available = 1 AND i.deleted_at IS NULL
       `;
       const catItemParams = [cat.id];
-
-      // Apply same visibility filters
       if (floorId) {
         catItemSql += `
           AND (
@@ -704,12 +698,132 @@ const menuEngineService = {
         `;
         catItemParams.push(sectionId);
       }
-
       catItemSql += ' ORDER BY i.display_order, i.name';
-      const [catItems] = await pool.query(catItemSql, catItemParams);
+      return pool.query(catItemSql, catItemParams).then(([r]) => r);
+    });
 
-      // Get full details for category items
-      const itemsDetail = await Promise.all(catItems.map(async (item) => {
+    const [matchingItems, ...catItemResults] = await Promise.all([
+      pool.query(itemSql, itemParams).then(([r]) => r),
+      ...catItemQueries
+    ]);
+
+    // 4. Collect ALL unique items that need variant/addon details
+    const allSearchItems = [...matchingItems];
+    for (const catItems of catItemResults) {
+      for (const item of catItems) {
+        allSearchItems.push(item);
+      }
+    }
+    const uniqueItemIds = [...new Set(allSearchItems.map(i => i.id))];
+
+    // 5. Batch fetch ALL variants + addon groups + addons (3 queries instead of N+1 per item)
+    const variantNeedIds = [...new Set(allSearchItems.filter(i => i.has_variants).map(i => i.id))];
+    const addonNeedIds = [...new Set(allSearchItems.filter(i => i.has_addons).map(i => i.id))];
+
+    const [batchVariants, batchAddonGroups] = await Promise.all([
+      variantNeedIds.length > 0 ? pool.query(
+        'SELECT id, item_id, name, price, is_default, tax_group_id FROM variants WHERE item_id IN (?) AND is_active = 1 ORDER BY display_order, name',
+        [variantNeedIds]
+      ).then(([r]) => r) : [],
+      addonNeedIds.length > 0 ? pool.query(
+        `SELECT ag.*, iag.item_id, iag.is_required as item_required, iag.display_order as item_display_order
+         FROM item_addon_groups iag
+         JOIN addon_groups ag ON iag.addon_group_id = ag.id
+         WHERE iag.item_id IN (?) AND iag.is_active = 1 AND ag.is_active = 1
+         ORDER BY iag.display_order, ag.name`,
+        [addonNeedIds]
+      ).then(([r]) => r) : []
+    ]);
+
+    // Batch fetch addons for all addon groups
+    const addonGroupIds = [...new Set(batchAddonGroups.map(g => g.id))];
+    let batchAddons = [];
+    if (addonGroupIds.length > 0) {
+      [batchAddons] = await pool.query(
+        'SELECT * FROM addons WHERE addon_group_id IN (?) AND is_active = 1 ORDER BY display_order, name',
+        [addonGroupIds]
+      );
+    }
+
+    // Build lookup maps
+    const variantsByItemId = {};
+    for (const v of batchVariants) {
+      if (!variantsByItemId[v.item_id]) variantsByItemId[v.item_id] = [];
+      variantsByItemId[v.item_id].push(v);
+    }
+    const addonsByGroupId = {};
+    for (const a of batchAddons) {
+      if (!addonsByGroupId[a.addon_group_id]) addonsByGroupId[a.addon_group_id] = [];
+      addonsByGroupId[a.addon_group_id].push(a);
+    }
+    const addonGroupsByItemId = {};
+    for (const g of batchAddonGroups) {
+      if (!addonGroupsByItemId[g.item_id]) addonGroupsByItemId[g.item_id] = [];
+      addonGroupsByItemId[g.item_id].push(g);
+    }
+
+    // 6. Build matching items results (pure in-memory — no more DB calls)
+    const itemsWithDetails = matchingItems.map(item => {
+      const result = {
+        id: item.id,
+        name: item.name,
+        short: item.short_name,
+        description: item.description,
+        price: parseFloat(item.base_price),
+        type: item.item_type,
+        img: prefixImageUrl(item.image_url),
+        categoryId: item.category_id,
+        categoryName: item.category_name,
+        taxGroupId: item.tax_group_id,
+        isOpenItem: !!item.is_open_item
+      };
+
+      if (item.is_bestseller) result.bestseller = true;
+      if (item.is_recommended) result.recommended = true;
+      if (item.is_new) result.isNew = true;
+      if (item.spice_level) result.spiceLevel = item.spice_level;
+      if (item.preparation_time_mins) result.prepTime = item.preparation_time_mins;
+
+      if (item.has_variants) {
+        const variants = variantsByItemId[item.id];
+        if (variants && variants.length > 0) {
+          result.variants = variants.map(v => ({
+            id: v.id,
+            name: v.name,
+            price: parseFloat(v.price),
+            isDefault: v.is_default ? true : false,
+            taxGroupId: v.tax_group_id
+          }));
+        }
+      }
+
+      if (item.has_addons) {
+        const groups = addonGroupsByItemId[item.id];
+        if (groups && groups.length > 0) {
+          result.addons = groups.map(g => ({
+            id: g.id,
+            name: g.name,
+            required: g.is_required || g.item_required || false,
+            min: g.min_selection || 0,
+            max: g.max_selection || 10,
+            options: (addonsByGroupId[g.id] || []).map(a => ({
+              id: a.id,
+              name: a.name,
+              price: parseFloat(a.price) || 0,
+              type: a.item_type || 'veg'
+            }))
+          }));
+        }
+      }
+
+      return result;
+    });
+
+    // 7. Build category results (pure in-memory)
+    const categoriesWithItems = matchingCategories.map((cat, idx) => {
+      const catItems = catItemResults[idx] || [];
+
+      const itemsDetail = catItems.map(item => {
         const result = {
           id: item.id,
           name: item.name,
@@ -728,13 +842,9 @@ const menuEngineService = {
         if (item.spice_level) result.spiceLevel = item.spice_level;
         if (item.preparation_time_mins) result.prepTime = item.preparation_time_mins;
 
-        // Get variants
         if (item.has_variants) {
-          const [variants] = await pool.query(
-            'SELECT id, name, price, is_default, tax_group_id FROM variants WHERE item_id = ? AND is_active = 1',
-            [item.id]
-          );
-          if (variants.length > 0) {
+          const variants = variantsByItemId[item.id];
+          if (variants && variants.length > 0) {
             result.variants = variants.map(v => ({
               id: v.id,
               name: v.name,
@@ -744,27 +854,26 @@ const menuEngineService = {
           }
         }
 
-        // Get addons
         if (item.has_addons) {
-          const addonGroups = await addonService.getItemAddonGroups(item.id);
-          if (addonGroups && addonGroups.length > 0) {
-            result.addons = addonGroups.map(g => ({
+          const groups = addonGroupsByItemId[item.id];
+          if (groups && groups.length > 0) {
+            result.addons = groups.map(g => ({
               id: g.id,
               name: g.name,
               required: g.is_required || false,
               min: g.min_selection || 0,
               max: g.max_selection || 10,
-              options: g.addons?.map(a => ({
+              options: (addonsByGroupId[g.id] || []).map(a => ({
                 id: a.id,
                 name: a.name,
                 price: parseFloat(a.price) || 0
-              })) || []
+              }))
             }));
           }
         }
 
         return result;
-      }));
+      });
 
       return {
         id: cat.id,
@@ -777,15 +886,20 @@ const menuEngineService = {
         itemCount: itemsDetail.length,
         items: itemsDetail
       };
-    }));
+    });
 
-    return {
+    const searchResult = {
       query,
       matchingCategories: categoriesWithItems,
       matchingItems: itemsWithDetails,
       totalCategories: categoriesWithItems.length,
       totalItems: itemsWithDetails.length
     };
+
+    // Store in cache (5-minute TTL = 300 seconds)
+    await cache.set(cacheKey, searchResult, 300);
+
+    return searchResult;
   },
 
   /**
@@ -808,7 +922,11 @@ const menuEngineService = {
    * Invalidate menu cache
    */
   async invalidateCache(outletId) {
-    await cache.del(`menu:${outletId}`);
+    await Promise.all([
+      cache.del(`menu:${outletId}`),
+      cache.delPattern(`menu:captain:${outletId}:*`),
+      cache.delPattern(`menu:search:${outletId}:*`)
+    ]);
   }
 };
 

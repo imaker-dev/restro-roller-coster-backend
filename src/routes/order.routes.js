@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const orderController = require('../controllers/order.controller');
 const { authenticate, authorize } = require('../middlewares/auth.middleware');
+const { reportCache } = require('../middleware/reportCache');
 const { validate } = require('../middlewares');
 const orderValidation = require('../validations/order.validation');
 
@@ -651,21 +652,21 @@ router.get('/reports/:outletId/nc/export', authorize('super_admin', 'admin', 'ma
  * @query   sortBy - session_date | opening_time | closing_time | total_sales | total_orders | cash_variance
  * @query   sortOrder - ASC | DESC (default: DESC)
  */
-router.get('/shifts/:outletId/history', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), orderController.getShiftHistory);
+router.get('/shifts/:outletId/history', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('shift-history', 120), orderController.getShiftHistory);
 
 /**
  * @route   GET /api/v1/orders/shifts/:shiftId/detail
  * @desc    Get detailed shift information with transactions, payments, staff activity
  * @access  Private (cashier, manager, admin)
  */
-router.get('/shifts/:shiftId/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), orderController.getShiftDetail);
+router.get('/shifts/:shiftId/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('shift-detail', 120), orderController.getShiftDetail);
 
 /**
  * @route   GET /api/v1/orders/shifts/:shiftId/summary
  * @desc    Get single shift summary with shift-time-based calculations
  * @access  Private (cashier, manager, admin)
  */
-router.get('/shifts/:shiftId/summary', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), orderController.getShiftSummaryById);
+router.get('/shifts/:shiftId/summary', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('shift-summary', 120), orderController.getShiftSummaryById);
 
 /**
  * @route   GET /api/v1/orders/shifts/:outletId/outlet-summary
@@ -674,7 +675,7 @@ router.get('/shifts/:shiftId/summary', authorize('super_admin', 'admin', 'manage
  * @query   startDate - Filter from date (YYYY-MM-DD)
  * @query   endDate - Filter to date (YYYY-MM-DD)
  */
-router.get('/shifts/:outletId/outlet-summary', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), orderController.getShiftSummary);
+router.get('/shifts/:outletId/outlet-summary', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('shift-outlet-summary', 120), orderController.getShiftSummary);
 
 /**
  * @route   GET /api/v1/orders/shifts/:outletId/history/export

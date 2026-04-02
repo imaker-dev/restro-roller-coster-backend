@@ -9,14 +9,23 @@ const { cache } = require('../config/redis');
 const logger = require('../utils/logger');
 
 /**
- * Get local date string (YYYY-MM-DD) accounting for server timezone
- * Uses local time instead of UTC to match MySQL DATE() function behavior
+ * Business day starts at this hour (IST). Orders before this hour belong to the previous business day.
+ * E.g. 4 means: business day = 4:00 AM today → 3:59:59 AM tomorrow.
+ */
+const BUSINESS_DAY_START_HOUR = 4;
+
+/**
+ * Get local date string (YYYY-MM-DD) for the current business day.
+ * If the current time is before BUSINESS_DAY_START_HOUR (e.g. 4 AM),
+ * the business day is still "yesterday".
  */
 function getLocalDate(date = new Date()) {
   const d = date instanceof Date ? date : new Date(date);
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
+  // Shift back by BUSINESS_DAY_START_HOUR so pre-cutoff hours map to previous day
+  const shifted = new Date(d.getTime() - BUSINESS_DAY_START_HOUR * 60 * 60 * 1000);
+  const year = shifted.getFullYear();
+  const month = String(shifted.getMonth() + 1).padStart(2, '0');
+  const day = String(shifted.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 }
 
@@ -49,13 +58,47 @@ function serviceTypeFilter(serviceType, categoryAlias = 'c') {
 }
 
 /**
- * Extract DATE from a timestamp column for date filtering.
+ * Extract the business-day DATE from a timestamp column.
+ * Subtracts BUSINESS_DAY_START_HOUR hours so that e.g. 2:00 AM April 2
+ * maps to business day April 1 (since the restaurant day ends at 4 AM).
  * MySQL session timezone is already IST — no CONVERT_TZ needed.
  * @param {string} column - the timestamp column (e.g., 'o.created_at')
  * @returns {string} SQL snippet for date extraction
  */
 function toISTDate(column) {
-  return `DATE(${column})`;
+  return `DATE(DATE_SUB(${column}, INTERVAL ${BUSINESS_DAY_START_HOUR} HOUR))`;
+}
+
+/**
+ * Convert business-day date strings to actual datetime range for index-friendly WHERE.
+ * Instead of: WHERE DATE(DATE_SUB(col, INTERVAL 4 HOUR)) BETWEEN '2026-04-01' AND '2026-04-03'
+ *   (kills index — function evaluated per row)
+ * We use:    WHERE col >= '2026-04-01 04:00:00' AND col < '2026-04-04 04:00:00'
+ *   (index-friendly range scan)
+ *
+ * @param {string} startDate - YYYY-MM-DD business day start
+ * @param {string} endDate   - YYYY-MM-DD business day end (inclusive)
+ * @returns {{ startDt: string, endDt: string }}
+ */
+function businessDayRange(startDate, endDate) {
+  const h = String(BUSINESS_DAY_START_HOUR).padStart(2, '0') + ':00:00';
+  const startDt = `${startDate} ${h}`;
+  // endDate is inclusive, so the upper bound is the START of the NEXT day
+  const ed = new Date(endDate + 'T00:00:00');
+  ed.setDate(ed.getDate() + 1);
+  const endStr = ed.getFullYear() + '-' + String(ed.getMonth() + 1).padStart(2, '0') + '-' + String(ed.getDate()).padStart(2, '0');
+  const endDt = `${endStr} ${h}`;
+  return { startDt, endDt };
+}
+
+/**
+ * SQL snippet for index-friendly business-day WHERE condition.
+ * Use this INSTEAD of `${toISTDate(col)} BETWEEN ? AND ?` in WHERE clauses.
+ * Params: [startDt, endDt] from businessDayRange().
+ * Keep using toISTDate() in SELECT and GROUP BY (those don't affect index usage).
+ */
+function bdWhere(column) {
+  return `${column} >= ? AND ${column} < ?`;
 }
 
 const reportsService = {
@@ -69,6 +112,7 @@ const reportsService = {
   async aggregateDailySales(outletId, reportDate = null) {
     const pool = getPool();
     const date = reportDate || getLocalDate();
+    const { startDt, endDt } = businessDayRange(date, date);
 
     // Get order totals
     const [orderStats] = await pool.query(
@@ -90,8 +134,8 @@ const reportsService = {
         COUNT(CASE WHEN is_nc = 1 THEN 1 END) as nc_orders,
         SUM(COALESCE(nc_amount, 0)) as nc_amount
        FROM orders 
-       WHERE outlet_id = ? AND ${toISTDate('created_at')} = ? AND status != 'cancelled'`,
-      [outletId, date]
+       WHERE outlet_id = ? AND ${bdWhere('created_at')} AND status != 'cancelled'`,
+      [outletId, startDt, endDt]
     );
 
     // Get payment totals
@@ -105,17 +149,17 @@ const reportsService = {
         SUM(CASE WHEN payment_mode = 'credit' THEN total_amount ELSE 0 END) as credit_collection,
         SUM(tip_amount) as tip_amount
        FROM payments 
-       WHERE outlet_id = ? AND ${toISTDate('created_at')} = ? AND status = 'completed'`,
-      [outletId, date]
+       WHERE outlet_id = ? AND ${bdWhere('created_at')} AND status = 'completed'`,
+      [outletId, startDt, endDt]
     );
 
     // Get complimentary and refunds
     const [extras] = await pool.query(
       `SELECT 
-        (SELECT SUM(total_amount) FROM orders WHERE outlet_id = ? AND ${toISTDate('created_at')} = ? AND is_complimentary = 1) as complimentary_amount,
-        (SELECT SUM(refund_amount) FROM refunds WHERE outlet_id = ? AND ${toISTDate('created_at')} = ? AND status = 'approved') as refund_amount
+        (SELECT SUM(total_amount) FROM orders WHERE outlet_id = ? AND ${bdWhere('created_at')} AND is_complimentary = 1) as complimentary_amount,
+        (SELECT SUM(refund_amount) FROM refunds WHERE outlet_id = ? AND ${bdWhere('created_at')} AND status = 'approved') as refund_amount
       `,
-      [outletId, date, outletId, date]
+      [outletId, startDt, endDt, outletId, startDt, endDt]
     );
 
     // Get peak hour
@@ -124,11 +168,11 @@ const reportsService = {
         HOUR(created_at) as hour,
         SUM(total_amount) as sales
        FROM orders 
-       WHERE outlet_id = ? AND ${toISTDate('created_at')} = ? AND status IN ('paid', 'completed')
+       WHERE outlet_id = ? AND ${bdWhere('created_at')} AND status IN ('paid', 'completed')
        GROUP BY HOUR(created_at)
        ORDER BY sales DESC
        LIMIT 1`,
-      [outletId, date]
+      [outletId, startDt, endDt]
     );
 
     const stats = orderStats[0];
@@ -190,6 +234,7 @@ const reportsService = {
   async aggregateItemSales(outletId, reportDate = null) {
     const pool = getPool();
     const date = reportDate || getLocalDate();
+    const { startDt, endDt } = businessDayRange(date, date);
 
     const [items] = await pool.query(
       `SELECT 
@@ -205,9 +250,9 @@ const reportsService = {
        JOIN orders o ON oi.order_id = o.id
        JOIN items i ON oi.item_id = i.id
        LEFT JOIN categories c ON i.category_id = c.id
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} = ?
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}
        GROUP BY oi.item_id, oi.variant_id, oi.item_name, oi.variant_name, i.category_id, c.name`,
-      [outletId, date]
+      [outletId, startDt, endDt]
     );
 
     for (const item of items) {
@@ -245,6 +290,7 @@ const reportsService = {
   async aggregateStaffSales(outletId, reportDate = null) {
     const pool = getPool();
     const date = reportDate || getLocalDate();
+    const { startDt, endDt } = businessDayRange(date, date);
 
     const [staff] = await pool.query(
       `SELECT 
@@ -259,18 +305,18 @@ const reportsService = {
         SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount
        FROM orders o
        JOIN users u ON o.created_by = u.id
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} = ?
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}
        GROUP BY o.created_by, u.full_name`,
-      [outletId, date]
+      [outletId, startDt, endDt]
     );
 
     // Get tips
     const [tips] = await pool.query(
       `SELECT p.received_by as user_id, SUM(p.tip_amount) as tips
        FROM payments p
-       WHERE p.outlet_id = ? AND ${toISTDate('p.created_at')} = ? AND p.status = 'completed'
+       WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed'
        GROUP BY p.received_by`,
-      [outletId, date]
+      [outletId, startDt, endDt]
     );
     const tipMap = {};
     tips.forEach(t => tipMap[t.user_id] = t.tips);
@@ -313,10 +359,10 @@ const reportsService = {
    */
   _dateRange(startDate, endDate) {
     const today = getLocalDate();
-    return {
-      start: startDate || today,
-      end: endDate || startDate || today
-    };
+    const start = startDate || today;
+    const end = endDate || startDate || today;
+    const { startDt, endDt } = businessDayRange(start, end);
+    return { start, end, startDt, endDt };
   },
 
   /**
@@ -324,7 +370,7 @@ const reportsService = {
    */
   async getDailySalesReport(outletId, startDate, endDate, floorIds = []) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
     const ff = floorFilter(floorIds);
 
     const [rows] = await pool.query(
@@ -347,12 +393,14 @@ const reportsService = {
         SUM(CASE WHEN o.status != 'cancelled' THEN o.round_off ELSE 0 END) as round_off,
         SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
         SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount
+        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount,
+        COUNT(CASE WHEN o.is_adjustment = 1 AND o.status != 'cancelled' THEN 1 END) as adjustment_count,
+        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.adjustment_amount, 0) ELSE 0 END) as adjustment_amount
        FROM orders o
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} BETWEEN ? AND ?${ff.sql}
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}
        GROUP BY ${toISTDate('o.created_at')}
        ORDER BY report_date DESC`,
-      [outletId, start, end, ...ff.params]
+      [outletId, startDt, endDt, ...ff.params]
     );
 
     // Attach payment breakdown per day (regular payments, non-split)
@@ -368,9 +416,9 @@ const reportsService = {
         SUM(p.tip_amount) as tip_amount
        FROM payments p
        JOIN orders o ON p.order_id = o.id
-       WHERE p.outlet_id = ? AND ${toISTDate('p.created_at')} BETWEEN ? AND ? AND p.status = 'completed' AND p.payment_mode != 'split'${ff.sql}
+       WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed' AND p.payment_mode != 'split'${ff.sql}
        GROUP BY ${toISTDate('p.created_at')}`,
-      [outletId, start, end, ...ff.params]
+      [outletId, startDt, endDt, ...ff.params]
     );
     
     // Get split payment breakdown per day
@@ -386,9 +434,9 @@ const reportsService = {
        FROM split_payments sp
        JOIN payments p ON sp.payment_id = p.id
        JOIN orders o ON p.order_id = o.id
-       WHERE p.outlet_id = ? AND ${toISTDate('p.created_at')} BETWEEN ? AND ? AND p.status = 'completed' AND p.payment_mode = 'split'${ff.sql}
+       WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed' AND p.payment_mode = 'split'${ff.sql}
        GROUP BY ${toISTDate('p.created_at')}`,
-      [outletId, start, end, ...ff.params]
+      [outletId, startDt, endDt, ...ff.params]
     );
     const splitPayMap = {};
     splitPayRows.forEach(r => { splitPayMap[r.report_date instanceof Date ? r.report_date.toISOString().slice(0, 10) : r.report_date] = r; });
@@ -431,9 +479,9 @@ const reportsService = {
        FROM order_item_costs oic
        JOIN orders o ON oic.order_id = o.id
        WHERE o.outlet_id = ? AND o.status IN ('paid','completed')
-         AND ${toISTDate('o.created_at')} BETWEEN ? AND ?${ff.sql}
+         AND ${bdWhere('o.created_at')}${ff.sql}
        GROUP BY ${toISTDate('o.created_at')}`,
-      [outletId, start, end, ...ff.params]
+      [outletId, startDt, endDt, ...ff.params]
     );
     const costMap = {};
     costRows.forEach(r => {
@@ -507,6 +555,8 @@ const reportsService = {
     const totalNCAmount = rows.reduce((s, r) => s + parseFloat(r.nc_amount || 0), 0);
     const totalDueAmount = rows.reduce((s, r) => s + parseFloat(r.due_amount || 0), 0);
     const totalPaidAmount = rows.reduce((s, r) => s + parseFloat(r.paid_amount || 0), 0);
+    const totalAdjustmentCount = rows.reduce((s, r) => s + (r.adjustment_count || 0), 0);
+    const totalAdjustmentAmount = rows.reduce((s, r) => s + parseFloat(r.adjustment_amount || 0), 0);
 
     return {
       dateRange: { start, end },
@@ -522,6 +572,8 @@ const reportsService = {
         nc_amount: totalNCAmount.toFixed(2),
         due_amount: totalDueAmount.toFixed(2),
         paid_amount: totalPaidAmount.toFixed(2),
+        adjustment_count: totalAdjustmentCount,
+        adjustment_amount: totalAdjustmentAmount.toFixed(2),
         total_guests: totalGuests,
         gross_sales: grossSales.toFixed(2),
         net_sales: netSales.toFixed(2),
@@ -553,7 +605,7 @@ const reportsService = {
    */
   async getItemSalesReport(outletId, startDate, endDate, limit = 50, floorIds = [], serviceType = null) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
     const ff = floorFilter(floorIds);
     const stf = serviceTypeFilter(serviceType);
 
@@ -569,8 +621,8 @@ const reportsService = {
        JOIN orders o ON oi.order_id = o.id
        LEFT JOIN items i ON oi.item_id = i.id
        LEFT JOIN categories c ON i.category_id = c.id
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} BETWEEN ? AND ?${ff.sql}${stf.sql}`,
-      [outletId, start, end, ...ff.params, ...stf.params]
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}${stf.sql}`,
+      [outletId, startDt, endDt, ...ff.params, ...stf.params]
     );
     const itemCount = itemCountResult[0];
 
@@ -585,8 +637,8 @@ const reportsService = {
         SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
         SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount
        FROM orders o
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} BETWEEN ? AND ? AND o.status != 'cancelled'${ff.sql}`,
-      [outletId, start, end, ...ff.params]
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'${ff.sql}`,
+      [outletId, startDt, endDt, ...ff.params]
     );
     const summary = { ...itemCount, ...orderSummary[0] };
 
@@ -614,11 +666,11 @@ const reportsService = {
        LEFT JOIN items i ON oi.item_id = i.id
        LEFT JOIN categories c ON i.category_id = c.id
        LEFT JOIN order_item_costs oic ON oic.order_item_id = oi.id
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} BETWEEN ? AND ?${ff.sql}${stf.sql}
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}${stf.sql}
        GROUP BY oi.item_id, oi.item_name, oi.variant_name, c.name, i.category_id, c.service_type
        ORDER BY total_quantity DESC
        LIMIT ?`,
-      [outletId, start, end, ...ff.params, ...stf.params, limit]
+      [outletId, startDt, endDt, ...ff.params, ...stf.params, limit]
     );
 
     // Use summary totals from the first query (accurate counts without LIMIT)
@@ -665,7 +717,7 @@ const reportsService = {
    */
   async getCategorySalesReport(outletId, startDate, endDate, floorIds = [], serviceType = null) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
     const ff = floorFilter(floorIds);
     const stf = serviceTypeFilter(serviceType);
 
@@ -686,10 +738,10 @@ const reportsService = {
        JOIN orders o ON oi.order_id = o.id
        LEFT JOIN items i ON oi.item_id = i.id
        LEFT JOIN categories c ON i.category_id = c.id
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} BETWEEN ? AND ?${ff.sql}${stf.sql}
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}${stf.sql}
        GROUP BY i.category_id, c.name, c.service_type
        ORDER BY net_revenue DESC`,
-      [outletId, start, end, ...ff.params, ...stf.params]
+      [outletId, startDt, endDt, ...ff.params, ...stf.params]
     );
 
     // Get financial summary from ORDERS table for consistency with daily sales report
@@ -704,8 +756,8 @@ const reportsService = {
         SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount,
         COUNT(CASE WHEN o.is_nc = 1 AND o.status != 'cancelled' THEN 1 END) as nc_orders
        FROM orders o
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} BETWEEN ? AND ? AND o.status != 'cancelled'${ff.sql}`,
-      [outletId, start, end, ...ff.params]
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'${ff.sql}`,
+      [outletId, startDt, endDt, ...ff.params]
     );
 
     const totalQuantity = rows.reduce((s, r) => s + parseInt(r.total_quantity || 0), 0);
@@ -744,7 +796,7 @@ const reportsService = {
    */
   async getPaymentModeReport(outletId, startDate, endDate, floorIds = []) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
     const ff = floorFilter(floorIds);
 
     // Get regular payments (non-split)
@@ -757,10 +809,10 @@ const reportsService = {
         SUM(p.tip_amount) as tip_amount
        FROM payments p
        JOIN orders o ON p.order_id = o.id
-       WHERE p.outlet_id = ? AND ${toISTDate('p.created_at')} BETWEEN ? AND ? AND p.status = 'completed' AND p.payment_mode != 'split'${ff.sql}
+       WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed' AND p.payment_mode != 'split'${ff.sql}
        GROUP BY p.payment_mode
        ORDER BY total_amount DESC`,
-      [outletId, start, end, ...ff.params]
+      [outletId, startDt, endDt, ...ff.params]
     );
 
     // Get split payment breakdown from split_payments table
@@ -774,10 +826,10 @@ const reportsService = {
        FROM split_payments sp
        JOIN payments p ON sp.payment_id = p.id
        JOIN orders o ON p.order_id = o.id
-       WHERE p.outlet_id = ? AND ${toISTDate('p.created_at')} BETWEEN ? AND ? AND p.status = 'completed' AND p.payment_mode = 'split'${ff.sql}
+       WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed' AND p.payment_mode = 'split'${ff.sql}
        GROUP BY sp.payment_mode
        ORDER BY total_amount DESC`,
-      [outletId, start, end, ...ff.params]
+      [outletId, startDt, endDt, ...ff.params]
     );
 
     // Merge regular and split payments by payment_mode
@@ -820,9 +872,9 @@ const reportsService = {
         COALESCE(SUM(oi.total_price), 0) as nc_amount
        FROM order_items oi
        JOIN orders o ON oi.order_id = o.id
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} BETWEEN ? AND ? AND o.status != 'cancelled'
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'
        AND oi.is_nc = 1 AND oi.status != 'cancelled'${ff.sql}`,
-      [outletId, start, end, ...ff.params]
+      [outletId, startDt, endDt, ...ff.params]
     );
     const ncData = ncSummary[0] || {};
 
@@ -830,8 +882,8 @@ const reportsService = {
     const [dueSummary] = await pool.query(
       `SELECT SUM(COALESCE(o.due_amount, 0)) as due_amount
        FROM orders o
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} BETWEEN ? AND ? AND o.status != 'cancelled'${ff.sql}`,
-      [outletId, start, end, ...ff.params]
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'${ff.sql}`,
+      [outletId, startDt, endDt, ...ff.params]
     );
     const dueData = dueSummary[0] || {};
 
@@ -859,7 +911,7 @@ const reportsService = {
    */
   async getTaxReport(outletId, startDate, endDate, floorIds = []) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
     const ff = floorFilter(floorIds);
 
     // Daily aggregated from invoice columns
@@ -880,18 +932,18 @@ const reportsService = {
         COUNT(*) as invoice_count
        FROM invoices i
        JOIN orders o ON i.order_id = o.id
-       WHERE i.outlet_id = ? AND ${toISTDate('i.created_at')} BETWEEN ? AND ? AND i.is_cancelled = 0${ff.sql}
+       WHERE i.outlet_id = ? AND ${bdWhere('i.created_at')} AND i.is_cancelled = 0${ff.sql}
        GROUP BY ${toISTDate('i.created_at')}
        ORDER BY report_date DESC`,
-      [outletId, start, end, ...ff.params]
+      [outletId, startDt, endDt, ...ff.params]
     );
 
     // Parse tax_breakup JSON from each invoice for accurate per-component breakdown
     const [invoices] = await pool.query(
       `SELECT i.tax_breakup FROM invoices i
        JOIN orders o ON i.order_id = o.id
-       WHERE i.outlet_id = ? AND ${toISTDate('i.created_at')} BETWEEN ? AND ? AND i.is_cancelled = 0${ff.sql}`,
-      [outletId, start, end, ...ff.params]
+       WHERE i.outlet_id = ? AND ${bdWhere('i.created_at')} AND i.is_cancelled = 0${ff.sql}`,
+      [outletId, startDt, endDt, ...ff.params]
     );
 
     const componentTotals = {};
@@ -951,9 +1003,9 @@ const reportsService = {
         COALESCE(SUM(oi.total_price), 0) as nc_amount
        FROM order_items oi
        JOIN orders o ON oi.order_id = o.id
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} BETWEEN ? AND ? AND o.status != 'cancelled'
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'
        AND oi.is_nc = 1 AND oi.status != 'cancelled'${ff.sql}`,
-      [outletId, start, end, ...ff.params]
+      [outletId, startDt, endDt, ...ff.params]
     );
     const ncData = ncSummary[0] || {};
     summary.nc_orders = parseInt(ncData.nc_orders) || 0;
@@ -963,8 +1015,8 @@ const reportsService = {
     const [dueSummary] = await pool.query(
       `SELECT SUM(COALESCE(o.due_amount, 0)) as due_amount
        FROM orders o
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} BETWEEN ? AND ? AND o.status != 'cancelled'${ff.sql}`,
-      [outletId, start, end, ...ff.params]
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'${ff.sql}`,
+      [outletId, startDt, endDt, ...ff.params]
     );
     summary.due_amount = parseFloat((dueSummary[0] || {}).due_amount || 0).toFixed(2);
 
@@ -977,6 +1029,7 @@ const reportsService = {
   async getHourlySalesReport(outletId, reportDate, floorIds = []) {
     const pool = getPool();
     const date = reportDate || getLocalDate();
+    const { startDt, endDt } = businessDayRange(date, date);
     const ff = floorFilter(floorIds);
 
     const [rows] = await pool.query(
@@ -990,10 +1043,10 @@ const reportsService = {
         COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
         SUM(COALESCE(o.nc_amount, 0)) as nc_amount
        FROM orders o
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} = ? AND o.status != 'cancelled'${ff.sql}
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'${ff.sql}
        GROUP BY HOUR(o.created_at)
        ORDER BY hour`,
-      [outletId, date, ...ff.params]
+      [outletId, startDt, endDt, ...ff.params]
     );
 
     // Fill all 24 hours (0-23) for chart-friendly output
@@ -1027,7 +1080,7 @@ const reportsService = {
    */
   async getStaffReport(outletId, startDate, endDate, floorIds = []) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
     const ff = floorFilter(floorIds);
 
     const [rows] = await pool.query(
@@ -1042,13 +1095,15 @@ const reportsService = {
         COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
         SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
         SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount
+        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount,
+        COUNT(CASE WHEN o.is_adjustment = 1 AND o.status != 'cancelled' THEN 1 END) as adjustment_count,
+        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.adjustment_amount, 0) ELSE 0 END) as adjustment_amount
        FROM orders o
        JOIN users u ON o.created_by = u.id
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} BETWEEN ? AND ?${ff.sql}
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}
        GROUP BY o.created_by, u.name
        ORDER BY total_sales DESC`,
-      [outletId, start, end, ...ff.params]
+      [outletId, startDt, endDt, ...ff.params]
     );
 
     // Get tips per staff
@@ -1056,9 +1111,9 @@ const reportsService = {
       `SELECT p.received_by as user_id, SUM(p.tip_amount) as tips
        FROM payments p
        JOIN orders o ON p.order_id = o.id
-       WHERE p.outlet_id = ? AND ${toISTDate('p.created_at')} BETWEEN ? AND ? AND p.status = 'completed' AND p.tip_amount > 0${ff.sql}
+       WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed' AND p.tip_amount > 0${ff.sql}
        GROUP BY p.received_by`,
-      [outletId, start, end, ...ff.params]
+      [outletId, startDt, endDt, ...ff.params]
     );
     const tipMap = {};
     tips.forEach(t => { tipMap[t.user_id] = parseFloat(t.tips); });
@@ -1094,6 +1149,8 @@ const reportsService = {
         nc_amount: rows.reduce((s, r) => s + parseFloat(r.nc_amount || 0), 0).toFixed(2),
         due_amount: rows.reduce((s, r) => s + parseFloat(r.due_amount || 0), 0).toFixed(2),
         paid_amount: rows.reduce((s, r) => s + parseFloat(r.paid_amount || 0), 0).toFixed(2),
+        adjustment_count: rows.reduce((s, r) => s + (r.adjustment_count || 0), 0),
+        adjustment_amount: rows.reduce((s, r) => s + parseFloat(r.adjustment_amount || 0), 0).toFixed(2),
         total_tips: totalTips.toFixed(2),
         average_per_staff: staff.length > 0 ? (totalSales / staff.length).toFixed(2) : '0.00',
         top_performer: staff.length > 0 ? staff[0].user_name : null,
@@ -1112,7 +1169,7 @@ const reportsService = {
    */
   async getFloorSectionReport(outletId, startDate, endDate, options = {}) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
     
     const floorIds = options.floorIds || [];
     const search = (options.search || '').trim();
@@ -1159,10 +1216,10 @@ const reportsService = {
         SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount
        FROM orders o
        INNER JOIN floors f ON o.floor_id = f.id
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} BETWEEN ? AND ? AND o.floor_id IS NOT NULL${ff.sql}${floorSearchSql}
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.floor_id IS NOT NULL${ff.sql}${floorSearchSql}
        GROUP BY o.floor_id, f.name
        ORDER BY net_sales DESC`,
-      [outletId, start, end, ...ff.params, ...floorSearchParams]
+      [outletId, startDt, endDt, ...ff.params, ...floorSearchParams]
     );
 
     // Get section-wise breakdown with pagination (exclude orders without floor_id)
@@ -1171,8 +1228,8 @@ const reportsService = {
        FROM orders o
        INNER JOIN floors f ON o.floor_id = f.id
        LEFT JOIN sections s ON o.section_id = s.id
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} BETWEEN ? AND ? AND o.floor_id IS NOT NULL${ff.sql}${sectionSearchSql}`,
-      [outletId, start, end, ...ff.params, ...sectionSearchParams]
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.floor_id IS NOT NULL${ff.sql}${sectionSearchSql}`,
+      [outletId, startDt, endDt, ...ff.params, ...sectionSearchParams]
     );
     const total = countResult[0]?.total || 0;
 
@@ -1193,11 +1250,11 @@ const reportsService = {
        FROM orders o
        INNER JOIN floors f ON o.floor_id = f.id
        LEFT JOIN sections s ON o.section_id = s.id
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} BETWEEN ? AND ? AND o.floor_id IS NOT NULL${ff.sql}${sectionSearchSql}
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.floor_id IS NOT NULL${ff.sql}${sectionSearchSql}
        GROUP BY o.floor_id, f.name, o.section_id, s.name
        ORDER BY ${orderCol} ${sortOrder}
        LIMIT ? OFFSET ?`,
-      [outletId, start, end, ...ff.params, ...sectionSearchParams, limit, offset]
+      [outletId, startDt, endDt, ...ff.params, ...sectionSearchParams, limit, offset]
     );
 
     // Format sections first for grouping
@@ -1304,7 +1361,7 @@ const reportsService = {
    */
   async getCounterSalesReport(outletId, startDate, endDate, floorIds = []) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
     const ff = floorFilter(floorIds);
 
     // Get counter/station breakdown using station_id for actual counter/station names
@@ -1326,10 +1383,10 @@ const reportsService = {
        LEFT JOIN counters c ON kt.station_id = c.id AND c.outlet_id = kt.outlet_id 
          AND kt.station IN ('bar', 'main_bar', 'mocktail', 'live_counter')
        JOIN orders o ON kt.order_id = o.id
-       WHERE kt.outlet_id = ? AND ${toISTDate('kt.created_at')} BETWEEN ? AND ?${ff.sql}
+       WHERE kt.outlet_id = ? AND ${bdWhere('kt.created_at')}${ff.sql}
        GROUP BY kt.station, kt.station_id, ks.name, c.name, ks.station_type, c.counter_type
        ORDER BY ticket_count DESC`,
-      [outletId, start, end, ...ff.params]
+      [outletId, startDt, endDt, ...ff.params]
     );
 
     // Format stations with proper naming
@@ -1393,7 +1450,7 @@ const reportsService = {
    */
   async getCounterSalesDetail(outletId, startDate, endDate, options = {}) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
 
     const page = Math.max(1, parseInt(options.page) || 1);
     const limit = Math.min(200, Math.max(1, parseInt(options.limit) || 50));
@@ -1420,8 +1477,8 @@ const reportsService = {
        LEFT JOIN users u_accepted ON kt.accepted_by = u_accepted.id
        LEFT JOIN users u_served ON kt.served_by = u_served.id`;
 
-    let conditions = ['kt.outlet_id = ?', `${toISTDate('kt.created_at')} BETWEEN ? AND ?`];
-    let params = [outletId, start, end];
+    let conditions = ['kt.outlet_id = ?', `${bdWhere('kt.created_at')}`];
+    let params = [outletId, startDt, endDt];
 
     if (floorIds.length > 0) {
       conditions.push(`o.floor_id IN (${floorIds.map(() => '?').join(',')})`);
@@ -1701,7 +1758,7 @@ const reportsService = {
    */
   async getCancellationReport(outletId, startDate, endDate, floorIds = []) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
     const ff = floorFilter(floorIds);
 
     // Order-level cancellations - use created_at as fallback if cancelled_at is NULL
@@ -1719,17 +1776,17 @@ const reportsService = {
         f.name as floor_name,
         t.table_number,
         COALESCE(o.cancelled_at, o.updated_at) as cancelled_at,
-        DATE(COALESCE(o.cancelled_at, o.updated_at)) as cancel_date
+        ${toISTDate('COALESCE(o.cancelled_at, o.updated_at)')} as cancel_date
        FROM orders o
        LEFT JOIN users u ON o.cancelled_by = u.id
        LEFT JOIN users c ON o.created_by = c.id
        LEFT JOIN floors f ON o.floor_id = f.id
        LEFT JOIN tables t ON o.table_id = t.id
        WHERE o.outlet_id = ? 
-         AND ${toISTDate('COALESCE(o.cancelled_at, o.created_at)')} BETWEEN ? AND ? 
+         AND ${bdWhere('COALESCE(o.cancelled_at, o.created_at)')} 
          AND o.status = 'cancelled'${ff.sql}
        ORDER BY COALESCE(o.cancelled_at, o.updated_at) DESC`,
-      [outletId, start, end, ...ff.params]
+      [outletId, startDt, endDt, ...ff.params]
     );
 
     // Item-level cancellations - include items cancelled within active orders
@@ -1751,7 +1808,7 @@ const reportsService = {
         f.name as floor_name,
         t.table_number,
         COALESCE(oi.cancelled_at, oi.updated_at) as cancelled_at,
-        DATE(COALESCE(oi.cancelled_at, oi.updated_at)) as cancel_date
+        ${toISTDate('COALESCE(oi.cancelled_at, oi.updated_at)')} as cancel_date
        FROM order_items oi
        JOIN orders o ON oi.order_id = o.id
        LEFT JOIN users u ON oi.cancelled_by = u.id
@@ -1759,10 +1816,10 @@ const reportsService = {
        LEFT JOIN floors f ON o.floor_id = f.id
        LEFT JOIN tables t ON o.table_id = t.id
        WHERE o.outlet_id = ? 
-         AND ${toISTDate('COALESCE(oi.cancelled_at, oi.created_at)')} BETWEEN ? AND ? 
+         AND ${bdWhere('COALESCE(oi.cancelled_at, oi.created_at)')} 
          AND oi.status = 'cancelled'${ff.sql}
        ORDER BY COALESCE(oi.cancelled_at, oi.updated_at) DESC`,
-      [outletId, start, end, ...ff.params]
+      [outletId, startDt, endDt, ...ff.params]
     );
 
     // Summary by reason - combine both order and item cancellations
@@ -1774,7 +1831,7 @@ const reportsService = {
           o.total_amount as amount
         FROM orders o
         WHERE o.outlet_id = ? 
-          AND ${toISTDate('COALESCE(o.cancelled_at, o.created_at)')} BETWEEN ? AND ? 
+          AND ${bdWhere('COALESCE(o.cancelled_at, o.created_at)')} 
           AND o.status = 'cancelled'${ff.sql}
         UNION ALL
         SELECT 
@@ -1784,12 +1841,12 @@ const reportsService = {
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
         WHERE o.outlet_id = ? 
-          AND ${toISTDate('COALESCE(oi.cancelled_at, oi.created_at)')} BETWEEN ? AND ? 
+          AND ${bdWhere('COALESCE(oi.cancelled_at, oi.created_at)')} 
           AND oi.status = 'cancelled'${ff.sql}
       ) combined
       GROUP BY reason
       ORDER BY count DESC`,
-      [outletId, start, end, ...ff.params, outletId, start, end, ...ff.params]
+      [outletId, startDt, endDt, ...ff.params, outletId, startDt, endDt, ...ff.params]
     );
 
     // Daily breakdown
@@ -1869,7 +1926,7 @@ const reportsService = {
    */
   async getCancellationDetail(outletId, startDate, endDate, options = {}) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
 
     // Parse options
     const page = Math.max(1, parseInt(options.page) || 1);
@@ -1904,8 +1961,8 @@ const reportsService = {
        LEFT JOIN users u_captain ON o.created_by = u_captain.id
        LEFT JOIN users u_cashier ON o.billed_by = u_cashier.id`;
 
-    let conditions = ['o.outlet_id = ?', `${toISTDate('ocl.created_at')} BETWEEN ? AND ?`];
-    let params = [outletId, start, end];
+    let conditions = ['o.outlet_id = ?', `${bdWhere('ocl.created_at')}`];
+    let params = [outletId, startDt, endDt];
 
     if (floorIds.length > 0) {
       conditions.push(`o.floor_id IN (${floorIds.map(() => '?').join(',')})`);
@@ -2333,6 +2390,7 @@ const reportsService = {
   async getLiveDashboard(outletId, floorIds = []) {
     const pool = getPool();
     const today = getLocalDate();
+    const { startDt, endDt } = businessDayRange(today, today);
     const ff = floorFilter(floorIds);
     const ffT = floorFilter(floorIds, 't');
 
@@ -2348,8 +2406,8 @@ const reportsService = {
         SUM(CASE WHEN status != 'cancelled' THEN COALESCE(due_amount, 0) ELSE 0 END) as due_amount,
         SUM(CASE WHEN status != 'cancelled' THEN COALESCE(paid_amount, 0) ELSE 0 END) as paid_amount
        FROM orders o
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} = ?${ff.sql}`,
-      [outletId, today, ...ff.params]
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}`,
+      [outletId, startDt, endDt, ...ff.params]
     );
 
     // Active tables
@@ -2365,9 +2423,9 @@ const reportsService = {
         COUNT(*) as count
        FROM kot_tickets kt
        JOIN orders o ON kt.order_id = o.id
-       WHERE kt.outlet_id = ? AND kt.status NOT IN ('served', 'cancelled') AND ${toISTDate('kt.created_at')} = ?${ff.sql}
+       WHERE kt.outlet_id = ? AND kt.status NOT IN ('served', 'cancelled') AND ${bdWhere('kt.created_at')}${ff.sql}
        GROUP BY kt.station`,
-      [outletId, today, ...ff.params]
+      [outletId, startDt, endDt, ...ff.params]
     );
 
     // Payment breakdown
@@ -2377,9 +2435,9 @@ const reportsService = {
         SUM(p.total_amount) as amount
        FROM payments p
        JOIN orders o ON p.order_id = o.id
-       WHERE p.outlet_id = ? AND ${toISTDate('p.created_at')} = ? AND p.status = 'completed'${ff.sql}
+       WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed'${ff.sql}
        GROUP BY p.payment_mode`,
-      [outletId, today, ...ff.params]
+      [outletId, startDt, endDt, ...ff.params]
     );
 
     return {
@@ -2418,7 +2476,7 @@ const reportsService = {
    */
   async getDailySalesDetail(outletId, startDate, endDate, options = {}) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
 
     // Parse options
     const page = Math.max(1, parseInt(options.page) || 1);
@@ -2445,8 +2503,8 @@ const reportsService = {
        LEFT JOIN users u_biller ON o.billed_by = u_biller.id
        LEFT JOIN users u_cancel ON o.cancelled_by = u_cancel.id`;
 
-    let conditions = ['o.outlet_id = ?', `${toISTDate('o.created_at')} BETWEEN ? AND ?`];
-    let params = [outletId, start, end];
+    let conditions = ['o.outlet_id = ?', `${bdWhere('o.created_at')}`];
+    let params = [outletId, startDt, endDt];
 
     // Floor restriction for assigned-floor users
     if (options.floorIds && options.floorIds.length > 0) {
@@ -2501,8 +2559,8 @@ const reportsService = {
         SUM(CASE WHEN o.status != 'cancelled' THEN o.discount_amount ELSE 0 END) as total_discount,
         SUM(CASE WHEN o.status != 'cancelled' THEN o.tax_amount ELSE 0 END) as total_tax,
         SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END) as net_sales,
-        0 as nc_orders_placeholder,
-        0 as nc_amount_placeholder
+        SUM(CASE WHEN o.is_adjustment = 1 AND o.status != 'cancelled' THEN 1 ELSE 0 END) as adjustment_count,
+        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.adjustment_amount, 0) ELSE 0 END) as adjustment_amount
        ${baseFrom} ${whereClause}`,
       params
     );
@@ -2582,6 +2640,33 @@ const reportsService = {
     const totalWastageCount = parseInt(wastageSr.wastage_count) || 0;
     const totalWastageCost = parseFloat(wastageSr.wastage_cost) || 0;
 
+    // Due collections during this period — from customer_due_transactions for accurate collected amounts
+    const [dsrDueCollRows] = await pool.query(
+      `SELECT cdt.payment_id, cdt.order_id, ABS(cdt.amount) as collected_amount,
+        p.payment_mode, cdt.created_at,
+        o2.order_number, o2.customer_name, o2.customer_phone, o2.total_amount as order_total
+       FROM customer_due_transactions cdt
+       JOIN orders o2 ON cdt.order_id = o2.id
+       LEFT JOIN payments p ON cdt.payment_id = p.id
+       WHERE cdt.outlet_id = ? AND cdt.transaction_type = 'due_collected'
+         AND ${bdWhere('cdt.created_at')}
+         AND (p.is_adjustment IS NULL OR p.is_adjustment = 0)
+       ORDER BY cdt.created_at DESC`,
+      [outletId, startDt, endDt]
+    );
+    const dsrDueCollections = dsrDueCollRows.map(r => ({
+      paymentId: r.payment_id,
+      orderId: r.order_id,
+      orderNumber: r.order_number,
+      customerName: r.customer_name || null,
+      customerPhone: r.customer_phone || null,
+      orderTotal: parseFloat(r.order_total) || 0,
+      collectedAmount: parseFloat(r.collected_amount) || 0,
+      paymentMode: r.payment_mode,
+      createdAt: r.created_at
+    }));
+    const dsrTotalDueCollected = dsrDueCollections.reduce((s, d) => s + d.collectedAmount, 0);
+
     const summary = {
       dateRange: { start, end },
       totalOrders: parseInt(sr.total_orders) || 0,
@@ -2599,6 +2684,8 @@ const reportsService = {
       netSales: parseFloat(netSales.toFixed(2)),
       ncOrders: parseInt(ncSr.nc_orders) || 0,
       ncAmount: parseFloat((parseFloat(ncSr.nc_amount) || 0).toFixed(2)),
+      adjustmentCount: parseInt(sr.adjustment_count) || 0,
+      adjustmentAmount: parseFloat((parseFloat(sr.adjustment_amount) || 0).toFixed(2)),
       totalPaid: parseFloat(totalPaidAll.toFixed(2)),
       totalTips: parseFloat(totalTipsAll.toFixed(2)),
       makingCost: parseFloat(totalMakingCost.toFixed(2)),
@@ -2616,6 +2703,7 @@ const reportsService = {
         o.subtotal, o.discount_amount, o.tax_amount, o.service_charge,
         o.packaging_charge, o.delivery_charge, o.round_off,
         o.total_amount, o.paid_amount, o.due_amount,
+        o.adjustment_amount, o.is_adjustment,
         o.guest_count, o.customer_name, o.customer_phone,
         o.table_id, o.is_complimentary, o.is_priority,
         o.special_instructions, o.cancel_reason,
@@ -2900,6 +2988,8 @@ const reportsService = {
           ? (parseFloat(o.paid_amount) || parseFloat(o.total_amount) || 0) 
           : (parseFloat(o.total_amount) || 0),
         dueAmount: parseFloat(o.due_amount) || 0,
+        adjustmentAmount: parseFloat(o.adjustment_amount) || 0,
+        isAdjustment: !!o.is_adjustment,
 
         // Flags
         isComplimentary: !!o.is_complimentary,
@@ -2955,7 +3045,12 @@ const reportsService = {
         hasPrev: page > 1
       },
       filters: this._activeFilters(options),
-      summary
+      summary,
+      dueCollections: {
+        totalCollected: parseFloat(dsrTotalDueCollected.toFixed(2)),
+        count: dsrDueCollections.length,
+        orders: dsrDueCollections
+      }
     };
   },
 
@@ -3000,7 +3095,7 @@ const reportsService = {
    */
   async getItemSalesDetail(outletId, startDate, endDate, options = {}) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
 
     // Parse options
     const page = Math.max(1, parseInt(options.page) || 1);
@@ -3035,8 +3130,8 @@ const reportsService = {
        LEFT JOIN tax_groups tg ON oi.tax_group_id = tg.id
        LEFT JOIN order_item_costs oic ON oic.order_item_id = oi.id`;
 
-    let conditions = ['o.outlet_id = ?', `${toISTDate('o.created_at')} BETWEEN ? AND ?`];
-    let params = [outletId, start, end];
+    let conditions = ['o.outlet_id = ?', `${bdWhere('o.created_at')}`];
+    let params = [outletId, startDt, endDt];
 
     if (floorIds.length > 0) {
       conditions.push(`o.floor_id IN (${floorIds.map(() => '?').join(',')})`);
@@ -3476,7 +3571,7 @@ const reportsService = {
    */
   async getCategorySalesDetail(outletId, startDate, endDate, options = {}) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
 
     // Parse options
     const page = Math.max(1, parseInt(options.page) || 1);
@@ -3510,8 +3605,8 @@ const reportsService = {
        LEFT JOIN kitchen_stations ks ON i.kitchen_station_id = ks.id
        LEFT JOIN tax_groups tg ON oi.tax_group_id = tg.id`;
 
-    let conditions = ['o.outlet_id = ?', `${toISTDate('o.created_at')} BETWEEN ? AND ?`];
-    let params = [outletId, start, end];
+    let conditions = ['o.outlet_id = ?', `${bdWhere('o.created_at')}`];
+    let params = [outletId, startDt, endDt];
 
     if (floorIds.length > 0) {
       conditions.push(`o.floor_id IN (${floorIds.map(() => '?').join(',')})`);
@@ -3929,7 +4024,7 @@ const reportsService = {
    */
   async getPaymentModeDetail(outletId, startDate, endDate, options = {}) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
 
     // Parse options
     const page = Math.max(1, parseInt(options.page) || 1);
@@ -3959,8 +4054,8 @@ const reportsService = {
        LEFT JOIN users u_cashier ON o.billed_by = u_cashier.id
        LEFT JOIN invoices inv ON p.invoice_id = inv.id`;
 
-    let conditions = ['p.outlet_id = ?', `${toISTDate('p.created_at')} BETWEEN ? AND ?`, "p.status = 'completed'"];
-    let params = [outletId, start, end];
+    let conditions = ['p.outlet_id = ?', `${bdWhere('p.created_at')}`, "p.status = 'completed'"];
+    let params = [outletId, startDt, endDt];
 
     if (floorIds.length > 0) {
       conditions.push(`o.floor_id IN (${floorIds.map(() => '?').join(',')})`);
@@ -4308,7 +4403,7 @@ const reportsService = {
    */
   async getTaxDetail(outletId, startDate, endDate, options = {}) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
 
     // Parse options
     const page = Math.max(1, parseInt(options.page) || 1);
@@ -4336,8 +4431,8 @@ const reportsService = {
        LEFT JOIN users u_cashier ON o.billed_by = u_cashier.id
        LEFT JOIN users u_gen ON inv.generated_by = u_gen.id`;
 
-    let conditions = ['inv.outlet_id = ?', `${toISTDate('inv.created_at')} BETWEEN ? AND ?`, 'inv.is_cancelled = 0'];
-    let params = [outletId, start, end];
+    let conditions = ['inv.outlet_id = ?', `${bdWhere('inv.created_at')}`, 'inv.is_cancelled = 0'];
+    let params = [outletId, startDt, endDt];
 
     if (floorIds.length > 0) {
       conditions.push(`o.floor_id IN (${floorIds.map(() => '?').join(',')})`);
@@ -4581,8 +4676,8 @@ const reportsService = {
         try { hsnSummary = typeof inv.hsn_summary === 'string' ? JSON.parse(inv.hsn_summary) : inv.hsn_summary; } catch (e) {}
       }
 
-      // Daily tax breakdown — use DATE(created_at) to match summary report grouping
-      const day = inv.invoice_created_at ? new Date(inv.invoice_created_at).toISOString().slice(0, 10) : (inv.invoice_date || 'unknown');
+      // Daily tax breakdown — use business-day date to match summary report grouping
+      const day = inv.invoice_created_at ? getLocalDate(new Date(inv.invoice_created_at)) : (inv.invoice_date || 'unknown');
       if (!dailyTaxBreakdown[day]) {
         dailyTaxBreakdown[day] = { taxable: 0, cgst: 0, sgst: 0, igst: 0, vat: 0, cess: 0, totalTax: 0, invoiceCount: 0, grandTotal: 0 };
       }
@@ -4832,7 +4927,7 @@ const reportsService = {
    */
   async getServiceTypeSalesBreakdown(outletId, startDate, endDate, floorIds = []) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
     const ff = floorFilter(floorIds);
 
     const [rows] = await pool.query(
@@ -4851,10 +4946,10 @@ const reportsService = {
        JOIN orders o ON oi.order_id = o.id
        LEFT JOIN items i ON oi.item_id = i.id
        LEFT JOIN categories c ON i.category_id = c.id
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} BETWEEN ? AND ?${ff.sql}
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}
        GROUP BY COALESCE(c.service_type, 'both')
        ORDER BY net_revenue DESC`,
-      [outletId, start, end, ...ff.params]
+      [outletId, startDt, endDt, ...ff.params]
     );
 
     // Get order-level summary for consistency with other reports
@@ -4870,8 +4965,8 @@ const reportsService = {
         SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount,
         COUNT(CASE WHEN o.is_nc = 1 AND o.status != 'cancelled' THEN 1 END) as nc_orders
        FROM orders o
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} BETWEEN ? AND ? AND o.status != 'cancelled'${ff.sql}`,
-      [outletId, start, end, ...ff.params]
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'${ff.sql}`,
+      [outletId, startDt, endDt, ...ff.params]
     );
 
     // Calculate totals from item-level for breakdown, order-level for summary
@@ -4940,11 +5035,11 @@ const reportsService = {
    */
   async getDayEndSummary(outletId, startDate, endDate, options = {}) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
     const { floorIds = [], userId = null, isCashier = false } = options;
 
-    let conditions = ['o.outlet_id = ?', `${toISTDate('o.created_at')} BETWEEN ? AND ?`];
-    let params = [outletId, start, end];
+    let conditions = ['o.outlet_id = ?', `${bdWhere('o.created_at')}`];
+    let params = [outletId, startDt, endDt];
 
     // Floor restriction - include takeaway/delivery orders (they have NULL floor_id)
     if (floorIds.length > 0) {
@@ -4979,7 +5074,9 @@ const reportsService = {
         COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
         SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
         SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount
+        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount,
+        COUNT(CASE WHEN o.is_adjustment = 1 AND o.status != 'cancelled' THEN 1 END) as adjustment_count,
+        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.adjustment_amount, 0) ELSE 0 END) as adjustment_amount
        FROM orders o
        ${whereClause}
        GROUP BY ${toISTDate('o.created_at')}
@@ -5097,6 +5194,8 @@ const reportsService = {
         ncAmount: parseFloat(r.nc_amount) || 0,
         dueAmount: parseFloat(r.due_amount) || 0,
         paidAmount: parseFloat(r.paid_amount) || 0,
+        adjustmentCount: parseInt(r.adjustment_count) || 0,
+        adjustmentAmount: parseFloat(r.adjustment_amount) || 0,
         totalCollection: parseFloat(totalCollection.toFixed(2)),
         makingCost: cost.making_cost,
         profit: cost.profit,
@@ -5131,6 +5230,8 @@ const reportsService = {
       ncAmount: parseFloat(summary.reduce((s, r) => s + r.ncAmount, 0).toFixed(2)),
       dueAmount: parseFloat(summary.reduce((s, r) => s + r.dueAmount, 0).toFixed(2)),
       paidAmount: parseFloat(summary.reduce((s, r) => s + r.paidAmount, 0).toFixed(2)),
+      adjustmentCount: summary.reduce((s, r) => s + r.adjustmentCount, 0),
+      adjustmentAmount: parseFloat(summary.reduce((s, r) => s + r.adjustmentAmount, 0).toFixed(2)),
       totalCollection: parseFloat(summary.reduce((s, r) => s + r.totalCollection, 0).toFixed(2)),
       makingCost: grandMakingCost,
       profit: parseFloat(summary.reduce((s, r) => s + r.profit, 0).toFixed(2)),
@@ -5153,11 +5254,12 @@ const reportsService = {
    */
   async getDayEndSummaryDetail(outletId, date, options = {}) {
     const pool = getPool();
-    const targetDate = date || new Date().toISOString().slice(0, 10);
+    const targetDate = date || getLocalDate();
+    const { startDt, endDt } = businessDayRange(targetDate, targetDate);
     const { floorIds = [], userId = null, isCashier = false } = options;
 
-    let conditions = ['o.outlet_id = ?', `${toISTDate('o.created_at')} = ?`];
-    let params = [outletId, targetDate];
+    let conditions = ['o.outlet_id = ?', `${bdWhere('o.created_at')}`];
+    let params = [outletId, startDt, endDt];
 
     // Floor restriction - include takeaway/delivery orders
     if (floorIds.length > 0) {
@@ -5195,7 +5297,9 @@ const reportsService = {
         COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
         SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
         SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount
+        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount,
+        COUNT(CASE WHEN o.is_adjustment = 1 AND o.status != 'cancelled' THEN 1 END) as adjustment_count,
+        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.adjustment_amount, 0) ELSE 0 END) as adjustment_amount
        FROM orders o
        ${whereClause}`,
       params
@@ -5327,9 +5431,9 @@ const reportsService = {
          FROM refunds rf
          JOIN orders o ON rf.order_id = o.id
          LEFT JOIN users u ON rf.refunded_by = u.id
-         WHERE o.outlet_id = ? AND ${toISTDate('rf.created_at')} = ? AND rf.status IN ('completed', 'approved')
+         WHERE o.outlet_id = ? AND ${bdWhere('rf.created_at')} AND rf.status IN ('completed', 'approved')
          ORDER BY rf.created_at DESC`,
-        [outletId, targetDate]
+        [outletId, startDt, endDt]
       );
       refundRows = refunds;
     } catch (e) {
@@ -5344,6 +5448,7 @@ const reportsService = {
         o.customer_name, o.customer_phone, o.guest_count,
         o.subtotal, o.discount_amount, o.tax_amount, o.service_charge, o.total_amount,
         o.is_nc, o.nc_amount, o.nc_reason, o.due_amount, o.paid_amount,
+        o.is_adjustment, o.adjustment_amount,
         o.created_at, o.updated_at,
         t.table_number, f.name as floor_name,
         u.name as created_by_name,
@@ -5490,6 +5595,8 @@ const reportsService = {
       totalAmount: parseFloat(o.total_amount) || 0,
       paidAmount: parseFloat(o.paid_amount) || 0,
       dueAmount: parseFloat(o.due_amount) || 0,
+      isAdjustment: !!o.is_adjustment,
+      adjustmentAmount: parseFloat(o.adjustment_amount) || 0,
       isNC: !!o.is_nc,
       ncAmount: parseFloat(o.nc_amount) || 0,
       ncReason: o.nc_reason || null,
@@ -5549,6 +5656,38 @@ const reportsService = {
     const detailWastageCount = parseInt(detailWastageRows[0]?.wastage_count) || 0;
     const detailWastageCost = parseFloat(detailWastageRows[0]?.wastage_cost) || 0;
 
+    // Due collections during this period — from customer_due_transactions for accurate collected amounts
+    let dueCollSql = `
+      SELECT cdt.payment_id, cdt.order_id, ABS(cdt.amount) as collected_amount,
+        p.payment_mode, cdt.created_at,
+        o.order_number, o.customer_name, o.customer_phone, o.total_amount as order_total
+       FROM customer_due_transactions cdt
+       JOIN orders o ON cdt.order_id = o.id
+       LEFT JOIN payments p ON cdt.payment_id = p.id
+       WHERE cdt.outlet_id = ? AND cdt.transaction_type = 'due_collected'
+         AND ${bdWhere('cdt.created_at')}
+         AND (p.is_adjustment IS NULL OR p.is_adjustment = 0)`;
+    const dueCollParams = [outletId, startDt, endDt];
+    if (floorIds.length > 0) {
+      const fp = floorIds.map(() => '?').join(',');
+      dueCollSql += ` AND (o.floor_id IN (${fp}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`;
+      dueCollParams.push(...floorIds);
+    }
+    dueCollSql += ` ORDER BY cdt.created_at DESC`;
+    const [dueCollRows] = await pool.query(dueCollSql, dueCollParams);
+    const dueCollections = dueCollRows.map(r => ({
+      paymentId: r.payment_id,
+      orderId: r.order_id,
+      orderNumber: r.order_number,
+      customerName: r.customer_name || null,
+      customerPhone: r.customer_phone || null,
+      orderTotal: parseFloat(r.order_total) || 0,
+      collectedAmount: parseFloat(r.collected_amount) || 0,
+      paymentMode: r.payment_mode,
+      createdAt: r.created_at
+    }));
+    const totalDueCollected = dueCollections.reduce((s, d) => s + d.collectedAmount, 0);
+
     return {
       date: targetDate,
       summary: {
@@ -5571,6 +5710,8 @@ const reportsService = {
         ncAmount: parseFloat(summary.nc_amount) || 0,
         dueAmount: parseFloat(summary.due_amount) || 0,
         paidAmount: parseFloat(summary.paid_amount) || 0,
+        adjustmentCount: parseInt(summary.adjustment_count) || 0,
+        adjustmentAmount: parseFloat(summary.adjustment_amount) || 0,
         makingCost: detailMakingCost,
         profit: detailProfit,
         foodCostPercentage: detailFoodCostPct,
@@ -5591,6 +5732,11 @@ const reportsService = {
       discountsApplied,
       refunds,
       cancelledOrders,
+      dueCollections: {
+        totalCollected: parseFloat(totalDueCollected.toFixed(2)),
+        count: dueCollections.length,
+        orders: dueCollections
+      },
       orders,
       orderCount: orders.length
     };
@@ -5760,11 +5906,11 @@ const reportsService = {
    */
   async getBillerWiseReport(outletId, startDate, endDate, options = {}) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
     const { floorIds = [], userId = null } = options;
 
-    let conditions = ['o.outlet_id = ?', `${toISTDate('o.created_at')} BETWEEN ? AND ?`, 'o.billed_by IS NOT NULL'];
-    let params = [outletId, start, end];
+    let conditions = ['o.outlet_id = ?', `${bdWhere('o.created_at')}`, 'o.billed_by IS NOT NULL'];
+    let params = [outletId, startDt, endDt];
 
     if (floorIds.length > 0) {
       conditions.push(`o.floor_id IN (${floorIds.map(() => '?').join(',')})`);
@@ -5885,7 +6031,7 @@ const reportsService = {
    */
   async getNCReport(outletId, startDate, endDate, options = {}) {
     const pool = getPool();
-    const { start, end } = this._dateRange(startDate, endDate);
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
 
     const page = Math.max(1, parseInt(options.page) || 1);
     const limit = Math.min(200, Math.max(1, parseInt(options.limit) || 50));
@@ -5897,10 +6043,10 @@ const reportsService = {
     // ── 1. ORDER-LEVEL NC (orders where is_nc = 1 — whole order marked NC) ──
     let orderConditions = [
       'o.outlet_id = ?',
-      `${toISTDate('o.created_at')} BETWEEN ? AND ?`,
+      `${bdWhere('o.created_at')}`,
       'o.is_nc = 1'
     ];
-    let orderParams = [outletId, start, end];
+    let orderParams = [outletId, startDt, endDt];
 
     if (ff.sql) {
       orderConditions.push(ff.sql.replace(/^ AND /, ''));
@@ -5971,11 +6117,11 @@ const reportsService = {
     // ── 2. ITEM-LEVEL NC (individual items marked NC, but order itself NOT fully NC) ──
     let itemConditions = [
       'o.outlet_id = ?',
-      `${toISTDate('o.created_at')} BETWEEN ? AND ?`,
+      `${bdWhere('o.created_at')}`,
       'oi.is_nc = 1',
       'oi.status != ?'
     ];
-    let itemParams = [outletId, start, end, 'cancelled'];
+    let itemParams = [outletId, startDt, endDt, 'cancelled'];
 
     if (ff.sql) {
       itemConditions.push(ff.sql.replace(/^ AND /, ''));
@@ -6058,8 +6204,8 @@ const reportsService = {
         SUM(CASE WHEN oi.is_nc = 1 AND oi.status != 'cancelled' AND o.is_nc = 0 THEN oi.nc_amount ELSE 0 END) as item_nc_amount
        FROM orders o
        LEFT JOIN order_items oi ON o.id = oi.order_id
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} BETWEEN ? AND ?${ff.sql}`,
-      [outletId, start, end, ...ff.params]
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}`,
+      [outletId, startDt, endDt, ...ff.params]
     );
     const sr = summaryRows[0];
     const totalOrderNCAmount = parseFloat(sr?.order_nc_amount) || 0;
@@ -6075,12 +6221,12 @@ const reportsService = {
         SUM(COALESCE(oi.nc_amount, sub.nc_amount, 0)) as total_amount
        FROM (
          SELECT o.id, o.nc_reason, o.nc_amount, o.outlet_id, o.created_at FROM orders o
-         WHERE o.is_nc = 1 AND o.outlet_id = ? AND ${toISTDate('o.created_at')} BETWEEN ? AND ?${ff.sql}
+         WHERE o.is_nc = 1 AND o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}
        ) sub
        LEFT JOIN order_items oi ON sub.id = oi.order_id AND oi.is_nc = 1 AND oi.status != 'cancelled'
        GROUP BY reason
        ORDER BY total_amount DESC`,
-      [outletId, start, end, ...ff.params]
+      [outletId, startDt, endDt, ...ff.params]
     );
 
     // Items-only NC by reason (items NC'd individually, not whole-order NC)
@@ -6091,11 +6237,11 @@ const reportsService = {
         SUM(oi.nc_amount) as total_amount
        FROM order_items oi
        JOIN orders o ON oi.order_id = o.id
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} BETWEEN ? AND ?
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}
          AND oi.is_nc = 1 AND oi.status != 'cancelled' AND o.is_nc = 0${ff.sql}
        GROUP BY reason
        ORDER BY total_amount DESC`,
-      [outletId, start, end, ...ff.params]
+      [outletId, startDt, endDt, ...ff.params]
     );
 
     // Merge reason breakdowns
@@ -6121,11 +6267,11 @@ const reportsService = {
         SUM(nl.nc_amount) as total_amount
        FROM nc_logs nl
        JOIN users u ON nl.applied_by = u.id
-       WHERE nl.outlet_id = ? AND DATE(nl.applied_at) BETWEEN ? AND ?
+       WHERE nl.outlet_id = ? AND ${bdWhere('nl.applied_at')}
          AND nl.action_type IN ('item_nc', 'order_nc')
        GROUP BY u.id, u.name
        ORDER BY total_amount DESC`,
-      [outletId, start, end]
+      [outletId, startDt, endDt]
     );
 
     // By Date
@@ -6138,11 +6284,11 @@ const reportsService = {
         SUM(CASE WHEN oi.is_nc = 1 AND oi.status != 'cancelled' AND o.is_nc = 0 THEN oi.nc_amount ELSE 0 END) as item_nc_amount
        FROM orders o
        LEFT JOIN order_items oi ON o.id = oi.order_id
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} BETWEEN ? AND ?
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}
          AND (o.is_nc = 1 OR (oi.is_nc = 1 AND oi.status != 'cancelled'))${ff.sql}
        GROUP BY ${toISTDate('o.created_at')}
        ORDER BY report_date DESC`,
-      [outletId, start, end, ...ff.params]
+      [outletId, startDt, endDt, ...ff.params]
     );
 
     // Top NC Items
@@ -6154,12 +6300,12 @@ const reportsService = {
         SUM(oi.quantity) as total_quantity
        FROM order_items oi
        JOIN orders o ON oi.order_id = o.id
-       WHERE o.outlet_id = ? AND ${toISTDate('o.created_at')} BETWEEN ? AND ?
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}
          AND oi.is_nc = 1 AND oi.status != 'cancelled'${ff.sql}
        GROUP BY oi.item_name, oi.variant_name
        ORDER BY total_nc_amount DESC
        LIMIT 20`,
-      [outletId, start, end, ...ff.params]
+      [outletId, startDt, endDt, ...ff.params]
     );
 
     // ── 5. FORMAT RESPONSE ──

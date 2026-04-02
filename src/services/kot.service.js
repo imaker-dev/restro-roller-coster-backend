@@ -167,6 +167,20 @@ const kotService = {
         throw new Error('No pending items to send');
       }
 
+      // Batch-fetch addons for ALL pending items upfront (avoids N+1 per item in station loop)
+      const allItemIds = pendingItems.map(i => i.id);
+      let addonsMap = {};
+      if (allItemIds.length > 0) {
+        const [allAddons] = await connection.query(
+          'SELECT order_item_id, addon_name, unit_price, quantity FROM order_item_addons WHERE order_item_id IN (?)',
+          [allItemIds]
+        );
+        for (const a of allAddons) {
+          if (!addonsMap[a.order_item_id]) addonsMap[a.order_item_id] = [];
+          addonsMap[a.order_item_id].push(a);
+        }
+      }
+
       // Group items by station (groupKey = station_type:station_id)
       const groupedItems = this.groupItemsByStation(pendingItems);
       const createdTickets = [];
@@ -198,15 +212,11 @@ const kotService = {
 
         const kotId = kotResult.insertId;
 
-        // Create KOT items
+        // Create KOT items — use pre-fetched addons
         for (const item of items) {
-          // Get addons with full details
-          const [addons] = await connection.query(
-            'SELECT addon_name, unit_price, quantity FROM order_item_addons WHERE order_item_id = ?',
-            [item.id]
-          );
-          const addonsText = addons.map(a => a.addon_name).join(', ');
-          item._addons = addons;
+          const itemAddons = addonsMap[item.id] || [];
+          const addonsText = itemAddons.map(a => a.addon_name).join(', ');
+          item._addons = itemAddons;
           item._addonsText = addonsText;
 
           const itemType = item.item_type || item.menu_item_type || null;
@@ -250,20 +260,22 @@ const kotService = {
         });
       }
 
-      // Update order status if first KOT
+      // Update order status + table status in parallel where applicable
+      const statusUpdates = [];
       if (order.status === 'pending') {
-        await connection.query(
+        statusUpdates.push(connection.query(
           `UPDATE orders SET status = 'confirmed' WHERE id = ?`,
           [orderId]
-        );
+        ));
       }
-
-      // Update table status to 'running' when KOT is sent (dine_in orders with a table)
       if (order.table_id && order.order_type === 'dine_in') {
-        await connection.query(
+        statusUpdates.push(connection.query(
           `UPDATE tables SET status = 'running' WHERE id = ? AND status IN ('occupied', 'running')`,
           [order.table_id]
-        );
+        ));
+      }
+      if (statusUpdates.length > 0) {
+        await Promise.all(statusUpdates);
       }
 
       await connection.commit();
@@ -294,9 +306,8 @@ const kotService = {
       await Promise.all(emissionPromises);
       logger.info(`All ${createdTickets.length} KOT socket events emitted for order ${order.order_number}`);
 
-      // Print KOTs (can be parallel too)
-      for (const ticket of createdTickets) {
-        // Prepare KOT data for printing
+      // Print KOTs in parallel (each goes through bridge queue independently)
+      const printPromises = createdTickets.map(ticket => {
         const kotPrintData = {
           outletId: order.outlet_id,
           kotId: ticket.id,
@@ -319,36 +330,31 @@ const kotService = {
           })),
           captainName: order.created_by_name || 'Staff'
         };
+        return printerService.printKot(kotPrintData, createdBy)
+          .then(() => logger.info(`KOT ${ticket.kotNumber} queued for bridge printing (station: ${ticket.stationName}, stationId: ${ticket.stationId}, isCounter: ${ticket.isCounter})`))
+          .catch(printError => logger.error(`Failed to queue KOT ${ticket.kotNumber}:`, printError.message));
+      });
 
-        // All printing goes through the bridge queue — no direct TCP printing
-        try {
-          await printerService.printKot(kotPrintData, createdBy);
-          logger.info(`KOT ${ticket.kotNumber} queued for bridge printing (station: ${ticket.stationName}, stationId: ${ticket.stationId}, isCounter: ${ticket.isCounter})`);
-        } catch (printError) {
-          logger.error(`Failed to queue KOT ${ticket.kotNumber}:`, printError.message);
-        }
-      }
-
-      // Emit table status update to 'running' for real-time floor view
+      // Emit table + order updates in parallel with printing
+      const postCommitPromises = [...printPromises];
       if (order.table_id && order.order_type === 'dine_in') {
-        await publishMessage('table:update', {
+        postCommitPromises.push(publishMessage('table:update', {
           outletId: order.outlet_id,
           tableId: order.table_id,
           floorId: order.floor_id,
           status: 'running',
           event: 'kot_sent',
           timestamp: new Date().toISOString()
-        });
+        }));
       }
-
-      // Emit order update
-      await publishMessage('order:update', {
+      postCommitPromises.push(publishMessage('order:update', {
         type: 'order:kot_sent',
         outletId: order.outlet_id,
         orderId,
         tickets: createdTickets,
         timestamp: new Date().toISOString()
-      });
+      }));
+      await Promise.all(postCommitPromises);
 
       return {
         orderId,
@@ -746,24 +752,26 @@ const kotService = {
 
   async getKotById(id) {
     const pool = getPool();
-    const [rows] = await pool.query(
-      `SELECT kt.*, o.order_number, o.table_id, t.table_number
-       FROM kot_tickets kt
-       LEFT JOIN orders o ON kt.order_id = o.id
-       LEFT JOIN tables t ON o.table_id = t.id
-       WHERE kt.id = ?`,
-      [id]
-    );
+
+    // Run KOT ticket + items queries in parallel
+    const [[rows], [items]] = await Promise.all([
+      pool.query(
+        `SELECT kt.*, o.order_number, o.table_id, t.table_number
+         FROM kot_tickets kt
+         LEFT JOIN orders o ON kt.order_id = o.id
+         LEFT JOIN tables t ON o.table_id = t.id
+         WHERE kt.id = ?`,
+        [id]
+      ),
+      pool.query(
+        'SELECT * FROM kot_items WHERE kot_id = ? ORDER BY id',
+        [id]
+      )
+    ]);
 
     if (!rows[0]) return null;
 
     const kot = rows[0];
-
-    // Get items with item_type
-    const [items] = await pool.query(
-      'SELECT * FROM kot_items WHERE kot_id = ? ORDER BY id',
-      [id]
-    );
 
     // Batch-load addons for all items (avoids N+1)
     const orderItemIds = items.map(i => i.order_item_id).filter(Boolean);
