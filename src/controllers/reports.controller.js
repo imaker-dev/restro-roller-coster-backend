@@ -767,6 +767,39 @@ const exportDayEndSummaryDetail = async (req, res, next) => {
   }
 };
 
+/**
+ * GET /api/v1/reports/running-dashboard
+ * Running dashboard: sales summary, payment breakdown, time-series
+ * ?outletId=X&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+ * Single date → hourly blocks (4am–4am), Multiple dates → daily breakdown
+ */
+const getRunningDashboard = async (req, res, next) => {
+  try {
+    const { outletId, startDate, endDate, date } = req.query;
+
+    if (!outletId) {
+      return res.status(400).json({ success: false, message: 'outletId is required' });
+    }
+
+    const scope = await getUserDataScope(req.user, parseInt(outletId));
+
+    const result = await reportsService.getRunningDashboard(
+      parseInt(outletId),
+      startDate || date,
+      endDate || date || startDate,
+      scope.floorIds
+    );
+
+    res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    logger.error('Get Running Dashboard failed:', error);
+    next(error);
+  }
+};
+
 module.exports = {
   getDayEndSummary,
   getDayEndSummaryDetail,
@@ -785,6 +818,7 @@ module.exports = {
   getHourlySalesReport,
   getLiveDashboard,
   getCounterSalesReport,
+  getRunningDashboard,
   exportRunningTables,
   exportRunningOrders,
   exportDayEndSummary,

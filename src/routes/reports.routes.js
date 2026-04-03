@@ -21,6 +21,18 @@ const REPORT_ROLES = ['super_admin', 'admin', 'manager', 'cashier'];
 router.get('/dashboard', authorize(...REPORT_ROLES), reportCache('dashboard', 60), reportsController.getLiveDashboard);
 
 /**
+ * @route   GET /api/v1/reports/running-dashboard
+ * @desc    Running dashboard: sales summary, payment breakdown, time-series
+ * @access  Private (admin, manager, cashier)
+ * @query   outletId - Required
+ * @query   startDate - YYYY-MM-DD (defaults to today)
+ * @query   endDate - YYYY-MM-DD (defaults to startDate)
+ * @query   date - shortcut for single date
+ * @note    Single date → hourly 4-hour blocks, Multiple dates → daily breakdown
+ */
+router.get('/running-dashboard', authorize(...REPORT_ROLES), reportCache('running-dashboard', 1800), reportsController.getRunningDashboard);
+
+/**
  * @route   GET /api/v1/reports/running-orders
  * @desc    Running orders breakdown by type
  * @access  Private (admin, manager, cashier, captain)

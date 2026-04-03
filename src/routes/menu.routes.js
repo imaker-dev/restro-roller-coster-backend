@@ -5,6 +5,7 @@ const taxController = require('../controllers/tax.controller');
 const { authenticate, authorize } = require('../middlewares/auth.middleware');
 const { validate } = require('../middlewares');
 const menuValidation = require('../validations/menu.validation');
+const { reportCache } = require('../middleware/reportCache');
 
 // All routes require authentication
 router.use(authenticate);
@@ -25,7 +26,7 @@ router.get('/:outletId', menuController.getMenu);
  * @desc    Get simplified captain menu
  * @access  Private
  */
-router.get('/:outletId/captain', menuController.getCaptainMenu);
+router.get('/:outletId/captain', reportCache('menu-captain', 1800), menuController.getCaptainMenu);
 
 /**
  * @route   GET /api/v1/menu/:outletId/preview
@@ -46,7 +47,7 @@ router.get('/:outletId/rules', authorize('super_admin', 'admin', 'manager'), men
  * @desc    Search menu items
  * @access  Private
  */
-router.get('/:outletId/search', menuController.searchItems);
+router.get('/:outletId/search', reportCache('menu-search', 1800), menuController.searchItems);
 
 /**
  * @route   GET /api/v1/menu/:outletId/featured

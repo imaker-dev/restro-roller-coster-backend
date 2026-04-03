@@ -390,8 +390,8 @@ const menuEngineService = {
       }))
     };
 
-    // Store in cache (5-minute TTL = 300 seconds)
-    await cache.set(cacheKey, result, 300);
+    // Store in cache (30-minute TTL = 1800 seconds)
+    await cache.set(cacheKey, result, 1800);
 
     return result;
   },
@@ -896,8 +896,8 @@ const menuEngineService = {
       totalItems: itemsWithDetails.length
     };
 
-    // Store in cache (5-minute TTL = 300 seconds)
-    await cache.set(cacheKey, searchResult, 300);
+    // Store in cache (30-minute TTL = 1800 seconds)
+    await cache.set(cacheKey, searchResult, 1800);
 
     return searchResult;
   },

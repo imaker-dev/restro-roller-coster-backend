@@ -1,6 +1,10 @@
 require('dotenv').config();
 
-// IMPORTANT: Sentry must be imported first, before any other modules
+// IMPORTANT: OpenTelemetry/SigNoz tracing must be imported FIRST, before any other modules
+// This ensures all HTTP, DB, and Redis calls are properly instrumented
+// require('./tracing');
+
+// Sentry for error monitoring (after tracing)
 const Sentry = require('./instrument');
 
 const express = require('express');

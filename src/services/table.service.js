@@ -420,6 +420,7 @@ const tableService = {
                 variantId: item.variant_id, variantName: displayVariantName,
                 quantity: parseFloat(item.quantity), itemType: displayItemType,
                 isOpenItem,
+                weight: item.weight || null,
                 menuPrice,
                 addonTotal: parseFloat(addonTotal.toFixed(2)),
                 unitPrice: parseFloat(item.unit_price),

@@ -6407,6 +6407,238 @@ const reportsService = {
         }))
       }
     };
+  },
+
+  /**
+   * Running Dashboard — sales summary, payment breakdown, time-series sales
+   * 
+   * Single date → hourly 4-hour blocks (4am–4am business day)
+   * Multiple dates → daily breakdown
+   * 
+   * @param {number} outletId
+   * @param {string} startDate - YYYY-MM-DD
+   * @param {string} endDate   - YYYY-MM-DD (same as startDate for single-day)
+   * @param {number[]} floorIds - for role-based filtering
+   */
+  async getRunningDashboard(outletId, startDate, endDate, floorIds = []) {
+    const pool = getPool();
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
+    const ff = floorFilter(floorIds);
+    const isSingleDay = (start === end);
+
+    // ── Build all queries in parallel ──────────────────────────
+    // Uses same logic as getDayEndSummary for consistency:
+    //   totalSales (netSales) = subtotal - discount_amount
+    //   grossSales            = subtotal + tax_amount
+    //   grandTotal            = total_amount (bill total incl tax, sc, round-off)
+
+    // 1. Summary: sales breakdown + channel breakdown (includes all statuses, uses CASE WHEN to exclude cancelled)
+    const summaryQuery = pool.query(
+      `SELECT 
+        COUNT(CASE WHEN o.status != 'cancelled' THEN 1 END) as order_count,
+        COUNT(CASE WHEN o.status = 'cancelled' THEN 1 END) as cancelled_count,
+        COALESCE(SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END), 0) as net_sales,
+        COALESCE(SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal + o.tax_amount) ELSE 0 END), 0) as gross_sales,
+        COALESCE(SUM(CASE WHEN o.status != 'cancelled' THEN o.tax_amount ELSE 0 END), 0) as tax,
+        COALESCE(SUM(CASE WHEN o.status != 'cancelled' THEN o.discount_amount ELSE 0 END), 0) as discount,
+        COALESCE(SUM(CASE WHEN o.status != 'cancelled' THEN o.service_charge ELSE 0 END), 0) as service_charge,
+        COALESCE(SUM(CASE WHEN o.status != 'cancelled' THEN o.total_amount ELSE 0 END), 0) as grand_total,
+        COALESCE(SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END), 0) as nc_amount,
+        COALESCE(SUM(CASE WHEN o.order_type = 'dine_in' AND o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END), 0) as dine_in,
+        COUNT(CASE WHEN o.order_type = 'dine_in' AND o.status != 'cancelled' THEN 1 END) as dine_in_count,
+        COALESCE(SUM(CASE WHEN o.order_type = 'takeaway' AND o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END), 0) as takeaway,
+        COUNT(CASE WHEN o.order_type = 'takeaway' AND o.status != 'cancelled' THEN 1 END) as takeaway_count,
+        COALESCE(SUM(CASE WHEN (o.order_type = 'delivery' OR o.order_type = 'online') AND o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END), 0) as delivery,
+        COUNT(CASE WHEN (o.order_type = 'delivery' OR o.order_type = 'online') AND o.status != 'cancelled' THEN 1 END) as delivery_count
+       FROM orders o
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}`,
+      [outletId, startDt, endDt, ...ff.params]
+    );
+
+    // 2a. Regular payments (non-split)
+    const regularPayQuery = pool.query(
+      `SELECT 
+        p.payment_mode,
+        COALESCE(SUM(p.total_amount), 0) as amount
+       FROM payments p
+       JOIN orders o ON p.order_id = o.id
+       WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed' AND p.payment_mode != 'split'${ff.sql}
+       GROUP BY p.payment_mode`,
+      [outletId, startDt, endDt, ...ff.params]
+    );
+
+    // 2b. Split payments breakdown
+    const splitPayQuery = pool.query(
+      `SELECT 
+        sp.payment_mode,
+        COALESCE(SUM(sp.amount), 0) as amount
+       FROM split_payments sp
+       JOIN payments p ON sp.payment_id = p.id
+       JOIN orders o ON p.order_id = o.id
+       WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed' AND p.payment_mode = 'split'${ff.sql}
+       GROUP BY sp.payment_mode`,
+      [outletId, startDt, endDt, ...ff.params]
+    );
+
+    // 2c. Unpaid amount (billed/served but not fully paid)
+    const unpaidQuery = pool.query(
+      `SELECT COALESCE(SUM(o.total_amount - o.paid_amount), 0) as unpaid
+       FROM orders o
+       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status NOT IN ('cancelled')
+         AND o.payment_status IN ('pending', 'partial')${ff.sql}`,
+      [outletId, startDt, endDt, ...ff.params]
+    );
+
+    // 3. Sales timeline (net sales = subtotal - discount per channel)
+    let salesQuery;
+    if (isSingleDay) {
+      salesQuery = pool.query(
+        `SELECT 
+          FLOOR(((HOUR(o.created_at) - ${BUSINESS_DAY_START_HOUR} + 24) % 24) / 4) as time_block,
+          COALESCE(SUM(CASE WHEN o.order_type = 'dine_in' THEN (o.subtotal - o.discount_amount) ELSE 0 END), 0) as dine_in,
+          COALESCE(SUM(CASE WHEN o.order_type = 'takeaway' THEN (o.subtotal - o.discount_amount) ELSE 0 END), 0) as takeaway,
+          COALESCE(SUM(CASE WHEN o.order_type = 'delivery' OR o.order_type = 'online' THEN (o.subtotal - o.discount_amount) ELSE 0 END), 0) as delivery
+         FROM orders o
+         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status NOT IN ('cancelled')${ff.sql}
+         GROUP BY time_block
+         ORDER BY time_block`,
+        [outletId, startDt, endDt, ...ff.params]
+      );
+    } else {
+      salesQuery = pool.query(
+        `SELECT 
+          ${toISTDate('o.created_at')} as report_date,
+          COALESCE(SUM(CASE WHEN o.order_type = 'dine_in' THEN (o.subtotal - o.discount_amount) ELSE 0 END), 0) as dine_in,
+          COALESCE(SUM(CASE WHEN o.order_type = 'takeaway' THEN (o.subtotal - o.discount_amount) ELSE 0 END), 0) as takeaway,
+          COALESCE(SUM(CASE WHEN o.order_type = 'delivery' OR o.order_type = 'online' THEN (o.subtotal - o.discount_amount) ELSE 0 END), 0) as delivery
+         FROM orders o
+         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status NOT IN ('cancelled')${ff.sql}
+         GROUP BY report_date
+         ORDER BY report_date`,
+        [outletId, startDt, endDt, ...ff.params]
+      );
+    }
+
+    // Execute all in parallel
+    const [
+      [summaryRows],
+      [regularPayRows],
+      [splitPayRows],
+      [unpaidRows],
+      [salesRows]
+    ] = await Promise.all([summaryQuery, regularPayQuery, splitPayQuery, unpaidQuery, salesQuery]);
+
+    // ── Build summary (matches DSR field definitions) ──────────────────────────
+    const s = summaryRows[0];
+    const summary = {
+      totalSales: parseFloat(s.net_sales) || 0,
+      grossSales: parseFloat(s.gross_sales) || 0,
+      tax: parseFloat(s.tax) || 0,
+      discount: parseFloat(s.discount) || 0,
+      serviceCharge: parseFloat(s.service_charge) || 0,
+      grandTotal: parseFloat(s.grand_total) || 0,
+      orderCount: parseInt(s.order_count) || 0,
+      cancelledOrders: parseInt(s.cancelled_count) || 0,
+      ncAmount: parseFloat(s.nc_amount) || 0,
+      channels: [
+        { type: 'dine_in', amount: parseFloat(s.dine_in) || 0, count: parseInt(s.dine_in_count) || 0 },
+        { type: 'takeaway', amount: parseFloat(s.takeaway) || 0, count: parseInt(s.takeaway_count) || 0 },
+        { type: 'delivery', amount: parseFloat(s.delivery) || 0, count: parseInt(s.delivery_count) || 0 }
+      ]
+    };
+
+    // ── Build payment breakdown ──────────────────────────
+    const payModeMap = {};
+    for (const r of regularPayRows) {
+      payModeMap[r.payment_mode] = (payModeMap[r.payment_mode] || 0) + (parseFloat(r.amount) || 0);
+    }
+    for (const r of splitPayRows) {
+      payModeMap[r.payment_mode] = (payModeMap[r.payment_mode] || 0) + (parseFloat(r.amount) || 0);
+    }
+
+    const unpaidAmt = parseFloat(unpaidRows[0].unpaid) || 0;
+    const totalPaid = Object.values(payModeMap).reduce((a, b) => a + b, 0);
+    const totalForPct = totalPaid + unpaidAmt;
+
+    // Payment mode display mapping
+    const PAY_LABELS = { cash: 'Cash', card: 'Card', upi: 'UPI', wallet: 'Online', credit: 'Credit', complimentary: 'Complimentary' };
+    const PAY_ORDER = ['cash', 'card', 'upi', 'wallet', 'credit', 'complimentary'];
+
+    const payments = [];
+    for (const mode of PAY_ORDER) {
+      const amt = payModeMap[mode] || 0;
+      if (amt > 0 || ['cash', 'card', 'upi'].includes(mode)) {
+        payments.push({
+          name: PAY_LABELS[mode] || mode,
+          amount: parseFloat(amt.toFixed(2)),
+          percentage: totalForPct > 0 ? parseFloat(((amt / totalForPct) * 100).toFixed(2)) : 0
+        });
+      }
+    }
+    // Always include Unpaid
+    payments.push({
+      name: 'Unpaid',
+      amount: parseFloat(unpaidAmt.toFixed(2)),
+      percentage: totalForPct > 0 ? parseFloat(((unpaidAmt / totalForPct) * 100).toFixed(2)) : 0
+    });
+
+    // ── Build sales timeline ──────────────────────────
+    let sales;
+    if (isSingleDay) {
+      const HOUR_LABELS = [
+        `${BUSINESS_DAY_START_HOUR}am–${BUSINESS_DAY_START_HOUR + 4}am`,
+        `${BUSINESS_DAY_START_HOUR + 4}am–12pm`,
+        '12pm–4pm', '4pm–8pm', '8pm–12am', '12am–4am'
+      ];
+
+      // Initialize all blocks to 0
+      const blockData = {};
+      for (let i = 0; i < 6; i++) {
+        blockData[i] = { dine_in: 0, takeaway: 0, delivery: 0 };
+      }
+      // Fill from query results
+      for (const row of salesRows) {
+        const block = parseInt(row.time_block);
+        if (block >= 0 && block < 6) {
+          blockData[block].dine_in = parseFloat(row.dine_in) || 0;
+          blockData[block].takeaway = parseFloat(row.takeaway) || 0;
+          blockData[block].delivery = parseFloat(row.delivery) || 0;
+        }
+      }
+      sales = HOUR_LABELS.map((label, i) => ({
+        label,
+        dine_in: blockData[i].dine_in,
+        takeaway: blockData[i].takeaway,
+        delivery: blockData[i].delivery
+      }));
+    } else {
+      // Daily breakdown — fill gaps for missing dates
+      const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const salesMap = {};
+      for (const row of salesRows) {
+        const d = row.report_date instanceof Date ? row.report_date : new Date(row.report_date);
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        salesMap[key] = {
+          dine_in: parseFloat(row.dine_in) || 0,
+          takeaway: parseFloat(row.takeaway) || 0,
+          delivery: parseFloat(row.delivery) || 0
+        };
+      }
+
+      // Generate all dates in range
+      sales = [];
+      const cur = new Date(start + 'T00:00:00');
+      const endDate_ = new Date(end + 'T00:00:00');
+      while (cur <= endDate_) {
+        const key = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, '0')}-${String(cur.getDate()).padStart(2, '0')}`;
+        const label = `${cur.getDate()} ${MONTH_NAMES[cur.getMonth()]}`;
+        const data = salesMap[key] || { dine_in: 0, takeaway: 0, delivery: 0 };
+        sales.push({ label, dine_in: data.dine_in, takeaway: data.takeaway, delivery: data.delivery });
+        cur.setDate(cur.getDate() + 1);
+      }
+    }
+
+    return { summary, payments, sales, dateRange: { startDate: start, endDate: end, isSingleDay } };
   }
 };
 
