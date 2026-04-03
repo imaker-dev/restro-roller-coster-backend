@@ -40,6 +40,20 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Compression
 app.use(compression());
 
+// Response time header (X-Response-Time in ms)
+app.use((req, res, next) => {
+  const start = process.hrtime.bigint();
+  const origEnd = res.end;
+  res.end = function (...args) {
+    const ms = Number(process.hrtime.bigint() - start) / 1e6;
+    if (!res.headersSent) {
+      res.setHeader('X-Response-Time', `${ms.toFixed(2)}ms`);
+    }
+    return origEnd.apply(this, args);
+  };
+  next();
+});
+
 // Logging
 if (config.app.env !== 'test') {
   app.use(morgan('combined', { stream: logger.stream }));

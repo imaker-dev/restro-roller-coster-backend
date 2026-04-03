@@ -827,11 +827,11 @@ const printerService = {
     );
 
     if (bridges[0]) {
-      // Update last seen
-      await pool.query(
+      // Update last seen (fire-and-forget — don't block the response)
+      pool.query(
         `UPDATE printer_bridges SET is_online = 1, last_poll_at = NOW() WHERE id = ?`,
         [bridges[0].id]
-      );
+      ).catch(() => {});
     }
 
     return bridges[0] || null;
@@ -855,11 +855,11 @@ const printerService = {
     );
 
     if (bridges[0]) {
-      // Update last seen
-      await pool.query(
+      // Update last seen (fire-and-forget — don't block the response)
+      pool.query(
         `UPDATE printer_bridges SET is_online = 1, last_poll_at = NOW() WHERE id = ?`,
         [bridges[0].id]
-      );
+      ).catch(() => {});
     }
 
     return bridges[0] || null;
@@ -1112,14 +1112,28 @@ const printerService = {
       : null;
 
     try {
-      const [ksRows] = await pool.query(
-        `SELECT ks.name, ks.station_type, ks.printer_id,
-                p.id as linked_printer_id, p.station as linked_station, p.ip_address as linked_ip, p.port as linked_port
-         FROM kitchen_stations ks
-         LEFT JOIN printers p ON ks.printer_id = p.id AND p.is_active = 1
-         WHERE ks.outlet_id = ? AND ks.is_active = 1`,
-        [outletId]
-      );
+      // Parallel: kitchen stations + counters (both independent, both use outletId)
+      const [ksRowsRes, cRowsRes] = await Promise.all([
+        pool.query(
+          `SELECT ks.name, ks.station_type, ks.printer_id,
+                  p.id as linked_printer_id, p.station as linked_station, p.ip_address as linked_ip, p.port as linked_port
+           FROM kitchen_stations ks
+           LEFT JOIN printers p ON ks.printer_id = p.id AND p.is_active = 1
+           WHERE ks.outlet_id = ? AND ks.is_active = 1`,
+          [outletId]
+        ),
+        pool.query(
+          `SELECT c.name, c.counter_type, c.printer_id,
+                  p.id as linked_printer_id, p.station as linked_station, p.ip_address as linked_ip, p.port as linked_port
+           FROM counters c
+           LEFT JOIN printers p ON c.printer_id = p.id AND p.is_active = 1
+           WHERE c.outlet_id = ? AND c.is_active = 1`,
+          [outletId]
+        )
+      ]);
+      const ksRows = ksRowsRes[0];
+      const cRows = cRowsRes[0];
+
       for (const ks of ksRows) {
         const nameKey = ks.name ? ks.name.toLowerCase().replace(/\s+/g, '_') : '';
         if (!nameKey) continue;
@@ -1134,15 +1148,6 @@ const printerService = {
           }
         }
       }
-      // Also map counter names
-      const [cRows] = await pool.query(
-        `SELECT c.name, c.counter_type, c.printer_id,
-                p.id as linked_printer_id, p.station as linked_station, p.ip_address as linked_ip, p.port as linked_port
-         FROM counters c
-         LEFT JOIN printers p ON c.printer_id = p.id AND p.is_active = 1
-         WHERE c.outlet_id = ? AND c.is_active = 1`,
-        [outletId]
-      );
       for (const c of cRows) {
         const nameKey = c.name ? c.name.toLowerCase().replace(/\s+/g, '_') : '';
         if (!nameKey || printers[nameKey]) continue;

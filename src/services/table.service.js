@@ -143,9 +143,52 @@ const tableService = {
   async getFullDetails(id) {
     const pool = getPool();
     
-    // Get basic table info
-    const table = await this.getById(id);
+    // Parallel: table + session + merges + history (all independent, all use only table id)
+    const [tableResult, sessionResult, mergesResult, historyResult] = await Promise.all([
+      pool.query(
+        `SELECT t.*, 
+          f.name as floor_name, 
+          s.name as section_name, s.section_type,
+          o.name as outlet_name,
+          tl.position_x, tl.position_y, tl.width, tl.height, tl.rotation
+         FROM tables t
+         JOIN floors f ON t.floor_id = f.id
+         JOIN outlets o ON t.outlet_id = o.id
+         LEFT JOIN sections s ON t.section_id = s.id
+         LEFT JOIN table_layouts tl ON t.id = tl.table_id
+         WHERE t.id = ?`,
+        [id]
+      ),
+      pool.query(
+        `SELECT ts.*, 
+          u.id as captain_id, u.name as captain_name, u.employee_code as captain_code, u.phone as captain_phone
+         FROM table_sessions ts
+         LEFT JOIN users u ON ts.started_by = u.id
+         WHERE ts.table_id = ? AND ts.status IN ('active', 'billing')
+         ORDER BY ts.started_at DESC LIMIT 1`,
+        [id]
+      ),
+      pool.query(
+        `SELECT tm.*, t.table_number, t.name as table_name, t.capacity
+         FROM table_merges tm
+         JOIN tables t ON tm.merged_table_id = t.id
+         WHERE tm.primary_table_id = ? AND tm.unmerged_at IS NULL`,
+        [id]
+      ),
+      pool.query(
+        `SELECT * FROM table_history 
+         WHERE table_id = ? 
+         ORDER BY created_at DESC LIMIT 10`,
+        [id]
+      )
+    ]);
+    
+    const table = tableResult[0][0];
     if (!table) return null;
+    
+    const sessions = sessionResult[0];
+    const merges = mergesResult[0];
+    const history = historyResult[0];
 
     const result = {
       // Basic table info
@@ -187,23 +230,26 @@ const tableService = {
       items: [],
       kots: [],
       billing: null,
-      timeline: [],
-      mergedTables: []
+      timeline: history.map(h => {
+        const action = h.event_type || h.action || null;
+        let details = null;
+        const raw = h.event_data || h.details;
+        if (raw) {
+          try { details = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) {}
+        }
+        return { action, details, timestamp: h.created_at };
+      }),
+      mergedTables: merges.map(m => ({
+        tableId: m.merged_table_id,
+        tableNumber: m.table_number,
+        tableName: m.table_name,
+        capacity: m.capacity,
+        mergedAt: m.merged_at
+      }))
     };
 
     // Get active session if table is occupied/running/billing/reserved
-    if (['occupied', 'running', 'billing', 'reserved'].includes(table.status)) {
-      const [sessions] = await pool.query(
-        `SELECT ts.*, 
-          u.id as captain_id, u.name as captain_name, u.employee_code as captain_code, u.phone as captain_phone
-         FROM table_sessions ts
-         LEFT JOIN users u ON ts.started_by = u.id
-         WHERE ts.table_id = ? AND ts.status IN ('active', 'billing')
-         ORDER BY ts.started_at DESC LIMIT 1`,
-        [id]
-      );
-
-      if (sessions[0]) {
+    if (['occupied', 'running', 'billing', 'reserved'].includes(table.status) && sessions[0]) {
         const session = sessions[0];
         result.session = {
           id: session.id,
@@ -617,61 +663,6 @@ const tableService = {
             }));
           }
         }
-
-        // Run merged tables + history in parallel (independent queries)
-        const [mergesResult, historyResult] = await Promise.all([
-          pool.query(
-            `SELECT tm.*, t.table_number, t.name as table_name, t.capacity
-             FROM table_merges tm
-             JOIN tables t ON tm.merged_table_id = t.id
-             WHERE tm.primary_table_id = ? AND tm.unmerged_at IS NULL`,
-            [id]
-          ),
-          pool.query(
-            `SELECT * FROM table_history 
-             WHERE table_id = ? 
-             ORDER BY created_at DESC LIMIT 10`,
-            [id]
-          )
-        ]);
-        const [merges] = mergesResult;
-        const [history] = historyResult;
-
-        result.mergedTables = merges.map(m => ({
-          tableId: m.merged_table_id,
-          tableNumber: m.table_number,
-          tableName: m.table_name,
-          capacity: m.capacity,
-          mergedAt: m.merged_at
-        }));
-
-        result.timeline = history.map(h => {
-          const action = h.event_type || h.action || null;
-          let details = null;
-          const raw = h.event_data || h.details;
-          if (raw) {
-            try { details = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) {}
-          }
-          return { action, details, timestamp: h.created_at };
-        });
-      }
-    } else {
-      // Table not occupied — just fetch history
-      const [history] = await pool.query(
-        `SELECT * FROM table_history 
-         WHERE table_id = ? 
-         ORDER BY created_at DESC LIMIT 10`,
-        [id]
-      );
-      result.timeline = history.map(h => {
-        const action = h.event_type || h.action || null;
-        let details = null;
-        const raw = h.event_data || h.details;
-        if (raw) {
-          try { details = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) {}
-        }
-        return { action, details, timestamp: h.created_at };
-      });
     }
 
     // Add status-specific summary
@@ -794,85 +785,136 @@ const tableService = {
     const pool = getPool();
     const today = getLocalDate();
     
-    // Get floor info and shift status — no date filter; open shift persists until manually closed
-    const [floorInfo] = await pool.query(
-      `SELECT f.id, f.name, f.outlet_id, f.floor_number,
-        ds.id as shift_id, ds.status as shift_status, ds.cashier_id,
-        u.name as cashier_name, ds.opening_cash
-       FROM floors f
-       LEFT JOIN (
-         SELECT * FROM day_sessions WHERE status = 'open' ORDER BY id DESC
-       ) ds ON f.id = ds.floor_id
-       LEFT JOIN users u ON ds.cashier_id = u.id
-       WHERE f.id = ?
-       LIMIT 1`,
-      [floorId]
-    );
-    
-    // Use subquery for session to ensure only one session per table (latest active)
-    const [tables] = await pool.query(
-      `SELECT t.*, 
-        s.name as section_name, s.section_type,
-        tl.position_x, tl.position_y, tl.width, tl.height, tl.rotation,
-        ts.id as session_id, ts.guest_count, ts.guest_name, ts.started_at, ts.started_by,
-        u.name as captain_name, u.employee_code as captain_code,
-        o.id as current_order_id, o.order_number, o.subtotal, o.total_amount, o.status as order_status,
-        TIMESTAMPDIFF(MINUTE, ts.started_at, NOW()) as session_duration
-       FROM tables t
-       LEFT JOIN sections s ON t.section_id = s.id
-       LEFT JOIN table_layouts tl ON t.id = tl.table_id
-       LEFT JOIN (
-         SELECT ts1.* FROM table_sessions ts1
-         INNER JOIN (
-           SELECT table_id, MAX(id) as max_id 
-           FROM table_sessions 
-           WHERE status = 'active' 
-           GROUP BY table_id
-         ) ts2 ON ts1.id = ts2.max_id
-       ) ts ON t.id = ts.table_id
-       LEFT JOIN users u ON ts.started_by = u.id
-       LEFT JOIN orders o ON ts.order_id = o.id
-       WHERE t.floor_id = ? AND t.is_active = 1
-       ORDER BY t.display_order, t.table_number`,
-      [floorId]
-    );
+    // Parallel: floor info + tables + sections (all independent, all use only floorId)
+    const [floorInfoResult, tablesResult, sectionsResult] = await Promise.all([
+      pool.query(
+        `SELECT f.id, f.name, f.outlet_id, f.floor_number,
+          ds.id as shift_id, ds.status as shift_status, ds.cashier_id,
+          u.name as cashier_name, ds.opening_cash
+         FROM floors f
+         LEFT JOIN (
+           SELECT * FROM day_sessions WHERE status = 'open' ORDER BY id DESC
+         ) ds ON f.id = ds.floor_id
+         LEFT JOIN users u ON ds.cashier_id = u.id
+         WHERE f.id = ?
+         LIMIT 1`,
+        [floorId]
+      ),
+      pool.query(
+        `SELECT t.*, 
+          s.name as section_name, s.section_type,
+          tl.position_x, tl.position_y, tl.width, tl.height, tl.rotation,
+          ts.id as session_id, ts.guest_count, ts.guest_name, ts.started_at, ts.started_by,
+          u.name as captain_name, u.employee_code as captain_code,
+          o.id as current_order_id, o.order_number, o.subtotal, o.total_amount, o.status as order_status,
+          TIMESTAMPDIFF(MINUTE, ts.started_at, NOW()) as session_duration
+         FROM tables t
+         LEFT JOIN sections s ON t.section_id = s.id
+         LEFT JOIN table_layouts tl ON t.id = tl.table_id
+         LEFT JOIN (
+           SELECT ts1.* FROM table_sessions ts1
+           INNER JOIN (
+             SELECT table_id, MAX(id) as max_id 
+             FROM table_sessions 
+             WHERE status = 'active' 
+             GROUP BY table_id
+           ) ts2 ON ts1.id = ts2.max_id
+         ) ts ON t.id = ts.table_id
+         LEFT JOIN users u ON ts.started_by = u.id
+         LEFT JOIN orders o ON ts.order_id = o.id
+         WHERE t.floor_id = ? AND t.is_active = 1
+         ORDER BY t.display_order, t.table_number`,
+        [floorId]
+      ),
+      pool.query(
+        `SELECT s.id, s.name, s.section_type, s.display_order
+         FROM sections s
+         JOIN floor_sections fs ON s.id = fs.section_id
+         WHERE fs.floor_id = ? AND s.is_active = 1
+         ORDER BY s.display_order, s.name`,
+        [floorId]
+      )
+    ]);
+    const floorInfo = floorInfoResult[0];
+    const tables = tablesResult[0];
+    const sections = sectionsResult[0];
 
-    // Get KOT summary and merged tables for tables with active orders
-    for (const table of tables) {
-      // Get KOT summary if order exists
-      if (table.current_order_id) {
-        const [kotSummary] = await pool.query(
-          `SELECT 
+    // Batch-fetch KOT summaries, item counts, NC items, and merges for ALL tables at once
+    const activeOrderIds = tables.filter(t => t.current_order_id).map(t => t.current_order_id);
+    const allTableIds = tables.map(t => t.id);
+    const mergedTableIds = tables.filter(t => t.status === 'merged').map(t => t.id);
+
+    // Parallel batch queries
+    const [kotRows, itemCountRows, ncItemRows, mergesPrimaryRows, mergesSecondaryRows] = await Promise.all([
+      activeOrderIds.length > 0 ? pool.query(
+        `SELECT order_id,
             COUNT(*) as total_kots,
             SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_kots,
             SUM(CASE WHEN status = 'accepted' THEN 1 ELSE 0 END) as accepted_kots,
             SUM(CASE WHEN status = 'preparing' THEN 1 ELSE 0 END) as preparing_kots,
             SUM(CASE WHEN status = 'ready' THEN 1 ELSE 0 END) as ready_kots,
             SUM(CASE WHEN status = 'served' THEN 1 ELSE 0 END) as served_kots
-           FROM kot_tickets WHERE order_id = ?`,
-          [table.current_order_id]
-        );
-        table.kotSummary = kotSummary[0];
-        
-        // Get item count
-        const [itemCount] = await pool.query(
-          `SELECT COUNT(*) as count FROM order_items WHERE order_id = ? AND status != 'cancelled'`,
-          [table.current_order_id]
-        );
-        table.item_count = itemCount[0].count;
+         FROM kot_tickets WHERE order_id IN (?)
+         GROUP BY order_id`,
+        [activeOrderIds]
+      ).then(([r]) => r) : [],
+      activeOrderIds.length > 0 ? pool.query(
+        `SELECT order_id, COUNT(*) as count FROM order_items WHERE order_id IN (?) AND status != 'cancelled' GROUP BY order_id`,
+        [activeOrderIds]
+      ).then(([r]) => r) : [],
+      activeOrderIds.length > 0 ? pool.query(
+        `SELECT oi.order_id, oi.id, oi.item_name, oi.quantity, oi.unit_price, oi.total_price,
+                oi.is_nc, oi.nc_reason, oi.nc_amount, oi.nc_at,
+                u.name as nc_by_name
+         FROM order_items oi
+         LEFT JOIN users u ON oi.nc_by = u.id
+         WHERE oi.order_id IN (?) AND oi.is_nc = 1 AND oi.status != 'cancelled'`,
+        [activeOrderIds]
+      ).then(([r]) => r) : [],
+      allTableIds.length > 0 ? pool.query(
+        `SELECT tm.id as merge_id, tm.primary_table_id, tm.merged_table_id, t.table_number as merged_table_number, t.name as merged_table_name, t.capacity as merged_table_capacity
+         FROM table_merges tm
+         JOIN tables t ON tm.merged_table_id = t.id
+         WHERE tm.primary_table_id IN (?) AND tm.unmerged_at IS NULL`,
+        [allTableIds]
+      ).then(([r]) => r) : [],
+      mergedTableIds.length > 0 ? pool.query(
+        `SELECT tm.merged_table_id, tm.primary_table_id, t.table_number as primary_table_number, t.name as primary_table_name
+         FROM table_merges tm
+         JOIN tables t ON tm.primary_table_id = t.id
+         WHERE tm.merged_table_id IN (?) AND tm.unmerged_at IS NULL`,
+        [mergedTableIds]
+      ).then(([r]) => r) : []
+    ]);
 
-        // Get NC items summary and details
-        const [ncItems] = await pool.query(
-          `SELECT oi.id, oi.item_name, oi.quantity, oi.unit_price, oi.total_price,
-                  oi.is_nc, oi.nc_reason, oi.nc_amount, oi.nc_at,
-                  u.name as nc_by_name
-           FROM order_items oi
-           LEFT JOIN users u ON oi.nc_by = u.id
-           WHERE oi.order_id = ? AND oi.is_nc = 1 AND oi.status != 'cancelled'`,
-          [table.current_order_id]
-        );
-        
-        if (ncItems.length > 0) {
+    // Build lookup maps
+    const kotByOrder = {};
+    for (const k of kotRows) kotByOrder[k.order_id] = k;
+    const itemCountByOrder = {};
+    for (const ic of itemCountRows) itemCountByOrder[ic.order_id] = ic.count;
+    const ncByOrder = {};
+    for (const nc of ncItemRows) {
+      if (!ncByOrder[nc.order_id]) ncByOrder[nc.order_id] = [];
+      ncByOrder[nc.order_id].push(nc);
+    }
+    const mergesByPrimary = {};
+    for (const m of mergesPrimaryRows) {
+      if (!mergesByPrimary[m.primary_table_id]) mergesByPrimary[m.primary_table_id] = [];
+      mergesByPrimary[m.primary_table_id].push(m);
+    }
+    const mergesBySecondary = {};
+    for (const m of mergesSecondaryRows) mergesBySecondary[m.merged_table_id] = m;
+
+    // Assign to tables from lookup maps (no more per-table DB calls)
+    for (const table of tables) {
+      if (table.current_order_id) {
+        table.kotSummary = kotByOrder[table.current_order_id] || {
+          total_kots: 0, pending_kots: 0, accepted_kots: 0, preparing_kots: 0, ready_kots: 0, served_kots: 0
+        };
+        table.item_count = itemCountByOrder[table.current_order_id] || 0;
+
+        const ncItems = ncByOrder[table.current_order_id];
+        if (ncItems && ncItems.length > 0) {
           const totalNcAmount = ncItems.reduce((sum, item) => sum + (parseFloat(item.nc_amount) || 0), 0);
           table.ncSummary = {
             hasNcItems: true,
@@ -891,53 +933,20 @@ const tableService = {
             }))
           };
         } else {
-          table.ncSummary = {
-            hasNcItems: false,
-            ncItemCount: 0,
-            totalNcAmount: 0,
-            ncItems: []
-          };
+          table.ncSummary = { hasNcItems: false, ncItemCount: 0, totalNcAmount: 0, ncItems: [] };
         }
       }
 
-      // Get merged tables info (check active merges regardless of session)
-      const [mergesAsPrimary] = await pool.query(
-        `SELECT tm.id as merge_id, tm.merged_table_id, t.table_number as merged_table_number, t.name as merged_table_name, t.capacity as merged_table_capacity
-         FROM table_merges tm
-         JOIN tables t ON tm.merged_table_id = t.id
-         WHERE tm.primary_table_id = ? AND tm.unmerged_at IS NULL`,
-        [table.id]
-      );
-      if (mergesAsPrimary.length > 0) {
-        table.mergedTables = mergesAsPrimary;
+      const primaryMerges = mergesByPrimary[table.id];
+      if (primaryMerges && primaryMerges.length > 0) {
+        table.mergedTables = primaryMerges;
         table.isMergedPrimary = true;
       }
 
-      // Check if this table is merged INTO another (secondary)
-      if (table.status === 'merged') {
-        const [mergesAsSecondary] = await pool.query(
-          `SELECT tm.primary_table_id, t.table_number as primary_table_number, t.name as primary_table_name
-           FROM table_merges tm
-           JOIN tables t ON tm.primary_table_id = t.id
-           WHERE tm.merged_table_id = ? AND tm.unmerged_at IS NULL
-           LIMIT 1`,
-          [table.id]
-        );
-        if (mergesAsSecondary.length > 0) {
-          table.mergedInto = mergesAsSecondary[0];
-        }
+      if (table.status === 'merged' && mergesBySecondary[table.id]) {
+        table.mergedInto = mergesBySecondary[table.id];
       }
     }
-
-    // Get sections for this floor
-    const [sections] = await pool.query(
-      `SELECT s.id, s.name, s.section_type, s.display_order
-       FROM sections s
-       JOIN floor_sections fs ON s.id = fs.section_id
-       WHERE fs.floor_id = ? AND s.is_active = 1
-       ORDER BY s.display_order, s.name`,
-      [floorId]
-    );
 
     // Build response with floor info, shift status, sections, and tables
     const floor = floorInfo[0] || {};
@@ -1432,7 +1441,9 @@ const tableService = {
    * Merge tables
    * - Secondary tables get status "merged" and are disabled for ordering
    * - Primary table capacity = original + sum of all merged table capacities
-   * - On unmerge, everything is restored
+   * - Billing status on either table blocks the merge
+   * - If both tables have active orders, items are consolidated into the primary order
+   * - On unmerge, everything is restored (orders stay on primary)
    */
   async mergeTables(primaryTableId, tableIdsToMerge, userId) {
     const pool = getPool();
@@ -1441,59 +1452,156 @@ const tableService = {
     try {
       await connection.beginTransaction();
 
-      const primaryTable = await this.getById(primaryTableId);
+      // 1. Batch-fetch primary + all secondary tables in one query (optimized)
+      const allTableIds = [primaryTableId, ...tableIdsToMerge];
+      const [allTables] = await connection.query(
+        `SELECT t.id, t.table_number, t.capacity, t.status, t.is_mergeable,
+                t.floor_id, t.section_id, t.outlet_id, t.is_active
+         FROM tables t WHERE t.id IN (?)`,
+        [allTableIds]
+      );
+      const tableMap = new Map(allTables.map(t => [t.id, t]));
+
+      // 2. Validate primary table
+      const primaryTable = tableMap.get(parseInt(primaryTableId));
       if (!primaryTable) throw new Error('Primary table not found');
       if (!primaryTable.is_mergeable) throw new Error('Primary table is not mergeable');
       if (primaryTable.status === 'merged') throw new Error('This table is already merged into another table');
+      if (primaryTable.status === 'billing') throw new Error('Cannot merge tables with billing status');
 
-      // Get current session
-      const [sessions] = await connection.query(
-        'SELECT id FROM table_sessions WHERE table_id = ? AND status = "active"',
-        [primaryTableId]
-      );
-      const sessionId = sessions[0]?.id || null;
-
-      let addedCapacity = 0;
-
+      // 3. Validate all secondary tables (status-based rules)
+      const secondaryTables = [];
       for (const tableId of tableIdsToMerge) {
-        const table = await this.getById(tableId);
+        const table = tableMap.get(parseInt(tableId));
         if (!table) throw new Error(`Table ${tableId} not found`);
         if (!table.is_mergeable) throw new Error(`Table ${table.table_number} is not mergeable`);
-        if (table.status !== 'available') throw new Error(`Table ${table.table_number} is not available`);
+        if (table.status === 'merged') throw new Error(`Table ${table.table_number} is already merged`);
+        if (table.status === 'billing') throw new Error('Cannot merge tables with billing status');
         if (table.floor_id !== primaryTable.floor_id) {
           throw new Error('Cannot merge tables from different floors');
         }
+        secondaryTables.push(table);
+      }
 
-        // Create merge record
+      // 4. Get active sessions on ALL tables in one query (optimized)
+      const [allSessions] = await connection.query(
+        `SELECT ts.id, ts.table_id, ts.order_id, ts.status
+         FROM table_sessions ts
+         WHERE ts.table_id IN (?) AND ts.status = 'active'`,
+        [allTableIds]
+      );
+      const primarySession = allSessions.find(s => s.table_id === parseInt(primaryTableId));
+      const secondarySessions = allSessions.filter(s => s.table_id !== parseInt(primaryTableId));
+
+      // 5. Order consolidation: merge orders from secondary tables into primary
+      let primaryOrderId = primarySession?.order_id || null;
+      const mergedOrderIds = []; // secondary orders whose items were moved
+
+      if (secondarySessions.length > 0) {
+        const secondaryOrderIds = secondarySessions
+          .filter(s => s.order_id)
+          .map(s => s.order_id);
+
+        if (secondaryOrderIds.length > 0) {
+          if (!primaryOrderId) {
+            // Primary has no order — adopt the first secondary order
+            primaryOrderId = secondaryOrderIds.shift();
+            await connection.query(
+              `UPDATE orders SET table_id = ?, floor_id = ?, section_id = ? WHERE id = ?`,
+              [primaryTableId, primaryTable.floor_id, primaryTable.section_id, primaryOrderId]
+            );
+            // Move its session to primary table
+            const adoptedSession = secondarySessions.find(s => s.order_id === primaryOrderId);
+            if (adoptedSession) {
+              await connection.query(
+                'UPDATE table_sessions SET table_id = ? WHERE id = ?',
+                [primaryTableId, adoptedSession.id]
+              );
+            }
+          }
+
+          // Move remaining secondary order items → primary order
+          if (secondaryOrderIds.length > 0 && primaryOrderId) {
+            // Move order_items
+            await connection.query(
+              'UPDATE order_items SET order_id = ? WHERE order_id IN (?)',
+              [primaryOrderId, secondaryOrderIds]
+            );
+            // Move KOT tickets
+            await connection.query(
+              'UPDATE kot_tickets SET order_id = ? WHERE order_id IN (?)',
+              [primaryOrderId, secondaryOrderIds]
+            );
+            // Move order_discounts
+            await connection.query(
+              'UPDATE order_discounts SET order_id = ? WHERE order_id IN (?)',
+              [primaryOrderId, secondaryOrderIds]
+            );
+            // Cancel secondary orders (merged)
+            await connection.query(
+              `UPDATE orders SET status = 'cancelled', cancel_reason = 'Merged into another table order',
+               cancelled_by = ?, cancelled_at = NOW() WHERE id IN (?)`,
+              [userId, secondaryOrderIds]
+            );
+            mergedOrderIds.push(...secondaryOrderIds);
+
+            // Recalculate primary order totals (lazy require to avoid circular dependency)
+            const orderService = require('./order.service');
+            await orderService.recalculateTotals(primaryOrderId, connection);
+          }
+        }
+
+        // End all secondary table sessions (except the adopted one, which was moved above)
+        const sessionsToEnd = secondarySessions
+          .filter(s => !(!primarySession && s.order_id === primaryOrderId))
+          .map(s => s.id);
+        if (sessionsToEnd.length > 0) {
+          await connection.query(
+            `UPDATE table_sessions SET status = 'completed', ended_at = NOW(), ended_by = ? WHERE id IN (?)`,
+            [userId, sessionsToEnd]
+          );
+        }
+      }
+
+      // 6. Create merge records + mark secondary tables as merged (batch)
+      const mergeValues = secondaryTables.map(t =>
+        [primaryTableId, t.id, primarySession?.id || null, userId]
+      );
+      if (mergeValues.length > 0) {
         await connection.query(
           `INSERT INTO table_merges (primary_table_id, merged_table_id, table_session_id, merged_by)
-           VALUES (?, ?, ?, ?)`,
-          [primaryTableId, tableId, sessionId, userId]
+           VALUES ?`,
+          [mergeValues]
         );
-
-        // Mark secondary table as "merged"
-        await connection.query('UPDATE tables SET status = "merged" WHERE id = ?', [tableId]);
-
-        addedCapacity += (table.capacity || 0);
-      }
-
-      // Update primary table: add merged capacity
-      if (addedCapacity > 0) {
         await connection.query(
-          'UPDATE tables SET capacity = capacity + ? WHERE id = ?',
-          [addedCapacity, primaryTableId]
+          'UPDATE tables SET status = "merged" WHERE id IN (?)',
+          [tableIdsToMerge]
         );
       }
+
+      // 7. Update primary table capacity + status
+      const addedCapacity = secondaryTables.reduce((sum, t) => sum + (t.capacity || 0), 0);
+      // If primary was available but now has an adopted order, set to running
+      let newPrimaryStatus = primaryTable.status;
+      if (primaryOrderId && primaryTable.status === 'available') {
+        newPrimaryStatus = 'running';
+      }
+      await connection.query(
+        'UPDATE tables SET capacity = capacity + ?, status = ? WHERE id = ?',
+        [addedCapacity, newPrimaryStatus, primaryTableId]
+      );
 
       await connection.commit();
 
-      // Log and broadcast
-      await this.logHistory(primaryTableId, 'tables_merged', {
+      // Log and broadcast (non-blocking)
+      this.logHistory(primaryTableId, 'tables_merged', {
         mergedTableIds: tableIdsToMerge,
         addedCapacity,
         originalCapacity: primaryTable.capacity,
+        mergedOrderIds,
+        primaryOrderId,
         mergedBy: userId
-      });
+      }).catch(err => logger.error('Merge history log error:', err.message));
 
       this.broadcastTableUpdate(primaryTable.outlet_id, primaryTable.floor_id, {
         event: 'tables_merged',
@@ -1526,54 +1634,60 @@ const tableService = {
     try {
       await connection.beginTransaction();
 
-      const table = await this.getById(tableId);
-      if (!table) throw new Error('Table not found');
+      // 1. Fetch table + check as primary in one query (optimized: use connection, not pool)
+      const [[tableRow], [merges0]] = await Promise.all([
+        connection.query(
+          `SELECT id, table_number, capacity, status, floor_id, section_id, outlet_id
+           FROM tables WHERE id = ?`, [tableId]
+        ),
+        connection.query(
+          `SELECT tm.merged_table_id, tm.primary_table_id, t.capacity, t.table_number, t.floor_id
+           FROM table_merges tm
+           JOIN tables t ON tm.merged_table_id = t.id
+           WHERE tm.primary_table_id = ? AND tm.unmerged_at IS NULL`, [tableId]
+        )
+      ]);
 
-      // First check if this table is a primary with merges
-      let [merges] = await connection.query(
-        `SELECT tm.merged_table_id, tm.primary_table_id, t.capacity
-         FROM table_merges tm
-         JOIN tables t ON tm.merged_table_id = t.id
-         WHERE tm.primary_table_id = ? AND tm.unmerged_at IS NULL`,
-        [tableId]
-      );
+      if (!tableRow[0]) throw new Error('Table not found');
 
       let primaryTableId = tableId;
-      let primaryTable = table;
+      let primaryTable = tableRow[0];
+      let merges = merges0;
 
       // If no merges found as primary, check if this table is a secondary (merged) table
       if (merges.length === 0) {
         const [secondaryCheck] = await connection.query(
-          `SELECT tm.primary_table_id
-           FROM table_merges tm
-           WHERE tm.merged_table_id = ? AND tm.unmerged_at IS NULL`,
-          [tableId]
+          `SELECT tm.primary_table_id FROM table_merges tm
+           WHERE tm.merged_table_id = ? AND tm.unmerged_at IS NULL`, [tableId]
         );
 
         if (secondaryCheck.length > 0) {
-          // This table is a secondary, get the primary and all its merges
           primaryTableId = secondaryCheck[0].primary_table_id;
-          primaryTable = await this.getById(primaryTableId);
-          
-          [merges] = await connection.query(
-            `SELECT tm.merged_table_id, t.capacity
-             FROM table_merges tm
-             JOIN tables t ON tm.merged_table_id = t.id
-             WHERE tm.primary_table_id = ? AND tm.unmerged_at IS NULL`,
-            [primaryTableId]
-          );
+          // Fetch primary table + its merges in parallel
+          const [[primaryRow], [mergesFromPrimary]] = await Promise.all([
+            connection.query(
+              `SELECT id, table_number, capacity, status, floor_id, section_id, outlet_id
+               FROM tables WHERE id = ?`, [primaryTableId]
+            ),
+            connection.query(
+              `SELECT tm.merged_table_id, t.capacity, t.table_number, t.floor_id
+               FROM table_merges tm
+               JOIN tables t ON tm.merged_table_id = t.id
+               WHERE tm.primary_table_id = ? AND tm.unmerged_at IS NULL`, [primaryTableId]
+            )
+          ]);
+          primaryTable = primaryRow[0];
+          merges = mergesFromPrimary;
         }
       }
 
       if (merges.length === 0) throw new Error('No merged tables found for this table');
 
-      // VALIDATION: Check if primary table has active session or order
-      // Only block unmerge if there's an active session with an order (occupied/running/billing)
+      // VALIDATION: Block unmerge if primary has active session with order
       const blockedStatuses = ['occupied', 'running', 'billing'];
       if (blockedStatuses.includes(primaryTable.status)) {
-        // Check for active session on primary table
         const [activeSessions] = await connection.query(
-          `SELECT ts.id, ts.order_id, o.order_number 
+          `SELECT ts.id, ts.order_id, o.order_number
            FROM table_sessions ts
            LEFT JOIN orders o ON ts.order_id = o.id
            WHERE ts.table_id = ? AND ts.status = 'active'`,
@@ -1585,62 +1699,52 @@ const tableService = {
         }
       }
 
-      // Calculate capacity to subtract
+      // 2. Unmerge records + restore secondary tables + reduce capacity (batch)
+      const mergedIds = merges.map(m => m.merged_table_id);
       const capacityToRemove = merges.reduce((sum, m) => sum + (m.capacity || 0), 0);
 
-      // Unmerge all records
-      await connection.query(
-        'UPDATE table_merges SET unmerged_at = NOW(), unmerged_by = ? WHERE primary_table_id = ? AND unmerged_at IS NULL',
-        [userId, primaryTableId]
-      );
-
-      // Restore secondary tables to available
-      const mergedIds = merges.map(m => m.merged_table_id);
-      await connection.query(
-        'UPDATE tables SET status = "available" WHERE id IN (?)',
-        [mergedIds]
-      );
-
-      // Restore primary table capacity
-      if (capacityToRemove > 0) {
-        await connection.query(
-          'UPDATE tables SET capacity = GREATEST(1, capacity - ?) WHERE id = ?',
-          [capacityToRemove, primaryTableId]
-        );
-      }
+      await Promise.all([
+        connection.query(
+          'UPDATE table_merges SET unmerged_at = NOW(), unmerged_by = ? WHERE primary_table_id = ? AND unmerged_at IS NULL',
+          [userId, primaryTableId]
+        ),
+        connection.query(
+          'UPDATE tables SET status = "available" WHERE id IN (?)',
+          [mergedIds]
+        ),
+        capacityToRemove > 0
+          ? connection.query(
+              'UPDATE tables SET capacity = GREATEST(1, capacity - ?) WHERE id = ?',
+              [capacityToRemove, primaryTableId]
+            )
+          : Promise.resolve()
+      ]);
 
       await connection.commit();
 
-      // Log and broadcast
-      await this.logHistory(primaryTableId, 'tables_unmerged', {
+      // Non-blocking post-commit: log, emit, broadcast, cache
+      const unmergedTables = merges.map(t => ({
+        id: t.merged_table_id, tableNumber: t.table_number, floorId: t.floor_id
+      }));
+
+      this.logHistory(primaryTableId, 'tables_unmerged', {
         unmergedTableIds: mergedIds,
         removedCapacity: capacityToRemove,
         unmergedBy: userId
-      });
+      }).catch(err => logger.error('Unmerge history log error:', err.message));
 
-      // Get table numbers for the unmerged tables
-      const [unmergedTableDetails] = await pool.query(
-        `SELECT id, table_number, floor_id FROM tables WHERE id IN (?)`,
-        [mergedIds]
-      );
-
-      // Emit dedicated unmerge socket event via Redis
       const { publishMessage } = require('../config/redis');
-      await publishMessage('table:unmerge', {
+      publishMessage('table:unmerge', {
         outletId: primaryTable.outlet_id,
         primaryTableId,
         primaryTableNumber: primaryTable.table_number,
         floorId: primaryTable.floor_id,
         unmergedTableIds: mergedIds,
-        unmergedTables: unmergedTableDetails.map(t => ({
-          id: t.id,
-          tableNumber: t.table_number,
-          floorId: t.floor_id
-        })),
+        unmergedTables,
         event: 'tables_unmerged',
         unmergedBy: userId,
         timestamp: new Date().toISOString()
-      });
+      }).catch(err => logger.error('Unmerge publish error:', err.message));
 
       this.broadcastTableUpdate(primaryTable.outlet_id, primaryTable.floor_id, {
         event: 'tables_unmerged',
@@ -1648,7 +1752,9 @@ const tableService = {
         unmergedTableIds: mergedIds
       });
 
-      await this.invalidateCache(primaryTable.outlet_id, primaryTable.floor_id);
+      this.invalidateCache(primaryTable.outlet_id, primaryTable.floor_id)
+        .catch(err => logger.error('Unmerge cache invalidation error:', err.message));
+
       return true;
 
     } catch (error) {

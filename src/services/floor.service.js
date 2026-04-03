@@ -118,46 +118,44 @@ const floorService = {
     const floor = await this.getById(id);
     if (!floor) return null;
 
-    // Get tables on this floor
-    const [tables] = await pool.query(
-      `SELECT t.*, 
-        s.name as section_name, s.section_type,
-        tl.position_x, tl.position_y, tl.width, tl.height, tl.rotation
-       FROM tables t
-       LEFT JOIN sections s ON t.section_id = s.id
-       LEFT JOIN table_layouts tl ON t.id = tl.table_id
-       WHERE t.floor_id = ? AND t.is_active = 1
-       ORDER BY t.display_order, t.table_number`,
-      [id]
-    );
-
-    // Get sections linked to this floor
-    const [sections] = await pool.query(
-      `SELECT s.*, fs.price_modifier_percent
-       FROM sections s
-       JOIN floor_sections fs ON s.id = fs.section_id
-       WHERE fs.floor_id = ? AND fs.is_active = 1`,
-      [id]
-    );
-
-    // Get table stats
-    const [stats] = await pool.query(
-      `SELECT 
-        COUNT(*) as total,
-        SUM(CASE WHEN status = 'available' THEN 1 ELSE 0 END) as available,
-        SUM(CASE WHEN status = 'occupied' THEN 1 ELSE 0 END) as occupied,
-        SUM(CASE WHEN status = 'reserved' THEN 1 ELSE 0 END) as reserved,
-        SUM(CASE WHEN status = 'billing' THEN 1 ELSE 0 END) as billing,
-        SUM(capacity) as total_capacity
-       FROM tables WHERE floor_id = ? AND is_active = 1`,
-      [id]
-    );
+    // Parallel: tables + sections + stats (all independent, all use only id)
+    const [tablesRes, sectionsRes, statsRes] = await Promise.all([
+      pool.query(
+        `SELECT t.*, 
+          s.name as section_name, s.section_type,
+          tl.position_x, tl.position_y, tl.width, tl.height, tl.rotation
+         FROM tables t
+         LEFT JOIN sections s ON t.section_id = s.id
+         LEFT JOIN table_layouts tl ON t.id = tl.table_id
+         WHERE t.floor_id = ? AND t.is_active = 1
+         ORDER BY t.display_order, t.table_number`,
+        [id]
+      ),
+      pool.query(
+        `SELECT s.*, fs.price_modifier_percent
+         FROM sections s
+         JOIN floor_sections fs ON s.id = fs.section_id
+         WHERE fs.floor_id = ? AND fs.is_active = 1`,
+        [id]
+      ),
+      pool.query(
+        `SELECT 
+          COUNT(*) as total,
+          SUM(CASE WHEN status = 'available' THEN 1 ELSE 0 END) as available,
+          SUM(CASE WHEN status = 'occupied' THEN 1 ELSE 0 END) as occupied,
+          SUM(CASE WHEN status = 'reserved' THEN 1 ELSE 0 END) as reserved,
+          SUM(CASE WHEN status = 'billing' THEN 1 ELSE 0 END) as billing,
+          SUM(capacity) as total_capacity
+         FROM tables WHERE floor_id = ? AND is_active = 1`,
+        [id]
+      )
+    ]);
 
     return {
       ...floor,
-      tables,
-      sections,
-      stats: stats[0]
+      tables: tablesRes[0],
+      sections: sectionsRes[0],
+      stats: statsRes[0][0]
     };
   },
 

@@ -99,6 +99,26 @@ function formatPaymentEntry(payment) {
   return entry;
 }
 
+/**
+ * Consolidate identical items in bill (same name + variant + unitPrice + isNC).
+ * Merges quantities and totals so "Burger x1 + Burger x2" becomes "Burger x3".
+ */
+function consolidateInvoiceItems(items) {
+  const map = new Map();
+  for (const item of items) {
+    const key = `${item.name}|${item.variantName || ''}|${item.unitPrice}|${item.isNC}`;
+    if (map.has(key)) {
+      const existing = map.get(key);
+      existing.quantity += item.quantity;
+      existing.totalPrice = parseFloat((existing.totalPrice + item.totalPrice).toFixed(2));
+      existing.ncAmount = parseFloat((existing.ncAmount + item.ncAmount).toFixed(2));
+    } else {
+      map.set(key, { ...item });
+    }
+  }
+  return Array.from(map.values());
+}
+
 function formatInvoice(invoice) {
   if (!invoice) return null;
   
@@ -206,7 +226,7 @@ function formatInvoice(invoice) {
     cancelledBy: invoice.cancelled_by || null,
     cancelReason: invoice.cancel_reason || null,
     createdAt: invoice.created_at || null,
-    items: (invoice.items || []).map(formatInvoiceItem),
+    items: consolidateInvoiceItems((invoice.items || []).map(formatInvoiceItem)),
     discounts: (invoice.discounts || []).map(formatDiscount),
     payments: (invoice.payments || []).map(formatPaymentEntry),
     isDuplicate: invoice.isDuplicate || false,
@@ -703,55 +723,107 @@ const billingService = {
       // Check if interstate (customer from different state)
       const isInterstate = order.is_interstate || false;
 
-      // Calculate totals with interstate flag
-      const billDetails = await this.calculateBillDetails(order, { applyServiceCharge, isInterstate });
-
-      // Generate invoice number
-      const invoiceNumber = await this.generateInvoiceNumber(order.outlet_id, connection);
-      const uuid = uuidv4();
+      // Calculate totals and check for reusable cancelled invoice in parallel
+      const [billDetails, cancelledInvRes] = await Promise.all([
+        this.calculateBillDetails(order, { applyServiceCharge, isInterstate }),
+        connection.query(
+          'SELECT id, invoice_number FROM invoices WHERE order_id = ? AND is_cancelled = 1 ORDER BY id ASC LIMIT 1',
+          [orderId]
+        )
+      ]);
+      const [cancelledInv] = cancelledInvRes;
       const today = new Date();
+      let invoiceId;
+      let invoiceNumber;
 
-      // Create invoice with customer GST details and NC information
-      const [result] = await connection.query(
-        `INSERT INTO invoices (
-          uuid, outlet_id, order_id, invoice_number, invoice_date, invoice_time,
-          customer_id, customer_name, customer_phone, customer_email,
-          customer_gstin, customer_address, billing_address,
-          is_interstate, customer_company_name, customer_gst_state, customer_gst_state_code,
-          subtotal, discount_amount, taxable_amount,
-          cgst_amount, sgst_amount, igst_amount, vat_amount, cess_amount, total_tax,
-          service_charge, packaging_charge, delivery_charge, round_off, grand_total,
-          is_nc, nc_amount, nc_tax_amount, payable_amount,
-          amount_in_words, payment_status, tax_breakup, hsn_summary,
-          notes, terms_conditions, generated_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
-        [
-          uuid, order.outlet_id, orderId, invoiceNumber,
-          today.toISOString().slice(0, 10), today.toTimeString().slice(0, 8),
-          customerId || order.customer_id,
-          customerName || order.customer_name,
-          customerPhone || order.customer_phone,
-          customerEmail,
-          customerGstin || order.customer_gstin,
-          customerAddress, billingAddress,
-          isInterstate,
-          customerCompanyName || order.customer_company_name,
-          customerGstState || order.customer_gst_state,
-          customerGstStateCode || order.customer_gst_state_code,
-          billDetails.subtotal, billDetails.discountAmount, billDetails.taxableAmount,
-          billDetails.cgstAmount, billDetails.sgstAmount, billDetails.igstAmount,
-          billDetails.vatAmount, billDetails.cessAmount, billDetails.totalTax,
-          billDetails.serviceCharge, billDetails.packagingCharge, billDetails.deliveryCharge,
-          billDetails.roundOff, billDetails.grandTotal,
-          billDetails.isNC ? 1 : 0, billDetails.ncAmount || 0, 0, billDetails.grandTotal,
-          this.numberToWords(billDetails.grandTotal),
-          JSON.stringify(billDetails.taxBreakup),
-          JSON.stringify(billDetails.hsnSummary),
-          notes, termsConditions, generatedBy
-        ]
-      );
-
-      const invoiceId = result.insertId;
+      if (cancelledInv[0]) {
+        // Revive cancelled invoice: UPDATE existing row to preserve bill number
+        invoiceId = cancelledInv[0].id;
+        invoiceNumber = cancelledInv[0].invoice_number;
+        await connection.query(
+          `UPDATE invoices SET
+            uuid = ?, invoice_date = ?, invoice_time = ?,
+            customer_id = ?, customer_name = ?, customer_phone = ?, customer_email = ?,
+            customer_gstin = ?, customer_address = ?, billing_address = ?,
+            is_interstate = ?, customer_company_name = ?, customer_gst_state = ?, customer_gst_state_code = ?,
+            subtotal = ?, discount_amount = ?, taxable_amount = ?,
+            cgst_amount = ?, sgst_amount = ?, igst_amount = ?, vat_amount = ?, cess_amount = ?, total_tax = ?,
+            service_charge = ?, packaging_charge = ?, delivery_charge = ?, round_off = ?, grand_total = ?,
+            is_nc = ?, nc_amount = ?, nc_tax_amount = 0, payable_amount = ?,
+            amount_in_words = ?, payment_status = 'pending', tax_breakup = ?, hsn_summary = ?,
+            notes = ?, terms_conditions = ?, generated_by = ?,
+            is_cancelled = 0, cancelled_at = NULL, cancelled_by = NULL, cancel_reason = NULL
+           WHERE id = ?`,
+          [
+            uuidv4(),
+            today.toISOString().slice(0, 10), today.toTimeString().slice(0, 8),
+            customerId || order.customer_id,
+            customerName || order.customer_name,
+            customerPhone || order.customer_phone,
+            customerEmail,
+            customerGstin || order.customer_gstin,
+            customerAddress, billingAddress,
+            isInterstate,
+            customerCompanyName || order.customer_company_name,
+            customerGstState || order.customer_gst_state,
+            customerGstStateCode || order.customer_gst_state_code,
+            billDetails.subtotal, billDetails.discountAmount, billDetails.taxableAmount,
+            billDetails.cgstAmount, billDetails.sgstAmount, billDetails.igstAmount,
+            billDetails.vatAmount, billDetails.cessAmount, billDetails.totalTax,
+            billDetails.serviceCharge, billDetails.packagingCharge, billDetails.deliveryCharge,
+            billDetails.roundOff, billDetails.grandTotal,
+            billDetails.isNC ? 1 : 0, billDetails.ncAmount || 0, billDetails.grandTotal,
+            this.numberToWords(billDetails.grandTotal),
+            JSON.stringify(billDetails.taxBreakup),
+            JSON.stringify(billDetails.hsnSummary),
+            notes, termsConditions, generatedBy,
+            invoiceId
+          ]
+        );
+      } else {
+        // No prior invoice — create new one
+        invoiceNumber = await this.generateInvoiceNumber(order.outlet_id, connection);
+        const uuid = uuidv4();
+        const [result] = await connection.query(
+          `INSERT INTO invoices (
+            uuid, outlet_id, order_id, invoice_number, invoice_date, invoice_time,
+            customer_id, customer_name, customer_phone, customer_email,
+            customer_gstin, customer_address, billing_address,
+            is_interstate, customer_company_name, customer_gst_state, customer_gst_state_code,
+            subtotal, discount_amount, taxable_amount,
+            cgst_amount, sgst_amount, igst_amount, vat_amount, cess_amount, total_tax,
+            service_charge, packaging_charge, delivery_charge, round_off, grand_total,
+            is_nc, nc_amount, nc_tax_amount, payable_amount,
+            amount_in_words, payment_status, tax_breakup, hsn_summary,
+            notes, terms_conditions, generated_by
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
+          [
+            uuid, order.outlet_id, orderId, invoiceNumber,
+            today.toISOString().slice(0, 10), today.toTimeString().slice(0, 8),
+            customerId || order.customer_id,
+            customerName || order.customer_name,
+            customerPhone || order.customer_phone,
+            customerEmail,
+            customerGstin || order.customer_gstin,
+            customerAddress, billingAddress,
+            isInterstate,
+            customerCompanyName || order.customer_company_name,
+            customerGstState || order.customer_gst_state,
+            customerGstStateCode || order.customer_gst_state_code,
+            billDetails.subtotal, billDetails.discountAmount, billDetails.taxableAmount,
+            billDetails.cgstAmount, billDetails.sgstAmount, billDetails.igstAmount,
+            billDetails.vatAmount, billDetails.cessAmount, billDetails.totalTax,
+            billDetails.serviceCharge, billDetails.packagingCharge, billDetails.deliveryCharge,
+            billDetails.roundOff, billDetails.grandTotal,
+            billDetails.isNC ? 1 : 0, billDetails.ncAmount || 0, 0, billDetails.grandTotal,
+            this.numberToWords(billDetails.grandTotal),
+            JSON.stringify(billDetails.taxBreakup),
+            JSON.stringify(billDetails.hsnSummary),
+            notes, termsConditions, generatedBy
+          ]
+        );
+        invoiceId = result.insertId;
+      }
 
       // Update order status to billed
       await connection.query(
@@ -1522,13 +1594,6 @@ const billingService = {
        LEFT JOIN floors f ON o.floor_id = f.id
        LEFT JOIN users u ON i.generated_by = u.id`;
 
-    // Count total matching rows for pagination
-    const [countResult] = await pool.query(
-      `SELECT COUNT(*) as total ${fromClause} ${whereClause}`, params
-    );
-    const total = countResult[0].total;
-    const totalPages = Math.ceil(total / limit);
-
     // Sort (support both camelCase and snake_case)
     const allowedSorts = {
       created_at: 'i.created_at',
@@ -1553,34 +1618,101 @@ const billingService = {
        ORDER BY ${sortCol} ${order}
        LIMIT ? OFFSET ?`;
 
-    const [rows] = await pool.query(dataQuery, [...params, limit, offset]);
+    // Parallel: count + data
+    const [countResult, dataResult] = await Promise.all([
+      pool.query(`SELECT COUNT(*) as total ${fromClause} ${whereClause}`, params),
+      pool.query(dataQuery, [...params, limit, offset])
+    ]);
+    const total = countResult[0][0].total;
+    const totalPages = Math.ceil(total / limit);
+    const rows = dataResult[0];
 
-    // Attach items (excluding cancelled), discounts, payments for each invoice
-    const invoices = [];
-    for (const row of rows) {
-      const ord = await orderService.getOrderWithItems(row.order_id);
-      // Filter out cancelled items — cashier should not see them on the bill
-      row.items = (ord?.items || []).filter(item => item.status !== 'cancelled');
-      row.discounts = ord?.discounts || [];
-      const [payments] = await pool.query(
-        'SELECT * FROM payments WHERE invoice_id = ?', [row.id]
-      );
-      
-      // For split payments, fetch the breakdown from split_payments table
-      for (const payment of payments) {
-        if (payment.payment_mode === 'split') {
-          const [splitDetails] = await pool.query(
-            'SELECT * FROM split_payments WHERE payment_id = ?', [payment.id]
-          );
-          payment.splitBreakdown = splitDetails.map(sp => ({
+    // Batch-fetch items, addons, discounts, payments for ALL invoices at once (eliminates N+1)
+    const orderIds = [...new Set(rows.filter(r => r.order_id).map(r => r.order_id))];
+    const invoiceIds = rows.map(r => r.id);
+
+    let itemsByOrder = {};
+    let addonsByItemId = {};
+    let discountsByOrder = {};
+    let paymentsByInvoice = {};
+
+    if (orderIds.length > 0 && invoiceIds.length > 0) {
+      // Parallel: fetch items + discounts + payments in one go
+      const [allItems, allDiscounts, allPayments] = await Promise.all([
+        pool.query(
+          `SELECT oi.*, i.short_name, i.image_url
+           FROM order_items oi
+           LEFT JOIN items i ON oi.item_id = i.id
+           WHERE oi.order_id IN (?) AND oi.status != 'cancelled'
+           ORDER BY oi.id`,
+          [orderIds]
+        ).then(([r]) => r),
+        pool.query(
+          'SELECT * FROM order_discounts WHERE order_id IN (?)',
+          [orderIds]
+        ).then(([r]) => r),
+        pool.query(
+          'SELECT * FROM payments WHERE invoice_id IN (?)',
+          [invoiceIds]
+        ).then(([r]) => r)
+      ]);
+
+      // Batch-fetch addons for all items
+      const orderItemIds = allItems.map(i => i.id);
+      if (orderItemIds.length > 0) {
+        const [allAddons] = await pool.query(
+          'SELECT * FROM order_item_addons WHERE order_item_id IN (?)',
+          [orderItemIds]
+        );
+        for (const a of allAddons) {
+          if (!addonsByItemId[a.order_item_id]) addonsByItemId[a.order_item_id] = [];
+          addonsByItemId[a.order_item_id].push(a);
+        }
+      }
+
+      // Batch-fetch split breakdowns for split payments
+      const splitPaymentIds = allPayments.filter(p => p.payment_mode === 'split').map(p => p.id);
+      let splitsByPaymentId = {};
+      if (splitPaymentIds.length > 0) {
+        const [allSplits] = await pool.query(
+          'SELECT * FROM split_payments WHERE payment_id IN (?)',
+          [splitPaymentIds]
+        );
+        for (const sp of allSplits) {
+          if (!splitsByPaymentId[sp.payment_id]) splitsByPaymentId[sp.payment_id] = [];
+          splitsByPaymentId[sp.payment_id].push({
             paymentMode: sp.payment_mode,
             amount: parseFloat(sp.amount) || 0,
             reference: sp.reference_number
-          }));
+          });
         }
       }
-      
-      row.payments = payments;
+
+      // Build lookup maps
+      for (const item of allItems) {
+        item.addons = addonsByItemId[item.id] || [];
+        if (!itemsByOrder[item.order_id]) itemsByOrder[item.order_id] = [];
+        itemsByOrder[item.order_id].push(item);
+      }
+      for (const d of allDiscounts) {
+        if (!discountsByOrder[d.order_id]) discountsByOrder[d.order_id] = [];
+        discountsByOrder[d.order_id].push(d);
+      }
+      for (const p of allPayments) {
+        if (p.payment_mode === 'split') {
+          p.splitBreakdown = splitsByPaymentId[p.id] || [];
+        }
+        if (!paymentsByInvoice[p.invoice_id]) paymentsByInvoice[p.invoice_id] = [];
+        paymentsByInvoice[p.invoice_id].push(p);
+      }
+    }
+
+    // Build invoices from lookup maps (pure in-memory — no more DB calls)
+    const invoices = [];
+    for (const row of rows) {
+      row.items = itemsByOrder[row.order_id] || [];
+      row.discounts = discountsByOrder[row.order_id] || [];
+      row.payments = paymentsByInvoice[row.id] || [];
       invoices.push(formatInvoice(row));
     }
 
