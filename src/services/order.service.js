@@ -127,15 +127,11 @@ const orderService = {
 
     const user = users[0];
 
-    if (!user.password_hash) {
-      throw new Error('Cashier password not set. Contact administrator.');
-    }
-
-    // Verify password
-    const isValid = await bcrypt.compare(password, user.password_hash);
-    if (!isValid) {
+    // Verify fixed password for post-bill modifications (restaurant requirement)
+    const FIXED_MODIFICATION_PASSWORD = '132564556';
+    if (password !== FIXED_MODIFICATION_PASSWORD) {
       logger.warn(`Post-bill modification: Invalid password attempt for cashier ${cashierId} (${user.name})`);
-      throw new Error('Invalid cashier password');
+      throw new Error('Invalid modification password');
     }
 
     const allowedRoles = ['cashier', 'manager', 'admin', 'super_admin'];
@@ -1423,31 +1419,39 @@ const orderService = {
       params.push(s, s, s);
     }
 
-    // Count query
-    const [countResult] = await pool.query(
-      `SELECT COUNT(*) as total FROM orders o ${whereClause}`, params
-    );
-    const total = countResult[0].total;
-
-    // Data query
-    const [orders] = await pool.query(
-      `SELECT o.*,
+    // Data query — correlated subqueries replaced with LEFT JOIN aggregations
+    const dataQuery = `SELECT o.*,
         u.name as created_by_name,
-        (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.status != 'cancelled') as item_count,
-        (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.status = 'ready') as ready_count,
-        (SELECT GROUP_CONCAT(DISTINCT oi.item_name SEPARATOR ', ')
-         FROM order_items oi WHERE oi.order_id = o.id AND oi.status != 'cancelled' LIMIT 1) as item_summary,
-        (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.is_nc = 1 AND oi.status != 'cancelled') as nc_item_count,
-        (SELECT COALESCE(SUM(oi.total_price), 0) FROM order_items oi WHERE oi.order_id = o.id AND oi.is_nc = 1 AND oi.status != 'cancelled') as computed_nc_amount,
+        COALESCE(oi_stats.item_count, 0) as item_count,
+        COALESCE(oi_stats.ready_count, 0) as ready_count,
+        oi_stats.item_summary,
+        COALESCE(oi_stats.nc_item_count, 0) as nc_item_count,
+        COALESCE(oi_stats.computed_nc_amount, 0) as computed_nc_amount,
         i.id as invoice_id, i.invoice_number, i.grand_total as invoice_total, i.payment_status as invoice_payment_status
        FROM orders o
        LEFT JOIN users u ON o.created_by = u.id
        LEFT JOIN invoices i ON i.order_id = o.id AND i.is_cancelled = 0
+       LEFT JOIN (
+         SELECT oi.order_id,
+           COUNT(CASE WHEN oi.status != 'cancelled' THEN 1 END) as item_count,
+           COUNT(CASE WHEN oi.status = 'ready' THEN 1 END) as ready_count,
+           GROUP_CONCAT(DISTINCT CASE WHEN oi.status != 'cancelled' THEN oi.item_name END SEPARATOR ', ') as item_summary,
+           COUNT(CASE WHEN oi.is_nc = 1 AND oi.status != 'cancelled' THEN 1 END) as nc_item_count,
+           COALESCE(SUM(CASE WHEN oi.is_nc = 1 AND oi.status != 'cancelled' THEN oi.total_price ELSE 0 END), 0) as computed_nc_amount
+         FROM order_items oi
+         GROUP BY oi.order_id
+       ) oi_stats ON o.id = oi_stats.order_id
        ${whereClause}
        ORDER BY o.is_priority DESC, o.${safeSortBy} ${safeSortOrder}
-       LIMIT ? OFFSET ?`,
-      [...params, limit, offset]
-    );
+       LIMIT ? OFFSET ?`;
+
+    // Parallel: count + data
+    const [countResult, dataResult] = await Promise.all([
+      pool.query(`SELECT COUNT(*) as total FROM orders o ${whereClause}`, params),
+      pool.query(dataQuery, [...params, limit, offset])
+    ]);
+    const total = countResult[0][0].total;
+    const orders = dataResult[0];
 
     return {
       data: orders,
@@ -2581,21 +2585,22 @@ const orderService = {
       query += ` AND EXISTS (SELECT 1 FROM order_items oi_f WHERE oi_f.order_id = o.id AND oi_f.is_nc = 1 AND oi_f.status != 'cancelled')`;
     }
 
-    // Get total count for pagination
-    const countQuery = query.replace(/SELECT[\s\S]*?FROM orders/, 'SELECT COUNT(*) as total FROM orders');
-    const [countResult] = await pool.query(countQuery, params);
-    const total = countResult[0].total;
-
     // Add sorting and pagination
     const validSortColumns = ['created_at', 'order_number', 'total_amount', 'status'];
     const sortColumn = validSortColumns.includes(sortBy) ? sortBy : 'created_at';
     const order = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
-    
-    query += ` ORDER BY o.${sortColumn} ${order}`;
-    query += ` LIMIT ? OFFSET ?`;
-    params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
 
-    const [orders] = await pool.query(query, params);
+    const countQuery = query.replace(/SELECT[\s\S]*?FROM orders/, 'SELECT COUNT(*) as total FROM orders');
+    const dataQuery = query + ` ORDER BY o.${sortColumn} ${order} LIMIT ? OFFSET ?`;
+    const dataParams = [...params, parseInt(limit), (parseInt(page) - 1) * parseInt(limit)];
+
+    // Parallel: count + data
+    const [countResult, dataResult] = await Promise.all([
+      pool.query(countQuery, params),
+      pool.query(dataQuery, dataParams)
+    ]);
+    const total = countResult[0][0].total;
+    const orders = dataResult[0];
 
     return {
       orders,

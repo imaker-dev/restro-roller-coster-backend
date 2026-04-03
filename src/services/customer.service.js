@@ -369,45 +369,49 @@ const customerService = {
     const sortExpr = sortMap[sortBy] || sortMap.lastOrderAt;
     const order = String(sortOrder).toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
 
-    const [rows] = await pool.query(
-      `SELECT
-         c.*,
-         COALESCE(os.total_orders, c.total_orders, 0) AS total_orders,
-         COALESCE(os.total_spent, c.total_spent, 0) AS total_spent,
-         COALESCE(os.last_order_at, c.last_order_at) AS last_order_at,
-         os.first_order_at,
-         COALESCE(os.avg_order_value, 0) AS avg_order_value,
-         COALESCE(os.total_due, 0) AS total_due,
-         COALESCE(nc.nc_item_count, 0) AS nc_item_count,
-         COALESCE(nc.nc_amount, 0) AS nc_amount
-       FROM customers c
-       ${statsJoin}
-       WHERE ${whereClause}
-       ORDER BY ${sortExpr} ${order}, c.id DESC
-       LIMIT ? OFFSET ?`,
-      [...params, safeLimit, offset]
-    );
-
-    const [[{ total }]] = await pool.query(
-      `SELECT COUNT(*) AS total
-       FROM customers c
-       ${statsJoin}
-       WHERE ${whereClause}`,
-      params
-    );
-
-    const [[summaryRow]] = await pool.query(
-      `SELECT
-         COUNT(*) AS total_customers,
-         SUM(CASE WHEN c.is_gst_customer = 1 THEN 1 ELSE 0 END) AS gst_customers,
-         SUM(CASE WHEN c.is_active = 1 THEN 1 ELSE 0 END) AS active_customers,
-         SUM(COALESCE(os.total_orders, c.total_orders, 0)) AS total_orders,
-         SUM(COALESCE(os.total_spent, c.total_spent, 0)) AS total_spent
-       FROM customers c
-       ${statsJoin}
-       WHERE ${whereClause}`,
-      params
-    );
+    // Parallel: data + count + summary
+    const [dataResult, countResult, summaryResult] = await Promise.all([
+      pool.query(
+        `SELECT
+           c.*,
+           COALESCE(os.total_orders, c.total_orders, 0) AS total_orders,
+           COALESCE(os.total_spent, c.total_spent, 0) AS total_spent,
+           COALESCE(os.last_order_at, c.last_order_at) AS last_order_at,
+           os.first_order_at,
+           COALESCE(os.avg_order_value, 0) AS avg_order_value,
+           COALESCE(os.total_due, 0) AS total_due,
+           COALESCE(nc.nc_item_count, 0) AS nc_item_count,
+           COALESCE(nc.nc_amount, 0) AS nc_amount
+         FROM customers c
+         ${statsJoin}
+         WHERE ${whereClause}
+         ORDER BY ${sortExpr} ${order}, c.id DESC
+         LIMIT ? OFFSET ?`,
+        [...params, safeLimit, offset]
+      ),
+      pool.query(
+        `SELECT COUNT(*) AS total
+         FROM customers c
+         ${statsJoin}
+         WHERE ${whereClause}`,
+        params
+      ),
+      pool.query(
+        `SELECT
+           COUNT(*) AS total_customers,
+           SUM(CASE WHEN c.is_gst_customer = 1 THEN 1 ELSE 0 END) AS gst_customers,
+           SUM(CASE WHEN c.is_active = 1 THEN 1 ELSE 0 END) AS active_customers,
+           SUM(COALESCE(os.total_orders, c.total_orders, 0)) AS total_orders,
+           SUM(COALESCE(os.total_spent, c.total_spent, 0)) AS total_spent
+         FROM customers c
+         ${statsJoin}
+         WHERE ${whereClause}`,
+        params
+      )
+    ]);
+    const rows = dataResult[0];
+    const total = countResult[0][0].total;
+    const summaryRow = summaryResult[0][0];
 
     return {
       customers: rows.map((r) => ({
@@ -1404,73 +1408,74 @@ const customerService = {
     const sortExpr = sortMap[sortBy] || 'od.actual_due';
     const order = String(sortOrder).toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
 
-    // Main query with order-based due calculation
-    const [rows] = await pool.query(
-      `SELECT c.*, 
-              od.actual_due,
-              od.pending_due_orders,
-              od.total_due_collected as calculated_due_collected,
-              od.last_due_date,
-              od.first_due_date,
-              od.order_numbers,
-              od.nc_item_count,
-              od.nc_amount
-       FROM customers c
-       INNER JOIN (
-         SELECT o.customer_id, 
-                SUM(o.due_amount) as actual_due,
-                COUNT(*) as pending_due_orders,
-                SUM(o.paid_amount) as total_due_collected,
-                MAX(o.created_at) as last_due_date,
-                MIN(o.created_at) as first_due_date,
-                GROUP_CONCAT(o.order_number ORDER BY o.created_at DESC SEPARATOR ', ') as order_numbers,
-                (SELECT COUNT(*) FROM order_items oi2 WHERE oi2.order_id IN (SELECT o2.id FROM orders o2 WHERE o2.customer_id = o.customer_id AND o2.due_amount > 0 AND o2.status != 'cancelled') AND oi2.is_nc = 1 AND oi2.status != 'cancelled') as nc_item_count,
-                (SELECT COALESCE(SUM(oi2.total_price), 0) FROM order_items oi2 WHERE oi2.order_id IN (SELECT o2.id FROM orders o2 WHERE o2.customer_id = o.customer_id AND o2.due_amount > 0 AND o2.status != 'cancelled') AND oi2.is_nc = 1 AND oi2.status != 'cancelled') as nc_amount
-         FROM orders o
-         WHERE ${orderSearchCondition}
-         GROUP BY o.customer_id
-         HAVING SUM(o.due_amount) > 0
-       ) od ON od.customer_id = c.id
-       WHERE ${customerWhereClause}${dueFilterClause}
-       ORDER BY ${sortExpr} ${order}, c.id DESC
-       LIMIT ? OFFSET ?`,
-      [...orderSearchParams, ...customerParams, safeLimit, offset]
-    );
-
-    // Count query
-    const [[{ total }]] = await pool.query(
-      `SELECT COUNT(*) as total
-       FROM customers c
-       INNER JOIN (
-         SELECT o.customer_id, SUM(o.due_amount) as actual_due
-         FROM orders o
-         WHERE ${orderSearchCondition}
-         GROUP BY o.customer_id
-         HAVING SUM(o.due_amount) > 0
-       ) od ON od.customer_id = c.id
-       WHERE ${customerWhereClause}${dueFilterClause}`,
-      [...orderSearchParams, ...customerParams]
-    );
-
-    // Summary query
-    const [[summary]] = await pool.query(
-      `SELECT 
-         COUNT(DISTINCT c.id) as total_customers_with_due,
-         SUM(od.actual_due) as total_due_amount,
-         AVG(od.actual_due) as avg_due_amount,
-         MAX(od.actual_due) as max_due_amount,
-         SUM(od.pending_due_orders) as total_pending_orders
-       FROM customers c
-       INNER JOIN (
-         SELECT o.customer_id, SUM(o.due_amount) as actual_due, COUNT(*) as pending_due_orders
-         FROM orders o
-         WHERE ${orderSearchCondition}
-         GROUP BY o.customer_id
-         HAVING SUM(o.due_amount) > 0
-       ) od ON od.customer_id = c.id
-       WHERE ${customerWhereClause}${dueFilterClause}`,
-      [...orderSearchParams, ...customerParams]
-    );
+    // Parallel: data + count + summary
+    const [dataResult, countResult, summaryResult] = await Promise.all([
+      pool.query(
+        `SELECT c.*, 
+                od.actual_due,
+                od.pending_due_orders,
+                od.total_due_collected as calculated_due_collected,
+                od.last_due_date,
+                od.first_due_date,
+                od.order_numbers,
+                od.nc_item_count,
+                od.nc_amount
+         FROM customers c
+         INNER JOIN (
+           SELECT o.customer_id, 
+                  SUM(o.due_amount) as actual_due,
+                  COUNT(*) as pending_due_orders,
+                  SUM(o.paid_amount) as total_due_collected,
+                  MAX(o.created_at) as last_due_date,
+                  MIN(o.created_at) as first_due_date,
+                  GROUP_CONCAT(o.order_number ORDER BY o.created_at DESC SEPARATOR ', ') as order_numbers,
+                  (SELECT COUNT(*) FROM order_items oi2 WHERE oi2.order_id IN (SELECT o2.id FROM orders o2 WHERE o2.customer_id = o.customer_id AND o2.due_amount > 0 AND o2.status != 'cancelled') AND oi2.is_nc = 1 AND oi2.status != 'cancelled') as nc_item_count,
+                  (SELECT COALESCE(SUM(oi2.total_price), 0) FROM order_items oi2 WHERE oi2.order_id IN (SELECT o2.id FROM orders o2 WHERE o2.customer_id = o.customer_id AND o2.due_amount > 0 AND o2.status != 'cancelled') AND oi2.is_nc = 1 AND oi2.status != 'cancelled') as nc_amount
+           FROM orders o
+           WHERE ${orderSearchCondition}
+           GROUP BY o.customer_id
+           HAVING SUM(o.due_amount) > 0
+         ) od ON od.customer_id = c.id
+         WHERE ${customerWhereClause}${dueFilterClause}
+         ORDER BY ${sortExpr} ${order}, c.id DESC
+         LIMIT ? OFFSET ?`,
+        [...orderSearchParams, ...customerParams, safeLimit, offset]
+      ),
+      pool.query(
+        `SELECT COUNT(*) as total
+         FROM customers c
+         INNER JOIN (
+           SELECT o.customer_id, SUM(o.due_amount) as actual_due
+           FROM orders o
+           WHERE ${orderSearchCondition}
+           GROUP BY o.customer_id
+           HAVING SUM(o.due_amount) > 0
+         ) od ON od.customer_id = c.id
+         WHERE ${customerWhereClause}${dueFilterClause}`,
+        [...orderSearchParams, ...customerParams]
+      ),
+      pool.query(
+        `SELECT 
+           COUNT(DISTINCT c.id) as total_customers_with_due,
+           SUM(od.actual_due) as total_due_amount,
+           AVG(od.actual_due) as avg_due_amount,
+           MAX(od.actual_due) as max_due_amount,
+           SUM(od.pending_due_orders) as total_pending_orders
+         FROM customers c
+         INNER JOIN (
+           SELECT o.customer_id, SUM(o.due_amount) as actual_due, COUNT(*) as pending_due_orders
+           FROM orders o
+           WHERE ${orderSearchCondition}
+           GROUP BY o.customer_id
+           HAVING SUM(o.due_amount) > 0
+         ) od ON od.customer_id = c.id
+         WHERE ${customerWhereClause}${dueFilterClause}`,
+        [...orderSearchParams, ...customerParams]
+      )
+    ]);
+    const rows = dataResult[0];
+    const total = countResult[0][0].total;
+    const summary = summaryResult[0][0];
 
     return {
       customers: rows.map(r => ({

@@ -186,11 +186,11 @@ class AuthService {
       activeOutletName = userOutlets.outletName;
     }
 
-    // Get assigned floors for the active outlet
-    const assignedFloors = await this._getUserFloors(user.id, activeOutletId);
-
-    // Get assigned stations for the user
-    const assignedStations = await this._getUserStations(user.id, activeOutletId);
+    // Parallel: floors + stations (both depend on activeOutletId, independent of each other)
+    const [assignedFloors, assignedStations] = await Promise.all([
+      this._getUserFloors(user.id, activeOutletId),
+      this._getUserStations(user.id, activeOutletId)
+    ]);
 
     // Return primary station or first station as single object
     const assignedStation = assignedStations.find(s => s.isPrimary) || assignedStations[0] || null;
@@ -342,17 +342,31 @@ class AuthService {
 
     const user = users[0];
 
-    // Get roles with outlet info (deduplicate by role slug + outlet_id)
-    // Only include roles where outlet is active OR outlet_id is NULL (super_admin has no outlet)
-    const [rawRoles] = await pool.query(
-      `SELECT DISTINCT r.id, r.name, r.slug, ur.outlet_id, o.name as outlet_name
-       FROM user_roles ur
-       JOIN roles r ON ur.role_id = r.id
-       LEFT JOIN outlets o ON ur.outlet_id = o.id
-       WHERE ur.user_id = ? AND ur.is_active = 1 AND r.is_active = 1
-         AND (ur.outlet_id IS NULL OR o.is_active = 1)`,
-      [userId]
-    );
+    // Parallel: roles + permissions + outlets (all independent, all use only userId)
+    const [rawRolesRes, permissionsRes, outletsResult] = await Promise.all([
+      pool.query(
+        `SELECT DISTINCT r.id, r.name, r.slug, ur.outlet_id, o.name as outlet_name
+         FROM user_roles ur
+         JOIN roles r ON ur.role_id = r.id
+         LEFT JOIN outlets o ON ur.outlet_id = o.id
+         WHERE ur.user_id = ? AND ur.is_active = 1 AND r.is_active = 1
+           AND (ur.outlet_id IS NULL OR o.is_active = 1)`,
+        [userId]
+      ),
+      pool.query(
+        `SELECT DISTINCT p.slug, p.module
+         FROM user_roles ur
+         JOIN role_permissions rp ON ur.role_id = rp.role_id
+         JOIN permissions p ON rp.permission_id = p.id
+         WHERE ur.user_id = ? AND ur.is_active = 1`,
+        [userId]
+      ),
+      this._getUserOutlets(userId)
+    ]);
+    const rawRoles = rawRolesRes[0];
+    const permissions = permissionsRes[0];
+    const { outlets, outletId, outletName } = outletsResult;
+
     // Deduplicate roles by slug + outlet_id
     const seen = new Set();
     const roles = rawRoles.filter(r => {
@@ -362,24 +376,11 @@ class AuthService {
       return true;
     });
 
-    // Get permissions
-    const [permissions] = await pool.query(
-      `SELECT DISTINCT p.slug, p.module
-       FROM user_roles ur
-       JOIN role_permissions rp ON ur.role_id = rp.role_id
-       JOIN permissions p ON rp.permission_id = p.id
-       WHERE ur.user_id = ? AND ur.is_active = 1`,
-      [userId]
-    );
-
-    // Get user's outlets (array + primary)
-    const { outlets, outletId, outletName } = await this._getUserOutlets(userId);
-
-    // Get assigned floors for the active outlet
-    const assignedFloors = await this._getUserFloors(userId, outletId);
-
-    // Get assigned stations for the user
-    const assignedStations = await this._getUserStations(userId, outletId);
+    // Parallel: floors + stations (both depend on outletId from above)
+    const [assignedFloors, assignedStations] = await Promise.all([
+      this._getUserFloors(userId, outletId),
+      this._getUserStations(userId, outletId)
+    ]);
 
     // Return primary station or first station as single object
     const assignedStation = assignedStations.find(s => s.isPrimary) || assignedStations[0] || null;
