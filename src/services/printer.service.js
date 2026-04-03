@@ -1243,6 +1243,7 @@ const printerService = {
       const tag = item.itemType ? ` [${item.itemType.toUpperCase()}]` : '';
       lines.push(`${item.quantity} x ${item.itemName || ''}${tag}`);
       if (item.variantName) lines.push(`  (${item.variantName})`);
+      if (item.weight) lines.push(`  Wt: ${item.weight}`);
       if (item.addonsText) lines.push(`  + ${item.addonsText}`);
       if (item.instructions) lines.push(`  >> ${item.instructions}`);
     }

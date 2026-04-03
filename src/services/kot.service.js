@@ -42,6 +42,8 @@ function formatKotItem(item) {
     quantity: parseFloat(item.quantity) || 0,
     addonsText: item.addons_text || null,
     specialInstructions: item.special_instructions || null,
+    weight: item.weight || null,
+    isOpenItem: !!item.is_open_item,
     status: item.status,
     createdAt: item.created_at,
     addons: (item.addons || []).map(a => ({
@@ -252,6 +254,8 @@ const kotService = {
             name: i.item_name,
             variant: i.variant_name,
             quantity: i.quantity,
+            weight: i.weight || null,
+            isOpenItem: !!i.is_open_item,
             itemType: i.item_type || i.menu_item_type || null,
             addons: (i._addons || []).map(a => ({ name: a.addon_name, price: a.unit_price, quantity: a.quantity })),
             addonsText: i._addonsText || null,
@@ -324,6 +328,7 @@ const kotService = {
             itemName: i.name,
             variantName: i.variant,
             quantity: i.quantity,
+            weight: i.weight || null,
             itemType: i.itemType,
             addonsText: i.addonsText,
             instructions: i.specialInstructions
@@ -764,7 +769,10 @@ const kotService = {
         [id]
       ),
       pool.query(
-        'SELECT * FROM kot_items WHERE kot_id = ? ORDER BY id',
+        `SELECT ki.*, oi.weight, oi.is_open_item
+         FROM kot_items ki
+         LEFT JOIN order_items oi ON ki.order_item_id = oi.id
+         WHERE ki.kot_id = ? ORDER BY ki.id`,
         [id]
       )
     ]);
@@ -808,7 +816,10 @@ const kotService = {
     if (!rows[0]) return null;
     const kot = rows[0];
     const [items] = await connection.query(
-      'SELECT * FROM kot_items WHERE kot_id = ? ORDER BY id', [id]
+      `SELECT ki.*, oi.weight, oi.is_open_item
+       FROM kot_items ki
+       LEFT JOIN order_items oi ON ki.order_item_id = oi.id
+       WHERE ki.kot_id = ? ORDER BY ki.id`, [id]
     );
     for (const item of items) {
       const [addons] = await connection.query(
@@ -887,7 +898,10 @@ const kotService = {
     const kotIds = kots.map(k => k.id);
     if (kotIds.length > 0) {
       const [allItems] = await pool.query(
-        'SELECT * FROM kot_items WHERE kot_id IN (?) ORDER BY id',
+        `SELECT ki.*, oi.weight, oi.is_open_item
+         FROM kot_items ki
+         LEFT JOIN order_items oi ON ki.order_item_id = oi.id
+         WHERE ki.kot_id IN (?) ORDER BY ki.id`,
         [kotIds]
       );
       const allOrderItemIds = allItems.map(i => i.order_item_id).filter(Boolean);
@@ -929,7 +943,10 @@ const kotService = {
     const kotIds = kots.map(k => k.id);
     if (kotIds.length > 0) {
       const [allItems] = await pool.query(
-        'SELECT * FROM kot_items WHERE kot_id IN (?) ORDER BY id',
+        `SELECT ki.*, oi.weight, oi.is_open_item
+         FROM kot_items ki
+         LEFT JOIN order_items oi ON ki.order_item_id = oi.id
+         WHERE ki.kot_id IN (?) ORDER BY ki.id`,
         [kotIds]
       );
       const allOrderItemIds = allItems.map(i => i.order_item_id).filter(Boolean);
@@ -1114,6 +1131,7 @@ const kotService = {
           itemName: i.name,
           variantName: i.variantName,
           quantity: i.quantity,
+          weight: i.weight || null,
           itemType: i.itemType,
           addonsText: i.addonsText,
           instructions: i.specialInstructions

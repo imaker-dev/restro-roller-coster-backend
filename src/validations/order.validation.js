@@ -40,6 +40,7 @@ module.exports = {
       isOpenItem: Joi.boolean().default(false),
       openItemName: Joi.string().max(150).when('isOpenItem', { is: true, then: Joi.required(), otherwise: Joi.allow('', null) }),
       openItemPrice: Joi.number().min(0).when('isOpenItem', { is: true, then: Joi.required(), otherwise: Joi.allow(null) }),
+      weight: Joi.string().max(50).allow('', null).default(null),
       ingredients: Joi.array().items(Joi.object({
         ingredientId: Joi.number().integer().positive().required(),
         quantity: Joi.number().positive().required(),

@@ -463,7 +463,7 @@ const orderService = {
         const {
           itemId, variantId, quantity, addons = [],
           specialInstructions, isComplimentary = false, complimentaryReason,
-          isOpenItem = false, openItemName, openItemPrice,
+          isOpenItem = false, openItemName, openItemPrice, weight = null,
           ingredients: openItemIngredients  // Optional: ad-hoc ingredients for stock deduction
         } = item;
 
@@ -517,16 +517,17 @@ const orderService = {
           }
 
           // Insert open item into order_items
+          const oiWeight = weight && weight.trim() ? weight.trim() : null;
           const [itemResult] = await connection.query(
             `INSERT INTO order_items (
               order_id, item_id, variant_id, item_name, variant_name, item_type,
-              quantity, unit_price, base_price, tax_amount, total_price,
+              quantity, weight, unit_price, base_price, tax_amount, total_price,
               tax_group_id, tax_details, special_instructions,
               status, is_complimentary, complimentary_reason, is_open_item, created_by
-            ) VALUES (?, ?, NULL, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, 1, ?)`,
+            ) VALUES (?, ?, NULL, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, 1, ?)`,
             [
               orderId, itemId, openItemName.trim(), template.item_type,
-              quantity, oiPrice, oiPrice, taxAmount, oiTotalPrice,
+              quantity, oiWeight, oiPrice, oiPrice, taxAmount, oiTotalPrice,
               taxGroupId, JSON.stringify(taxDetails), specialInstructions,
               isComplimentary, complimentaryReason, createdBy
             ]
@@ -552,6 +553,7 @@ const orderService = {
             variantId: null,
             variantName: null,
             quantity,
+            weight: oiWeight,
             unitPrice: oiPrice,
             totalPrice: oiTotalPrice,
             taxAmount,
@@ -1063,6 +1065,7 @@ const orderService = {
         ncAmount: parseFloat(item.nc_amount) || 0,
         ncReason: item.nc_reason || null,
         isOpenItem: !!item.is_open_item,
+        weight: item.weight || null,
         createdAt: item.created_at,
         updatedAt: item.updated_at
       };
@@ -1530,6 +1533,7 @@ const orderService = {
       itemType: it.item_type || null,
       tags: it.item_tags || null,
       isOpenItem: !!it.is_open_item,
+      weight: it.weight || null,
       stationName: it.station_name || null,
       stationType: it.station_type || null,
       counterName: it.counter_name || null,
