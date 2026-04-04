@@ -75,6 +75,11 @@ const menuEngineService = {
     const { floorId, sectionId, tableId, time, includeDetails = true, skipTimeSlotFilter = false, serviceType } = context;
     const pool = getPool();
 
+    // Check Redis cache (60s TTL — prevents duplicate heavy queries from multiple tablets)
+    const cacheKey = `menu:build:${outletId}:${floorId || 0}:${sectionId || 0}:${context.timeSlotId || 0}:${skipTimeSlotFilter ? 1 : 0}:${serviceType || 'all'}`;
+    const cached = await cache.get(cacheKey);
+    if (cached) return cached;
+
     // Get current time slot (skip if skipTimeSlotFilter is true)
     let timeSlotId = null;
     if (!skipTimeSlotFilter) {
@@ -238,7 +243,7 @@ const menuEngineService = {
       }
     }
 
-    return {
+    const result = {
       outletId,
       context: menuContext,
       timeSlot: timeSlotId ? await timeSlotService.getById(timeSlotId) : null,
@@ -247,6 +252,11 @@ const menuEngineService = {
       totalCategories: menu.length,
       totalItems: menu.reduce((sum, c) => sum + c.items.length, 0)
     };
+
+    // Cache for 60s (prevents duplicate heavy queries from multiple tablets)
+    cache.set(cacheKey, result, 60).catch(() => {});
+
+    return result;
   },
 
   /**

@@ -1104,22 +1104,23 @@ const tableService = {
       throw new Error(`Invalid status: ${status}`);
     }
 
-    const table = await this.getById(id);
+    // Lightweight query — only need status, floor_id, outlet_id, table_number for broadcast
+    const [[table]] = await pool.query(
+      'SELECT id, table_number, name, status, floor_id, outlet_id FROM tables WHERE id = ?',
+      [id]
+    );
     if (!table) throw new Error('Table not found');
 
     const oldStatus = table.status;
 
     await pool.query('UPDATE tables SET status = ? WHERE id = ?', [status, id]);
 
-    // Log status change
-    await this.logHistory(id, 'status_change', {
-      from: oldStatus,
-      to: status,
-      changedBy: userId,
-      ...additionalData
-    });
+    // Fire-and-forget: log + cache (don't block response)
+    Promise.all([
+      this.logHistory(id, 'status_change', { from: oldStatus, to: status, changedBy: userId, ...additionalData }),
+      this.invalidateCache(table.outlet_id, table.floor_id, id)
+    ]).catch(err => logger.error('updateStatus post-update error:', err.message));
 
-    // Broadcast real-time update
     this.broadcastTableUpdate(table.outlet_id, table.floor_id, {
       tableId: id,
       tableNumber: table.table_number,
@@ -1129,8 +1130,8 @@ const tableService = {
       timestamp: new Date()
     });
 
-    await this.invalidateCache(table.outlet_id, table.floor_id, id);
-    return this.getById(id);
+    // Return lightweight result instead of redundant getById (4 JOINs)
+    return { id: table.id, tableNumber: table.table_number, name: table.name, status, floorId: table.floor_id, outletId: table.outlet_id };
   },
 
   /**
@@ -1178,35 +1179,38 @@ const tableService = {
    */
   async startSession(tableId, data, userId) {
     const pool = getPool();
-    const connection = await pool.getConnection();
 
+    // ── Pre-transaction validation (no connection held) ──
+    // Lightweight single-table query instead of getById (4 JOINs)
+    const [[table]] = await pool.query(
+      `SELECT id, table_number, name, status, floor_id, outlet_id
+       FROM tables WHERE id = ? AND is_active = 1`,
+      [tableId]
+    );
+    if (!table) throw new Error('Table not found');
+    if (table.status !== 'available' && table.status !== 'reserved') {
+      throw new Error(`Table is currently ${table.status}`);
+    }
+
+    // Validate floor shift BEFORE acquiring transaction connection
+    if (table.floor_id) {
+      const [[shift]] = await pool.query(
+        `SELECT ds.id FROM day_sessions ds
+         WHERE ds.floor_id = ? AND ds.outlet_id = ? AND ds.status = 'open'
+         ORDER BY ds.id DESC LIMIT 1`,
+        [table.floor_id, table.outlet_id]
+      );
+      if (!shift) {
+        const [[floor]] = await pool.query('SELECT name FROM floors WHERE id = ?', [table.floor_id]);
+        const floorName = floor?.name || `Floor ${table.floor_id}`;
+        throw new Error(`Shift not opened for ${floorName}. Please ask the assigned cashier to open the shift first.`);
+      }
+    }
+
+    // ── Transaction: only write operations (fast) ──
+    const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
-
-      const table = await this.getById(tableId);
-      if (!table) throw new Error('Table not found');
-      if (table.status !== 'available' && table.status !== 'reserved') {
-        throw new Error(`Table is currently ${table.status}`);
-      }
-
-      // Validate floor shift is open before starting session
-      // No session_date filter - shifts can remain open across days (manual close only)
-      if (table.floor_id) {
-        const [floorShift] = await connection.query(
-          `SELECT ds.id, ds.status, f.name as floor_name
-           FROM day_sessions ds
-           JOIN floors f ON ds.floor_id = f.id
-           WHERE ds.outlet_id = ? AND ds.floor_id = ? AND ds.status = 'open'
-           ORDER BY ds.id DESC LIMIT 1`,
-          [table.outlet_id, table.floor_id]
-        );
-        
-        if (!floorShift[0]) {
-          const [floor] = await connection.query('SELECT name FROM floors WHERE id = ?', [table.floor_id]);
-          const floorName = floor[0]?.name || `Floor ${table.floor_id}`;
-          throw new Error(`Shift not opened for ${floorName}. Please ask the assigned cashier to open the shift first.`);
-        }
-      }
 
       // Close any existing active sessions for this table to prevent duplicates
       await connection.query(
@@ -1234,23 +1238,34 @@ const tableService = {
 
       await connection.commit();
 
-      // Log and broadcast
-      await this.logHistory(tableId, 'session_started', {
-        sessionId: result.insertId,
-        guestCount: data.guestCount,
-        startedBy: userId
-      });
+      const sessionId = result.insertId;
+
+      // Fire-and-forget: log, broadcast, cache (don't block response)
+      Promise.all([
+        this.logHistory(tableId, 'session_started', { sessionId, guestCount: data.guestCount, startedBy: userId }),
+        this.invalidateCache(table.outlet_id, table.floor_id, tableId)
+      ]).catch(err => logger.error('startSession post-commit error:', err.message));
 
       this.broadcastTableUpdate(table.outlet_id, table.floor_id, {
         tableId,
         tableNumber: table.table_number,
         event: 'session_started',
-        sessionId: result.insertId,
+        sessionId,
         captain: userId
       });
 
-      await this.invalidateCache(table.outlet_id, table.floor_id, tableId);
-      return { sessionId: result.insertId, table: await this.getById(tableId) };
+      // Return lightweight result (skip redundant getById with 4 JOINs)
+      return {
+        sessionId,
+        table: {
+          id: table.id,
+          tableNumber: table.table_number,
+          name: table.name,
+          status: 'occupied',
+          floorId: table.floor_id,
+          outletId: table.outlet_id
+        }
+      };
 
     } catch (error) {
       await connection.rollback();

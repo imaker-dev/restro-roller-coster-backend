@@ -215,115 +215,110 @@ const orderService = {
    */
   async createOrder(data) {
     const pool = getPool();
-    const connection = await pool.getConnection();
 
+    const {
+      outletId, tableId, floorId, sectionId, orderType = 'dine_in',
+      customerId, customerName, customerPhone, guestCount = 1,
+      specialInstructions, createdBy
+    } = data;
+
+    // ── Pre-transaction validation (no connection held) ──
+    let tableInfo = null;
+    let existingSession = null;
+    let isPrivileged = false;
+    let needNewSession = false;
+
+    if (tableId && orderType === 'dine_in') {
+      // Parallel: table info + active session + user roles (all independent reads)
+      const [tableResult, sessionResult, roleResult] = await Promise.all([
+        pool.query(
+          'SELECT id, table_number, name, status, floor_id, outlet_id FROM tables WHERE id = ? AND is_active = 1',
+          [tableId]
+        ),
+        pool.query(
+          'SELECT * FROM table_sessions WHERE table_id = ? AND status = \'active\' ORDER BY id DESC LIMIT 1',
+          [tableId]
+        ),
+        pool.query(
+          `SELECT r.slug as role_name FROM user_roles ur 
+           JOIN roles r ON ur.role_id = r.id 
+           WHERE ur.user_id = ? AND ur.is_active = 1`,
+          [createdBy]
+        )
+      ]);
+
+      tableInfo = tableResult[0][0] || null;
+      existingSession = sessionResult[0][0] || null;
+      const userRoles = roleResult[0];
+      isPrivileged = userRoles.some(r => ['admin', 'manager', 'super_admin', 'cashier'].includes(r.role_name));
+
+      if (existingSession) {
+        if (existingSession.order_id) {
+          // Check if existing order is terminal
+          const [[existingOrder]] = await pool.query(
+            'SELECT id, status, payment_status FROM orders WHERE id = ?',
+            [existingSession.order_id]
+          );
+          const orderStatus = existingOrder?.status;
+          const paymentStatus = existingOrder?.payment_status;
+
+          if (['paid', 'completed', 'cancelled'].includes(orderStatus) || paymentStatus === 'paid') {
+            needNewSession = true; // Will end old + create new inside transaction
+          } else if (isPrivileged) {
+            needNewSession = true; // Privileged user force-ends stuck session
+          } else {
+            throw new Error(`Table already has an active order (Order ID: ${existingSession.order_id}). Use existing order or end session first.`);
+          }
+        } else {
+          // Session exists but no order — check ownership
+          const sessionOwnerId = parseInt(existingSession.started_by, 10);
+          const currentUserId = parseInt(createdBy, 10);
+
+          if (sessionOwnerId !== currentUserId && !isPrivileged) {
+            const [[sessionOwner]] = await pool.query('SELECT name FROM users WHERE id = ?', [sessionOwnerId]);
+            const ownerName = sessionOwner?.name || `User ID ${sessionOwnerId}`;
+            throw new Error(`This table session was started by ${ownerName}. Only they can create orders for this table, or contact a manager to transfer the table.`);
+          }
+          // Use existing session (will be linked inside transaction)
+        }
+      } else {
+        // No session — will create inline inside transaction
+        needNewSession = true;
+      }
+    }
+
+    // ── Transaction: only writes + order number generation ──
+    const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
 
-      const {
-        outletId, tableId, floorId, sectionId, orderType = 'dine_in',
-        customerId, customerName, customerPhone, guestCount = 1,
-        specialInstructions, createdBy
-      } = data;
-
-      // Generate order number within the transaction to prevent race conditions
+      // Generate order number (needs transaction for race-condition safety)
       const orderNumber = await this.generateOrderNumber(outletId, connection);
       const uuid = uuidv4();
 
-      // Get or create table session
       let tableSessionId = null;
-      if (tableId && orderType === 'dine_in') {
-        // Check for existing active session
-        const existingSession = await tableService.getActiveSession(tableId);
-        
-        if (existingSession) {
-          // Check if user is privileged (admin/manager/cashier)
-          const [userRoles] = await connection.query(
-            `SELECT r.slug as role_name FROM user_roles ur 
-             JOIN roles r ON ur.role_id = r.id 
-             WHERE ur.user_id = ? AND ur.is_active = 1`,
-            [createdBy]
-          );
-          const isPrivileged = userRoles.some(r => ['admin', 'manager', 'super_admin', 'cashier'].includes(r.role_name));
-          
-          // Session exists - verify ownership or authorization
-          if (existingSession.order_id) {
-            // Check if the existing order is in a terminal state (paid/completed/cancelled)
-            const [existingOrder] = await connection.query(
-              'SELECT id, status, payment_status FROM orders WHERE id = ?',
-              [existingSession.order_id]
-            );
-            const orderStatus = existingOrder[0]?.status;
-            const paymentStatus = existingOrder[0]?.payment_status;
-            
-            // If order is completed/paid/cancelled, end the old session and create new one
-            if (['paid', 'completed', 'cancelled'].includes(orderStatus) || paymentStatus === 'paid') {
-              // End the old session
-              await connection.query(
-                `UPDATE table_sessions SET status = 'completed', ended_at = NOW() WHERE id = ?`,
-                [existingSession.id]
-              );
-              // Create new session below
-              const session = await tableService.startSession(tableId, {
-                guestCount,
-                guestName: customerName,
-                guestPhone: customerPhone,
-                waiterId: createdBy,
-                notes: specialInstructions
-              }, createdBy);
-              tableSessionId = session.sessionId;
-            } else if (isPrivileged) {
-              // Privileged user can force-end a stuck session (e.g., 'billed' with partial payment)
-              // End the old session
-              await connection.query(
-                `UPDATE table_sessions SET status = 'completed', ended_at = NOW(), ended_by = ? WHERE id = ?`,
-                [createdBy, existingSession.id]
-              );
-              // Create new session
-              const session = await tableService.startSession(tableId, {
-                guestCount,
-                guestName: customerName,
-                guestPhone: customerPhone,
-                waiterId: createdBy,
-                notes: specialInstructions
-              }, createdBy);
-              tableSessionId = session.sessionId;
-            } else {
-              throw new Error(`Table already has an active order (Order ID: ${existingSession.order_id}). Use existing order or end session first.`);
-            }
-          } else {
-            // Session exists but has no order_id - check ownership
-            
-            // Convert to numbers for comparison (handle type mismatch)
-            const sessionOwnerId = parseInt(existingSession.started_by, 10);
-            const currentUserId = parseInt(createdBy, 10);
-            
-            if (sessionOwnerId !== currentUserId && !isPrivileged) {
-              // Get session owner name for better error message
-              const [sessionOwner] = await connection.query(
-                'SELECT name FROM users WHERE id = ?',
-                [sessionOwnerId]
-              );
-              const ownerName = sessionOwner[0]?.name || `User ID ${sessionOwnerId}`;
-              throw new Error(`This table session was started by ${ownerName}. Only they can create orders for this table, or contact a manager to transfer the table.`);
-            }
-            
-            // Use existing session
-            tableSessionId = existingSession.id;
-          }
-        } else {
-          // No session exists - create new one
-          const session = await tableService.startSession(tableId, {
-            guestCount,
-            guestName: customerName,
-            guestPhone: customerPhone,
-            waiterId: createdBy,
-            notes: specialInstructions
-          }, createdBy);
-          tableSessionId = session.sessionId;
 
-          // Update table status to occupied
-          await tableService.updateStatus(tableId, 'occupied', createdBy);
+      if (tableId && orderType === 'dine_in') {
+        if (needNewSession) {
+          // End old session if it exists (inline — no nested transaction)
+          if (existingSession) {
+            await connection.query(
+              `UPDATE table_sessions SET status = 'completed', ended_at = NOW(), ended_by = ? WHERE id = ?`,
+              [createdBy, existingSession.id]
+            );
+          }
+          // Create new session inline (avoid nested tableService.startSession transaction)
+          const [sessionResult] = await connection.query(
+            `INSERT INTO table_sessions (table_id, guest_count, guest_name, guest_phone, started_by)
+             VALUES (?, ?, ?, ?, ?)`,
+            [tableId, guestCount, customerName || null, customerPhone || null, createdBy]
+          );
+          tableSessionId = sessionResult.insertId;
+          // Set table to occupied
+          await connection.query('UPDATE tables SET status = \'occupied\' WHERE id = ?', [tableId]);
+        } else if (existingSession) {
+          // Reuse existing session
+          tableSessionId = existingSession.id;
         }
       }
 
@@ -343,39 +338,47 @@ const orderService = {
         ]
       );
 
+      const orderId = result.insertId;
+
       // Link order to table session
       if (tableSessionId) {
         await connection.query(
           'UPDATE table_sessions SET order_id = ? WHERE id = ?',
-          [result.insertId, tableSessionId]
+          [orderId, tableSessionId]
         );
       }
 
       await connection.commit();
 
-      // Read order using pool (connection is still held but committed)
-      let order = await this.getById(result.insertId);
-      
-      // Fallback: if pool read fails due to visibility lag, read via connection
-      if (!order) {
-        const [rows] = await connection.query(
-          `SELECT o.*, t.table_number, t.name as table_name,
-            f.name as floor_name, s.name as section_name,
-            u.name as created_by_name
-           FROM orders o
-           LEFT JOIN tables t ON o.table_id = t.id
-           LEFT JOIN floors f ON o.floor_id = f.id
-           LEFT JOIN sections s ON o.section_id = s.id
-           LEFT JOIN users u ON o.created_by = u.id
-           WHERE o.id = ?`,
-          [result.insertId]
-        );
-        order = rows[0] || null;
-      }
+      // Lightweight inline read instead of heavy getById (already have most data)
+      const [rows] = await pool.query(
+        `SELECT o.*, t.table_number, t.name as table_name,
+          f.name as floor_name, s.name as section_name,
+          u.name as created_by_name
+         FROM orders o
+         LEFT JOIN tables t ON o.table_id = t.id
+         LEFT JOIN floors f ON o.floor_id = f.id
+         LEFT JOIN sections s ON o.section_id = s.id
+         LEFT JOIN users u ON o.created_by = u.id
+         WHERE o.id = ?`,
+        [orderId]
+      );
+      const order = rows[0] || null;
 
-      // Emit realtime event
+      // Fire-and-forget: emit event + cache invalidation (don't block response)
       if (order) {
-        await this.emitOrderUpdate(outletId, order, 'order:created');
+        this.emitOrderUpdate(outletId, order, 'order:created').catch(err =>
+          logger.error('createOrder event emit error:', err.message)
+        );
+      }
+      if (tableInfo && needNewSession) {
+        tableService.invalidateCache(tableInfo.outlet_id, tableInfo.floor_id, tableId).catch(err =>
+          logger.error('createOrder cache invalidation error:', err.message)
+        );
+        tableService.broadcastTableUpdate(tableInfo.outlet_id, tableInfo.floor_id, {
+          tableId, tableNumber: tableInfo.table_number,
+          event: 'session_started', captain: createdBy
+        });
       }
 
       return order;
@@ -459,6 +462,19 @@ const orderService = {
         sectionId: order.section_id
       };
 
+      // Pre-fetch user roles ONCE (used by open item check + ownership check above)
+      let creatorRolesCache = null;
+      const hasOpenItems = items.some(i => i.isOpenItem);
+      if (hasOpenItems) {
+        const [creatorRoles] = await connection.query(
+          `SELECT r.slug FROM user_roles ur
+           JOIN roles r ON ur.role_id = r.id
+           WHERE ur.user_id = ? AND ur.is_active = 1`,
+          [createdBy]
+        );
+        creatorRolesCache = creatorRoles;
+      }
+
       for (const item of items) {
         const {
           itemId, variantId, quantity, addons = [],
@@ -469,15 +485,9 @@ const orderService = {
 
         // ── OPEN ITEM FLOW ──────────────────────────
         if (isOpenItem) {
-          // Role check: only cashier/manager/admin can add open items
-          const [creatorRoles] = await connection.query(
-            `SELECT r.slug FROM user_roles ur
-             JOIN roles r ON ur.role_id = r.id
-             WHERE ur.user_id = ? AND ur.is_active = 1`,
-            [createdBy]
-          );
+          // Role check: only cashier/manager/admin can add open items (pre-fetched)
           const allowedOpenItemRoles = ['cashier', 'manager', 'admin', 'super_admin'];
-          if (!creatorRoles.some(r => allowedOpenItemRoles.includes(r.slug))) {
+          if (!creatorRolesCache || !creatorRolesCache.some(r => allowedOpenItemRoles.includes(r.slug))) {
             throw new Error('Only cashier, manager or admin can add open items');
           }
 
@@ -641,14 +651,17 @@ const orderService = {
 
         const orderItemId = itemResult.insertId;
 
-        // Insert addons
-        for (const addon of addonDetails) {
+        // Batch insert addons (single query instead of N sequential inserts)
+        if (addonDetails.length > 0) {
+          const addonValues = addonDetails.map(addon => 
+            [orderItemId, addon.id, addon.addon_group_id, addon.name, addon.group_name, 1, addon.price, addon.price]
+          );
           await connection.query(
             `INSERT INTO order_item_addons (
               order_item_id, addon_id, addon_group_id, addon_name, addon_group_name,
               quantity, unit_price, total_price
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-            [orderItemId, addon.id, addon.addon_group_id, addon.name, addon.group_name, 1, addon.price, addon.price]
+            ) VALUES ?`,
+            [addonValues]
           );
         }
 
@@ -682,9 +695,26 @@ const orderService = {
 
       await connection.commit();
 
-      // Get updated order
-      const updatedOrder = await this.getById(orderId);
-      await this.emitOrderUpdate(order.outlet_id, updatedOrder, 'order:items_added');
+      // Lightweight order read after commit (replaces heavy getById with 4 JOINs)
+      const [updatedRows] = await pool.query(
+        `SELECT o.*, t.table_number, t.name as table_name,
+          f.name as floor_name, s.name as section_name,
+          u.name as created_by_name
+         FROM orders o
+         LEFT JOIN tables t ON o.table_id = t.id
+         LEFT JOIN floors f ON o.floor_id = f.id
+         LEFT JOIN sections s ON o.section_id = s.id
+         LEFT JOIN users u ON o.created_by = u.id
+         WHERE o.id = ?`,
+        [orderId]
+      );
+      const updatedOrder = updatedRows[0] || null;
+
+      // Fire-and-forget: emit update (don't block response)
+      if (updatedOrder) {
+        this.emitOrderUpdate(order.outlet_id, updatedOrder, 'order:items_added')
+          .catch(err => logger.error('addItems emit error:', err.message));
+      }
 
       return { order: updatedOrder, addedItems };
     } catch (error) {
@@ -881,13 +911,16 @@ const orderService = {
     if (!orderRows[0]) return null;
     const order = orderRows[0];
 
-    // Run independent queries in parallel (items, discounts, payments, invoice, KOTs)
+    // Run ALL 7 queries in parallel (items, discounts, payments, invoice, KOTs, addons, splits)
+    // Addons & splits use subqueries so they don't depend on prior results
     const [
       [items],
       [discounts],
       [payments],
       [invoiceRows],
-      kotRows
+      kotRows,
+      allAddons,
+      allSplits
     ] = await Promise.all([
       pool.query(
         `SELECT oi.*, 
@@ -929,60 +962,58 @@ const orderService = {
         [orderId]
       ),
       pool.query(
-        `SELECT k.id, k.kot_number, k.status, k.station_id, k.created_at,
+        `SELECT kt.id, kt.kot_number, kt.status, kt.station_id, kt.created_at,
           ks.name as station_name
-         FROM kot k
-         LEFT JOIN kitchen_stations ks ON k.station_id = ks.id
-         WHERE k.order_id = ?
-         ORDER BY k.created_at DESC`,
+         FROM kot_tickets kt
+         LEFT JOIN kitchen_stations ks ON kt.station_id = ks.id
+         WHERE kt.order_id = ?
+         ORDER BY kt.created_at DESC`,
         [orderId]
-      ).then(([rows]) => rows).catch(() => [])
+      ).then(([rows]) => rows).catch(() => []),
+      // Addons via subquery (no dependency on items result)
+      pool.query(
+        `SELECT oia.* FROM order_item_addons oia
+         WHERE oia.order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)`,
+        [orderId]
+      ).then(([rows]) => rows),
+      // Split breakdowns via subquery (no dependency on payments result)
+      pool.query(
+        `SELECT sp.* FROM split_payments sp
+         WHERE sp.payment_id IN (SELECT id FROM payments WHERE order_id = ? AND payment_mode = 'split')`,
+        [orderId]
+      ).then(([rows]) => rows)
     ]);
 
-    // Get addons for ALL items in one query (avoids N+1)
-    const itemIds = items.map(i => i.id);
+    // Build addons map from parallel-fetched results
     let addonsMap = {};
-    if (itemIds.length > 0) {
-      const [allAddons] = await pool.query(
-        'SELECT * FROM order_item_addons WHERE order_item_id IN (?)',
-        [itemIds]
-      );
-      for (const addon of allAddons) {
-        if (!addonsMap[addon.order_item_id]) addonsMap[addon.order_item_id] = [];
-        addonsMap[addon.order_item_id].push({
-          id: addon.id,
-          addonId: addon.addon_id,
-          addonName: addon.addon_name,
-          quantity: addon.quantity,
-          unitPrice: parseFloat(addon.unit_price) || 0,
-          totalPrice: parseFloat(addon.total_price) || 0
-        });
-      }
+    for (const addon of allAddons) {
+      if (!addonsMap[addon.order_item_id]) addonsMap[addon.order_item_id] = [];
+      addonsMap[addon.order_item_id].push({
+        id: addon.id,
+        addonId: addon.addon_id,
+        addonName: addon.addon_name,
+        quantity: addon.quantity,
+        unitPrice: parseFloat(addon.unit_price) || 0,
+        totalPrice: parseFloat(addon.total_price) || 0
+      });
     }
 
-    // Batch-fetch split payment breakdowns (avoids N+1)
-    const splitPaymentIds = payments.filter(p => p.payment_mode === 'split').map(p => p.id);
+    // Build split map from parallel-fetched results
     let splitMap = {};
-    if (splitPaymentIds.length > 0) {
-      const [allSplits] = await pool.query(
-        'SELECT * FROM split_payments WHERE payment_id IN (?)',
-        [splitPaymentIds]
-      );
-      for (const sp of allSplits) {
-        if (!splitMap[sp.payment_id]) splitMap[sp.payment_id] = [];
-        splitMap[sp.payment_id].push({
-          id: sp.id,
-          paymentMode: sp.payment_mode,
-          amount: parseFloat(sp.amount) || 0,
-          transactionId: sp.transaction_id,
-          referenceNumber: sp.reference_number,
-          cardLastFour: sp.card_last_four,
-          cardType: sp.card_type,
-          upiId: sp.upi_id,
-          walletProvider: sp.wallet_provider,
-          notes: sp.notes
-        });
-      }
+    for (const sp of allSplits) {
+      if (!splitMap[sp.payment_id]) splitMap[sp.payment_id] = [];
+      splitMap[sp.payment_id].push({
+        id: sp.id,
+        paymentMode: sp.payment_mode,
+        amount: parseFloat(sp.amount) || 0,
+        transactionId: sp.transaction_id,
+        referenceNumber: sp.reference_number,
+        cardLastFour: sp.card_last_four,
+        cardType: sp.card_type,
+        upiId: sp.upi_id,
+        walletProvider: sp.wallet_provider,
+        notes: sp.notes
+      });
     }
 
     // Calculate tax breakdown from items
@@ -1338,12 +1369,13 @@ const orderService = {
     let query = `
       SELECT o.*, t.table_number, t.name as table_name,
         f.name as floor_name, s.name as section_name,
-        (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.status != 'cancelled') as item_count,
-        (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.status = 'ready') as ready_count
+        COUNT(CASE WHEN oi.status != 'cancelled' THEN 1 END) as item_count,
+        COUNT(CASE WHEN oi.status = 'ready' THEN 1 END) as ready_count
       FROM orders o
       LEFT JOIN tables t ON o.table_id = t.id
       LEFT JOIN floors f ON o.floor_id = f.id
       LEFT JOIN sections s ON o.section_id = s.id
+      LEFT JOIN order_items oi ON oi.order_id = o.id
       WHERE o.outlet_id = ? AND o.status NOT IN ('paid', 'completed', 'cancelled')
     `;
     const params = [outletId];
@@ -1368,7 +1400,7 @@ const orderService = {
       params.push(filters.createdBy);
     }
 
-    query += ' ORDER BY o.is_priority DESC, o.created_at DESC';
+    query += ' GROUP BY o.id ORDER BY o.is_priority DESC, o.created_at DESC';
 
     const [orders] = await pool.query(query, params);
     return orders;
