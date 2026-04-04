@@ -69,11 +69,12 @@ const initializeSocket = (server) => {
     }
   }
 
-  // Log all incoming requests to Socket.IO
-  io.engine.on('initial_headers', (headers, req) => {
-    logger.debug(`[Socket.IO] Incoming request: ${req.method} ${req.url}`);
-    logger.debug(`[Socket.IO] Headers: ${JSON.stringify(req.headers)}`);
-  });
+  // Log incoming requests only in development (too verbose for production at 1000+ connections)
+  if (process.env.NODE_ENV !== 'production') {
+    io.engine.on('initial_headers', (headers, req) => {
+      logger.debug(`[Socket.IO] Incoming request: ${req.method} ${req.url}`);
+    });
+  }
 
   // Log connection errors at engine level (before 'connection' event)
   io.engine.on('connection_error', (err) => {
@@ -85,12 +86,9 @@ const initializeSocket = (server) => {
     }
   });
 
-  // Log handshake attempts
+  // Log handshake attempts (debug level only — avoid I/O overhead at scale)
   io.use((socket, next) => {
-    logger.info(`[Socket.IO] Handshake attempt from ${socket.handshake.address}`);
-    logger.info(`[Socket.IO] Query params: ${JSON.stringify(socket.handshake.query)}`);
-    logger.info(`[Socket.IO] Headers: ${JSON.stringify(socket.handshake.headers)}`);
-    logger.info(`[Socket.IO] Auth: ${JSON.stringify(socket.handshake.auth)}`);
+    logger.debug(`[Socket.IO] Handshake: ${socket.handshake.address} transport=${socket.handshake.query?.transport || 'unknown'}`);
     next();
   });
 
@@ -310,6 +308,32 @@ const setupRedisPubSub = () => {
   pubsub.subscribe('notification', (data) => {
     io.to(`outlet:${data.outletId}`).emit('notification', data);
   });
+
+  // Shift open - notify floor captains/staff on SAME floor + the cashier who opened it
+  pubsub.subscribe('shift:open', (data) => {
+    logger.info(`[RedisPubSub] shift:open - outlet: ${data.outletId}, floor: ${data.floorId}, cashier: ${data.cashierName}`);
+    // Send to specific floor room (captains/staff on this floor only)
+    if (data.floorId) {
+      io.to(`floor:${data.outletId}:${data.floorId}`).emit('shift:opened', data);
+      logger.info(`[RedisPubSub] shift:opened emitted to floor:${data.outletId}:${data.floorId}`);
+    }
+    // Also send to cashier room so the opening cashier receives confirmation
+    io.to(`cashier:${data.outletId}`).emit('shift:opened', data);
+    logger.info(`[RedisPubSub] shift:opened emitted to cashier:${data.outletId}`);
+  });
+
+  // Shift close - notify floor captains/staff on SAME floor + the cashier who closed it
+  pubsub.subscribe('shift:close', (data) => {
+    logger.info(`[RedisPubSub] shift:close - outlet: ${data.outletId}, floor: ${data.floorId}, cashier: ${data.cashierName}`);
+    // Send to specific floor room (captains/staff on this floor only)
+    if (data.floorId) {
+      io.to(`floor:${data.outletId}:${data.floorId}`).emit('shift:closed', data);
+      logger.info(`[RedisPubSub] shift:closed emitted to floor:${data.outletId}:${data.floorId}`);
+    }
+    // Also send to cashier room so the closing cashier receives confirmation
+    io.to(`cashier:${data.outletId}`).emit('shift:closed', data);
+    logger.info(`[RedisPubSub] shift:closed emitted to cashier:${data.outletId}`);
+  });
 };
 
 const getSocketIO = () => {
@@ -390,6 +414,24 @@ const emitLocal = (channel, data) => {
 
       case 'print:new_job':
         io.to(`outlet:${data.outletId}`).emit('print:new_job', data);
+        break;
+
+      case 'shift:open':
+        // Send to floor room (same floor captains/staff) + cashier room
+        logger.info(`[emitLocal] shift:open - outlet: ${data.outletId}, floor: ${data.floorId}, cashier: ${data.cashierName}`);
+        if (data.floorId) {
+          io.to(`floor:${data.outletId}:${data.floorId}`).emit('shift:opened', data);
+        }
+        io.to(`cashier:${data.outletId}`).emit('shift:opened', data);
+        break;
+
+      case 'shift:close':
+        // Send to floor room (same floor captains/staff) + cashier room
+        logger.info(`[emitLocal] shift:close - outlet: ${data.outletId}, floor: ${data.floorId}, cashier: ${data.cashierName}`);
+        if (data.floorId) {
+          io.to(`floor:${data.outletId}:${data.floorId}`).emit('shift:closed', data);
+        }
+        io.to(`cashier:${data.outletId}`).emit('shift:closed', data);
         break;
 
       default:

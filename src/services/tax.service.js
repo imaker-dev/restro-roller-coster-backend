@@ -445,6 +445,11 @@ const taxService = {
   },
 
   async getDiscounts(outletId, filters = {}) {
+    // Cache discount list per outlet (5 min) — discounts rarely change
+    const cacheKey = `discounts:outlet:${outletId}:${filters.code || ''}:${filters.activeOnly || ''}:${filters.autoApplyOnly || ''}`;
+    const cached = await cache.get(cacheKey);
+    if (cached) return cached;
+
     const pool = getPool();
     let query = `SELECT * FROM discounts WHERE outlet_id = ? AND is_active = 1`;
     const params = [outletId];
@@ -464,12 +469,15 @@ const taxService = {
     query += ' ORDER BY priority DESC, created_at DESC';
 
     const [discounts] = await pool.query(query, params);
-    return discounts.map(d => ({
+    const result = discounts.map(d => ({
       ...d,
       category_ids: d.category_ids ? JSON.parse(d.category_ids) : [],
       item_ids: d.item_ids ? JSON.parse(d.item_ids) : [],
       order_types: d.order_types ? JSON.parse(d.order_types) : []
     }));
+
+    await cache.set(cacheKey, result, 300);
+    return result;
   },
 
   async validateDiscountCode(outletId, code, orderAmount, orderType) {

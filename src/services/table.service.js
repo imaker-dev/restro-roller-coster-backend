@@ -4,6 +4,29 @@ const { emit } = require('../config/socket');
 const logger = require('../utils/logger');
 const { prefixImageUrl } = require('../utils/helpers');
 
+// In-memory cache for service charge config (per outlet, 5 min TTL)
+const _scCache = {};
+function _getCachedServiceCharge(pool, outletId) {
+  const now = Date.now();
+  const entry = _scCache[outletId];
+  if (entry && entry.expiry > now) return Promise.resolve(entry.data);
+  return pool.query(
+    'SELECT name, rate, is_percentage, apply_on, is_taxable, is_optional FROM service_charges WHERE outlet_id = ? AND is_active = 1 LIMIT 1',
+    [outletId]
+  ).then(([rows]) => {
+    const config = rows[0] ? {
+      name: rows[0].name,
+      rate: parseFloat(rows[0].rate),
+      isPercentage: !!rows[0].is_percentage,
+      applyOn: rows[0].apply_on,
+      isTaxable: !!rows[0].is_taxable,
+      isOptional: !!rows[0].is_optional
+    } : null;
+    _scCache[outletId] = { data: config, expiry: now + 300000 };
+    return config;
+  }).catch(() => null);
+}
+
 /**
  * Get local date string (YYYY-MM-DD) accounting for server timezone
  */
@@ -110,7 +133,7 @@ const tableService = {
       );
     }
 
-    await this.invalidateCache(data.outletId, data.floorId);
+    await this.invalidateCache(data.outletId, data.floorId, tableId);
     return this.getById(tableId);
   },
 
@@ -141,6 +164,11 @@ const tableService = {
    * Returns all status-specific information including orders, items, captain, KOTs, etc.
    */
   async getFullDetails(id) {
+    // Short-lived cache (2s) — prevents thundering herd when 100+ tables polled at peak
+    const _cacheKey = `table:detail:${id}`;
+    const _cached = await cache.get(_cacheKey);
+    if (_cached) return _cached;
+
     const pool = getPool();
     
     // Parallel: table + session + merges + history (all independent, all use only table id)
@@ -270,42 +298,68 @@ const tableService = {
 
         // Get order details if exists
         if (session.order_id) {
-          const [orders] = await pool.query(
-            `SELECT o.*, 
-              inv.id as invoice_id, inv.invoice_number, inv.grand_total as invoice_total,
-              p.id as payment_id, p.payment_number, p.amount as paid_amount_completed, p.payment_mode,
-              uc.name as created_by_name, ub.name as billed_by_name, ux.name as cancelled_by_name
-             FROM orders o
-             LEFT JOIN invoices inv ON o.id = inv.order_id
-             LEFT JOIN payments p ON o.id = p.order_id AND p.status = 'completed'
-             LEFT JOIN users uc ON o.created_by = uc.id
-             LEFT JOIN users ub ON o.billed_by = ub.id
-             LEFT JOIN users ux ON o.cancelled_by = ux.id
-             WHERE o.id = ?`,
-            [session.order_id]
-          );
+          const _orderId = session.order_id;
+
+          // ── Parallel batch: order + SC + items + KOTs ──
+          // (was 5 sequential queries → now 1 parallel batch + 1 addons follow-up)
+          const [_orderRes, _scConfig, _itemsRes, _kotsRes] = await Promise.all([
+            pool.query(
+              `SELECT o.*, 
+                inv.id as invoice_id, inv.invoice_number, inv.grand_total as invoice_total,
+                p.id as payment_id, p.payment_number, p.amount as paid_amount_completed, p.payment_mode,
+                uc.name as created_by_name, ub.name as billed_by_name, ux.name as cancelled_by_name
+               FROM orders o
+               LEFT JOIN invoices inv ON o.id = inv.order_id
+               LEFT JOIN payments p ON o.id = p.order_id AND p.status = 'completed'
+               LEFT JOIN users uc ON o.created_by = uc.id
+               LEFT JOIN users ub ON o.billed_by = ub.id
+               LEFT JOIN users ux ON o.cancelled_by = ux.id
+               WHERE o.id = ?`,
+              [_orderId]
+            ),
+            _getCachedServiceCharge(pool, table.outlet_id),
+            pool.query(
+              `SELECT oi.*, 
+                i.name as catalog_name, i.short_name as catalog_short_name, i.image_url, i.item_type as catalog_item_type,
+                i.base_price as menu_base_price, i.is_open_item as catalog_is_open_item,
+                v.name as catalog_variant_name, v.price as variant_menu_price,
+                ks.name as kitchen_station_name, ks.station_type,
+                tg.name as tax_group_name, tg.total_rate as tax_total_rate,
+                uc.name as cancelled_by_name,
+                unc.name as nc_by_name
+               FROM order_items oi
+               JOIN items i ON oi.item_id = i.id
+               LEFT JOIN variants v ON oi.variant_id = v.id
+               LEFT JOIN kitchen_stations ks ON i.kitchen_station_id = ks.id
+               LEFT JOIN tax_groups tg ON oi.tax_group_id = tg.id
+               LEFT JOIN users uc ON oi.cancelled_by = uc.id
+               LEFT JOIN users unc ON oi.nc_by = unc.id
+               WHERE oi.order_id = ?
+               ORDER BY oi.created_at`,
+              [_orderId]
+            ),
+            pool.query(
+              `SELECT kt.*, u.name as accepted_by_name,
+                COUNT(ki.id) as total_item_count,
+                SUM(CASE WHEN ki.status != 'cancelled' THEN 1 ELSE 0 END) as item_count,
+                SUM(CASE WHEN ki.status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_item_count
+               FROM kot_tickets kt
+               LEFT JOIN users u ON kt.accepted_by = u.id
+               LEFT JOIN kot_items ki ON ki.kot_id = kt.id
+               WHERE kt.order_id = ?
+               GROUP BY kt.id
+               ORDER BY kt.created_at`,
+              [_orderId]
+            )
+          ]);
+
+          const orders = _orderRes[0];
+          const serviceChargeConfig = _scConfig;
+          const items = _itemsRes[0];
+          const _kots = _kotsRes[0];
 
           if (orders[0]) {
             const order = orders[0];
-
-            // Fetch service charge config for outlet
-            let serviceChargeConfig = null;
-            try {
-              const [scRows] = await pool.query(
-                'SELECT * FROM service_charges WHERE outlet_id = ? AND is_active = 1 LIMIT 1',
-                [table.outlet_id]
-              );
-              if (scRows[0]) {
-                serviceChargeConfig = {
-                  name: scRows[0].name,
-                  rate: parseFloat(scRows[0].rate),
-                  isPercentage: !!scRows[0].is_percentage,
-                  applyOn: scRows[0].apply_on,
-                  isTaxable: !!scRows[0].is_taxable,
-                  isOptional: !!scRows[0].is_optional
-                };
-              }
-            } catch (e) {}
 
             result.order = {
               id: order.id,
@@ -352,28 +406,6 @@ const tableService = {
                 paymentMode: order.payment_mode
               };
             }
-
-            // Get order items with variants, addons, NC details, and full pricing
-            const [items] = await pool.query(
-              `SELECT oi.*, 
-                i.name as catalog_name, i.short_name as catalog_short_name, i.image_url, i.item_type as catalog_item_type,
-                i.base_price as menu_base_price, i.is_open_item as catalog_is_open_item,
-                v.name as catalog_variant_name, v.price as variant_menu_price,
-                ks.name as kitchen_station_name, ks.station_type,
-                tg.name as tax_group_name, tg.total_rate as tax_total_rate,
-                uc.name as cancelled_by_name,
-                unc.name as nc_by_name
-               FROM order_items oi
-               JOIN items i ON oi.item_id = i.id
-               LEFT JOIN variants v ON oi.variant_id = v.id
-               LEFT JOIN kitchen_stations ks ON i.kitchen_station_id = ks.id
-               LEFT JOIN tax_groups tg ON oi.tax_group_id = tg.id
-               LEFT JOIN users uc ON oi.cancelled_by = uc.id
-               LEFT JOIN users unc ON oi.nc_by = unc.id
-               WHERE oi.order_id = ?
-               ORDER BY oi.created_at`,
-              [order.id]
-            );
 
             // Batch-fetch addons for ALL items in one query (eliminates N+1)
             const itemIds = items.map(i => i.id);
@@ -632,22 +664,7 @@ const tableService = {
             result.order.activeItemCount = activeItems.length;
             result.order.cancelledItemCount = cancelledItems.length;
 
-            // Get KOT tickets — single JOIN instead of 3 correlated subqueries per row
-            const [kots] = await pool.query(
-              `SELECT kt.*, u.name as accepted_by_name,
-                COUNT(ki.id) as total_item_count,
-                SUM(CASE WHEN ki.status != 'cancelled' THEN 1 ELSE 0 END) as item_count,
-                SUM(CASE WHEN ki.status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_item_count
-               FROM kot_tickets kt
-               LEFT JOIN users u ON kt.accepted_by = u.id
-               LEFT JOIN kot_items ki ON ki.kot_id = kt.id
-               WHERE kt.order_id = ?
-               GROUP BY kt.id
-               ORDER BY kt.created_at`,
-              [order.id]
-            );
-
-            result.kots = kots.map(kot => ({
+            result.kots = _kots.map(kot => ({
               id: kot.id,
               kotNumber: kot.kot_number,
               status: kot.status,
@@ -668,6 +685,9 @@ const tableService = {
 
     // Add status-specific summary
     result.statusSummary = this.getStatusSummary(result);
+
+    // Cache for 2s — short enough for freshness, long enough to absorb peak polling
+    await cache.set(_cacheKey, result, 2);
 
     return result;
   },
@@ -784,7 +804,6 @@ const tableService = {
    */
   async getByFloor(floorId) {
     const pool = getPool();
-    const today = getLocalDate();
     
     // Parallel: floor info + tables + sections (all independent, all use only floorId)
     const [floorInfoResult, tablesResult, sectionsResult] = await Promise.all([
@@ -793,11 +812,10 @@ const tableService = {
           ds.id as shift_id, ds.status as shift_status, ds.cashier_id,
           u.name as cashier_name, ds.opening_cash
          FROM floors f
-         LEFT JOIN (
-           SELECT * FROM day_sessions WHERE status = 'open' ORDER BY id DESC
-         ) ds ON f.id = ds.floor_id
+         LEFT JOIN day_sessions ds ON f.id = ds.floor_id AND ds.status = 'open'
          LEFT JOIN users u ON ds.cashier_id = u.id
          WHERE f.id = ?
+         ORDER BY ds.id DESC
          LIMIT 1`,
         [floorId]
       ),
@@ -840,10 +858,30 @@ const tableService = {
     const tables = tablesResult[0];
     const sections = sectionsResult[0];
 
-    // Batch-fetch KOT summaries, item counts, NC items, and merges for ALL tables at once
-    const activeOrderIds = tables.filter(t => t.current_order_id).map(t => t.current_order_id);
+    // Batch-fetch KOT summaries, item counts, NC items, merges, and direct active orders for ALL tables
     const allTableIds = tables.map(t => t.id);
     const mergedTableIds = tables.filter(t => t.status === 'merged').map(t => t.id);
+
+    // First: get reliable active order IDs directly from orders table (fallback for session gaps)
+    let directOrderByTable = {};
+    if (allTableIds.length > 0) {
+      const [directOrders] = await pool.query(
+        `SELECT table_id, MAX(id) as order_id FROM orders
+         WHERE table_id IN (?) AND status NOT IN ('paid', 'completed', 'cancelled')
+         GROUP BY table_id`,
+        [allTableIds]
+      );
+      for (const row of directOrders) directOrderByTable[row.table_id] = row.order_id;
+    }
+
+    // Fill in missing current_order_id from direct orders lookup
+    for (const table of tables) {
+      if (!table.current_order_id && directOrderByTable[table.id]) {
+        table.current_order_id = directOrderByTable[table.id];
+      }
+    }
+
+    const activeOrderIds = tables.filter(t => t.current_order_id).map(t => t.current_order_id);
 
     // Parallel batch queries
     const [kotRows, itemCountRows, ncItemRows, mergesPrimaryRows, mergesSecondaryRows] = await Promise.all([
@@ -1025,7 +1063,7 @@ const tableService = {
       );
     }
 
-    await this.invalidateCache(table.outlet_id, table.floor_id);
+    await this.invalidateCache(table.outlet_id, table.floor_id, id);
     return this.getById(id);
   },
 
@@ -1048,7 +1086,7 @@ const tableService = {
     }
 
     await pool.query('UPDATE tables SET is_active = 0 WHERE id = ?', [id]);
-    await this.invalidateCache(table.outlet_id, table.floor_id);
+    await this.invalidateCache(table.outlet_id, table.floor_id, id);
     return true;
   },
 
@@ -1091,7 +1129,7 @@ const tableService = {
       timestamp: new Date()
     });
 
-    await this.invalidateCache(table.outlet_id, table.floor_id);
+    await this.invalidateCache(table.outlet_id, table.floor_id, id);
     return this.getById(id);
   },
 
@@ -1211,7 +1249,7 @@ const tableService = {
         captain: userId
       });
 
-      await this.invalidateCache(table.outlet_id, table.floor_id);
+      await this.invalidateCache(table.outlet_id, table.floor_id, tableId);
       return { sessionId: result.insertId, table: await this.getById(tableId) };
 
     } catch (error) {
@@ -1302,7 +1340,7 @@ const tableService = {
         event: 'session_ended'
       });
 
-      await this.invalidateCache(table.outlet_id, table.floor_id);
+      await this.invalidateCache(table.outlet_id, table.floor_id, table.id);
       return true;
 
     } catch (error) {
@@ -1610,7 +1648,7 @@ const tableService = {
         mergedTableIds: tableIdsToMerge
       });
 
-      await this.invalidateCache(primaryTable.outlet_id, primaryTable.floor_id);
+      await this.invalidateCache(primaryTable.outlet_id, primaryTable.floor_id, primaryTableId);
       return this.getMergedTables(primaryTableId);
 
     } catch (error) {
@@ -1753,7 +1791,7 @@ const tableService = {
         unmergedTableIds: mergedIds
       });
 
-      this.invalidateCache(primaryTable.outlet_id, primaryTable.floor_id)
+      this.invalidateCache(primaryTable.outlet_id, primaryTable.floor_id, primaryTable.id)
         .catch(err => logger.error('Unmerge cache invalidation error:', err.message));
 
       return true;
@@ -2175,11 +2213,9 @@ const tableService = {
         ...transferDetails
       });
 
-      // Invalidate cache for both floors
-      await this.invalidateCache(sourceTable.outlet_id, sourceTable.floor_id);
-      if (sourceTable.floor_id !== targetTable.floor_id) {
-        await this.invalidateCache(targetTable.outlet_id, targetTable.floor_id);
-      }
+      // Invalidate cache for both tables and floors
+      await this.invalidateCache(sourceTable.outlet_id, sourceTable.floor_id, sourceTableId);
+      await this.invalidateCache(targetTable.outlet_id, targetTable.floor_id, targetTableId);
 
       // Get updated table info
       const updatedSourceTable = await this.getById(sourceTableId);
@@ -2219,9 +2255,10 @@ const tableService = {
   /**
    * Invalidate cache
    */
-  async invalidateCache(outletId, floorId) {
+  async invalidateCache(outletId, floorId, tableId) {
     await cache.del(`tables:outlet:${outletId}`);
     await cache.del(`tables:floor:${floorId}`);
+    if (tableId) await cache.del(`table:detail:${tableId}`);
   },
 
   /**

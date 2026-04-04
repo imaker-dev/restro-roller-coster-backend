@@ -1,18 +1,21 @@
 const tableService = require('../services/table.service');
 const { getPool } = require('../database');
+const { cache } = require('../config/redis');
+const { getUserFloorIds } = require('../utils/helpers');
 const logger = require('../utils/logger');
 
 /**
- * Get floor IDs a user is restricted to (empty array = no restriction / all floors)
+ * Get outlet_id for a floor (cached 5 min — floor→outlet never changes)
  */
-async function getUserFloorIds(userId, outletId) {
-  if (!userId) return [];
+async function getFloorOutletId(floorId) {
+  const cacheKey = `floor:outlet:${floorId}`;
+  const cached = await cache.get(cacheKey);
+  if (cached) return cached;
   const pool = getPool();
-  const [rows] = await pool.query(
-    'SELECT floor_id FROM user_floors WHERE user_id = ? AND outlet_id = ? AND is_active = 1',
-    [userId, outletId]
-  );
-  return rows.map(r => r.floor_id);
+  const [[row]] = await pool.query('SELECT outlet_id FROM floors WHERE id = ?', [floorId]);
+  const outletId = row?.outlet_id || null;
+  if (outletId) await cache.set(cacheKey, outletId, 300);
+  return outletId;
 }
 
 /**
@@ -62,12 +65,11 @@ const tableController = {
   async getTablesByFloor(req, res, next) {
     try {
       const floorId = parseInt(req.params.floorId);
-      // Enforce floor restriction: if user has assigned floors, verify access
+      // Enforce floor restriction (both lookups cached in Redis)
       if (req.user) {
-        const pool = getPool();
-        const [floorRow] = await pool.query('SELECT outlet_id FROM floors WHERE id = ?', [floorId]);
-        if (floorRow.length > 0) {
-          const restrictedFloors = await getUserFloorIds(req.user.userId, floorRow[0].outlet_id);
+        const outletId = await getFloorOutletId(floorId);
+        if (outletId) {
+          const restrictedFloors = await getUserFloorIds(req.user.userId, outletId);
           if (restrictedFloors.length > 0 && !restrictedFloors.includes(floorId)) {
             return res.status(403).json({ success: false, message: 'You do not have access to this floor' });
           }

@@ -1338,14 +1338,31 @@ const paymentService = {
       [outletId, floorId, userId, openingCash, openingCash]
     );
 
-    // Get floor info for response
+    // Get floor info and cashier name for response and socket event
     let floorName = null;
-    if (floorId) {
-      const [floorInfo] = await pool.query('SELECT name FROM floors WHERE id = ?', [floorId]);
-      floorName = floorInfo[0]?.name;
-    }
+    let cashierName = null;
+    const [[floorInfo], [cashierInfo]] = await Promise.all([
+      floorId ? pool.query('SELECT name FROM floors WHERE id = ?', [floorId]) : [[]],
+      pool.query('SELECT name FROM users WHERE id = ?', [userId])
+    ]);
+    floorName = floorInfo[0]?.name || null;
+    cashierName = cashierInfo[0]?.name || 'Cashier';
 
     logger.info(`Shift opened: outlet=${outletId}, floor=${floorId}, cashier=${userId}`);
+
+    // Emit shift:open socket event to captain room (floor captains/staff only, NOT cashier)
+    await publishMessage('shift:open', {
+      type: 'shift:opened',
+      outletId: parseInt(outletId),
+      floorId: floorId || null,
+      floorName,
+      sessionId,
+      cashierId: userId,
+      cashierName,
+      openingCash,
+      shiftOpen: true,
+      openedAt: new Date().toISOString()
+    });
 
     return { success: true, openingCash, floorId, floorName, sessionId };
   },
@@ -1497,7 +1514,36 @@ const paymentService = {
 
       await connection.commit();
 
+      // Get floor name and cashier name for socket event
+      let floorName = null;
+      let cashierName = null;
+      const pool = getPool();
+      const [[floorInfo], [cashierInfo]] = await Promise.all([
+        floorId ? pool.query('SELECT name FROM floors WHERE id = ?', [floorId]) : [[]],
+        pool.query('SELECT name FROM users WHERE id = ?', [userId])
+      ]);
+      floorName = floorInfo[0]?.name || null;
+      cashierName = cashierInfo[0]?.name || 'Cashier';
+
       logger.info(`Shift closed: outlet=${outletId}, floor=${floorId}, cashier=${userId}`);
+
+      // Emit shift:close socket event to captain room (floor captains/staff only, NOT cashier)
+      await publishMessage('shift:close', {
+        type: 'shift:closed',
+        outletId: parseInt(outletId),
+        floorId: floorId || null,
+        floorName,
+        sessionId: session.id,
+        cashierId: userId,
+        cashierName,
+        expectedCash,
+        actualCash,
+        variance,
+        totalSales: shiftTotals[0].total_sales || 0,
+        totalOrders: shiftTotals[0].total_orders || 0,
+        shiftOpen: false,
+        closedAt: new Date().toISOString()
+      });
 
       return {
         success: true,
