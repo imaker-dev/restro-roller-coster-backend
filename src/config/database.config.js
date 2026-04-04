@@ -1,5 +1,16 @@
 const isProduction = process.env.NODE_ENV === 'production';
 
+/**
+ * Database config — optimized for PM2 cluster mode (multiple workers share MySQL)
+ *
+ * connectionLimit per worker (set via PM2 env DB_CONNECTION_LIMIT):
+ *   Production: 15 per API worker (6 × 15 = 90 total)
+ *   Queue: 8 per worker (2 × 8 = 16 total)
+ *   Fallback: 15 (safe default — old value of 100 caused DB exhaustion)
+ *
+ * idleTimeout: release unused connections after 60s to free pool under low traffic.
+ * queueLimit: cap waiting requests at 200 to fail fast instead of hanging.
+ */
 module.exports = {
   host: isProduction 
     ? (process.env.PROD_DB_HOST || '127.0.0.1')
@@ -14,15 +25,12 @@ module.exports = {
   password: isProduction
     ? (process.env.PROD_DB_PASSWORD || '')
     : (process.env.DB_PASSWORD || ''),
-  connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT, 10) || 100,
-  pool: {
-    min: parseInt(process.env.DB_POOL_MIN, 10) || 5,
-    max: parseInt(process.env.DB_POOL_MAX, 10) || 50,
-  },
+  connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT, 10) || 15,
   waitForConnections: true,
-  queueLimit: 0,
+  queueLimit: 200,
   enableKeepAlive: true,
   keepAliveInitialDelay: 10000,
+  idleTimeout: 60000,
   timezone: '+00:00',
   dateStrings: true,
   multipleStatements: false,

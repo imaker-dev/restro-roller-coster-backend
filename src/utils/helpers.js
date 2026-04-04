@@ -142,13 +142,21 @@ const prefixImageUrl = (path) => {
  */
 const getUserFloorIds = async (userId, outletId) => {
   if (!userId || !outletId) return [];
+  // Cache floor assignments (60s) — called on every request, rarely changes
+  const { cache } = require('../config/redis');
+  const cacheKey = `user:floors:${userId}:${outletId}`;
+  const cached = await cache.get(cacheKey);
+  if (cached) return cached;
+
   const { getPool } = require('../database');
   const pool = getPool();
   const [rows] = await pool.query(
     'SELECT floor_id FROM user_floors WHERE user_id = ? AND outlet_id = ? AND is_active = 1',
     [userId, outletId]
   );
-  return rows.map(r => r.floor_id);
+  const result = rows.map(r => r.floor_id);
+  await cache.set(cacheKey, result, 60);
+  return result;
 };
 
 module.exports = {

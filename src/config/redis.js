@@ -166,12 +166,22 @@ const registerLocalEmitter = (emitterFn) => {
   _localEmitter = emitterFn;
 };
 
-// Helper alias for services — falls back to local emit when Redis is down
-const publishMessage = async (channel, message) => {
+// Debounce map for high-frequency socket events (prevents flooding at 1000+ tables)
+// Key: "channel:outletId:entityId" → Value: { timer, message }
+const _debounceMap = new Map();
+const DEBOUNCE_CHANNELS = new Set(['order:update', 'table:update', 'kot:update']);
+const DEBOUNCE_MS = 200;
+
+const _getDebounceKey = (channel, message) => {
+  const outletId = message.outletId || '';
+  const entityId = message.orderId || message.tableId || message.kotId || '';
+  return `${channel}:${outletId}:${entityId}`;
+};
+
+const _doPublish = async (channel, message) => {
   if (redisAvailable && redisClient) {
     return pubsub.publish(channel, message);
   }
-  // Redis unavailable — fallback to direct Socket.IO emission (same process only)
   if (_localEmitter) {
     const delivered = _localEmitter(channel, message);
     if (delivered) {
@@ -180,6 +190,47 @@ const publishMessage = async (channel, message) => {
     return;
   }
   logger.warn(`publishMessage: dropped '${channel}' — Redis unavailable and no local emitter registered`);
+};
+
+// Helper alias for services — falls back to local emit when Redis is down
+// High-frequency channels are debounced (200ms) to prevent socket flooding
+const publishMessage = async (channel, message) => {
+  // Non-debounced channels → emit immediately
+  if (!DEBOUNCE_CHANNELS.has(channel)) {
+    return _doPublish(channel, message);
+  }
+
+  // Debounced channels → coalesce rapid-fire events
+  const key = _getDebounceKey(channel, message);
+  const existing = _debounceMap.get(key);
+  if (existing) {
+    clearTimeout(existing.timer);
+  }
+  _debounceMap.set(key, {
+    message,
+    timer: setTimeout(async () => {
+      _debounceMap.delete(key);
+      await _doPublish(channel, message);
+    }, DEBOUNCE_MS),
+  });
+};
+
+// Close all Redis connections (graceful shutdown)
+const closeRedis = async () => {
+  try {
+    if (redisSubscriber) {
+      await redisSubscriber.quit();
+      redisSubscriber = null;
+    }
+    if (redisClient) {
+      await redisClient.quit();
+      redisClient = null;
+    }
+    redisAvailable = false;
+    logger.info('Redis connections closed');
+  } catch (error) {
+    logger.warn('Redis close error:', error.message);
+  }
 };
 
 module.exports = {
@@ -191,4 +242,5 @@ module.exports = {
   pubsub,
   publishMessage,
   registerLocalEmitter,
+  closeRedis,
 };

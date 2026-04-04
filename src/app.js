@@ -24,6 +24,9 @@ const { initializeCronJobs } = require('./cron');
 
 const app = express();
 
+// Trust first proxy (NGINX) — required for correct client IP behind reverse proxy
+app.set('trust proxy', 1);
+
 const server = http.createServer(app);
 
 // Security middleware
@@ -58,9 +61,10 @@ app.use((req, res, next) => {
   next();
 });
 
-// Logging
+// Logging — use short format in production to reduce I/O at 1000+ tables
 if (config.app.env !== 'test') {
-  app.use(morgan('combined', { stream: logger.stream }));
+  const morganFormat = config.app.env === 'production' ? 'short' : 'combined';
+  app.use(morgan(morganFormat, { stream: logger.stream }));
 }
 
 // Serve uploaded files statically (with CORS headers)
@@ -96,7 +100,7 @@ app.get('/health', (req, res) => {
 const dynoRoutes = require('./routes/dyno.routes');
 app.use('/', dynoRoutes);
 
-// API Routes
+// API Routes — load handled internally via Redis cache + socket debouncing (no rate limiting on POS APIs)
 const routes = require('./routes');
 app.use('/api/v1', routes);
 
@@ -129,20 +133,40 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Graceful shutdown
+// Graceful shutdown — drain all connections to prevent leaks on PM2 restart
 const gracefulShutdown = async (signal) => {
   logger.info(`${signal} received. Starting graceful shutdown...`);
-  
-  server.close(() => {
-    logger.info('HTTP server closed');
-    process.exit(0);
-  });
 
-  // Force close after 30 seconds
-  setTimeout(() => {
+  // Force close after 10 seconds (PM2 kill_timeout is 5s, this is safety net)
+  const forceTimer = setTimeout(() => {
     logger.error('Could not close connections in time, forcefully shutting down');
     process.exit(1);
-  }, 30000);
+  }, 10000);
+  forceTimer.unref();
+
+  try {
+    // 1. Stop accepting new connections
+    server.close(() => {
+      logger.info('HTTP server closed');
+    });
+
+    // 2. Close DB pool (drain active queries, release connections)
+    const { closePool } = require('./database');
+    await closePool();
+    logger.info('Database pool drained');
+
+    // 3. Close Redis connections
+    const { closeRedis } = require('./config/redis');
+    if (typeof closeRedis === 'function') {
+      await closeRedis();
+      logger.info('Redis connections closed');
+    }
+
+    process.exit(0);
+  } catch (err) {
+    logger.error('Error during shutdown:', err.message);
+    process.exit(1);
+  }
 };
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));

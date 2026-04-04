@@ -543,6 +543,7 @@ const billingService = {
 
     try {
       // Read order BEFORE transaction to avoid REPEATABLE READ snapshot issues
+      // Also fetch floor_id early so we can parallelize the cashier lookup
       let order = await orderService.getOrderWithItems(orderId);
       if (!order) {
         // Fallback: read directly via connection BEFORE transaction starts
@@ -572,7 +573,12 @@ const billingService = {
       }
       if (!order) throw new Error('Order not found');
 
-      // Resolve floor cashier early — needed for bill printer routing in ALL paths
+      // Early status check — avoid transaction overhead for already-paid orders
+      if (order.status === 'paid' || order.status === 'completed') {
+        throw new Error('Order already paid');
+      }
+
+      // Resolve floor cashier — needed for bill printer routing in ALL paths
       // (including existing invoice reprint and new bill generation)
       let floorCashierId = null;
       if (order.floor_id) {
@@ -588,10 +594,6 @@ const billingService = {
       }
 
       await connection.beginTransaction();
-
-      if (order.status === 'paid' || order.status === 'completed') {
-        throw new Error('Order already paid');
-      }
 
       // Check if invoice already exists
       const [existingInvoice] = await connection.query(
@@ -1498,11 +1500,12 @@ const billingService = {
     let whereClause = `WHERE i.outlet_id = ? AND i.is_cancelled = 0`;
     const params = [outletId];
 
-    // Date range filter (timestamps already stored in IST)
+    // Date range filter — use range comparison (NOT DATE() which prevents index usage)
     if (fromDate) {
       if (fromDate.length === 10) {
-        whereClause += ` AND DATE(i.created_at) >= ?`;
-        params.push(fromDate);
+        // Date-only: start of day
+        whereClause += ` AND i.created_at >= ?`;
+        params.push(`${fromDate} 00:00:00`);
       } else {
         whereClause += ` AND i.created_at >= ?`;
         params.push(fromDate);
@@ -1510,8 +1513,9 @@ const billingService = {
     }
     if (toDate) {
       if (toDate.length === 10) {
-        whereClause += ` AND DATE(i.created_at) <= ?`;
-        params.push(toDate);
+        // Date-only: end of day
+        whereClause += ` AND i.created_at <= ?`;
+        params.push(`${toDate} 23:59:59`);
       } else {
         whereClause += ` AND i.created_at <= ?`;
         params.push(toDate);
@@ -1637,8 +1641,8 @@ const billingService = {
     let paymentsByInvoice = {};
 
     if (orderIds.length > 0 && invoiceIds.length > 0) {
-      // Parallel: fetch items + discounts + payments in one go
-      const [allItems, allDiscounts, allPayments] = await Promise.all([
+      // All 5 queries in parallel — addons/splits use JOINs so they don't depend on prior results
+      const [allItems, allAddons, allDiscounts, allPayments, allSplits] = await Promise.all([
         pool.query(
           `SELECT oi.*, i.short_name, i.image_url
            FROM order_items oi
@@ -1648,44 +1652,42 @@ const billingService = {
           [orderIds]
         ).then(([r]) => r),
         pool.query(
+          `SELECT oia.* FROM order_item_addons oia
+           INNER JOIN order_items oi ON oia.order_item_id = oi.id
+           WHERE oi.order_id IN (?) AND oi.status != 'cancelled'`,
+          [orderIds]
+        ).then(([r]) => r),
+        pool.query(
           'SELECT * FROM order_discounts WHERE order_id IN (?)',
           [orderIds]
         ).then(([r]) => r),
         pool.query(
           'SELECT * FROM payments WHERE invoice_id IN (?)',
           [invoiceIds]
+        ).then(([r]) => r),
+        pool.query(
+          `SELECT sp.* FROM split_payments sp
+           INNER JOIN payments p ON sp.payment_id = p.id
+           WHERE p.invoice_id IN (?) AND p.payment_mode = 'split'`,
+          [invoiceIds]
         ).then(([r]) => r)
       ]);
 
-      // Batch-fetch addons for all items
-      const orderItemIds = allItems.map(i => i.id);
-      if (orderItemIds.length > 0) {
-        const [allAddons] = await pool.query(
-          'SELECT * FROM order_item_addons WHERE order_item_id IN (?)',
-          [orderItemIds]
-        );
-        for (const a of allAddons) {
-          if (!addonsByItemId[a.order_item_id]) addonsByItemId[a.order_item_id] = [];
-          addonsByItemId[a.order_item_id].push(a);
-        }
+      // Build addon lookup
+      for (const a of allAddons) {
+        if (!addonsByItemId[a.order_item_id]) addonsByItemId[a.order_item_id] = [];
+        addonsByItemId[a.order_item_id].push(a);
       }
 
-      // Batch-fetch split breakdowns for split payments
-      const splitPaymentIds = allPayments.filter(p => p.payment_mode === 'split').map(p => p.id);
-      let splitsByPaymentId = {};
-      if (splitPaymentIds.length > 0) {
-        const [allSplits] = await pool.query(
-          'SELECT * FROM split_payments WHERE payment_id IN (?)',
-          [splitPaymentIds]
-        );
-        for (const sp of allSplits) {
-          if (!splitsByPaymentId[sp.payment_id]) splitsByPaymentId[sp.payment_id] = [];
-          splitsByPaymentId[sp.payment_id].push({
-            paymentMode: sp.payment_mode,
-            amount: parseFloat(sp.amount) || 0,
-            reference: sp.reference_number
-          });
-        }
+      // Build split payment lookup
+      const splitsByPaymentId = {};
+      for (const sp of allSplits) {
+        if (!splitsByPaymentId[sp.payment_id]) splitsByPaymentId[sp.payment_id] = [];
+        splitsByPaymentId[sp.payment_id].push({
+          paymentMode: sp.payment_mode,
+          amount: parseFloat(sp.amount) || 0,
+          reference: sp.reference_number
+        });
       }
 
       // Build lookup maps
@@ -1774,13 +1776,6 @@ const billingService = {
        LEFT JOIN tables t ON o.table_id = t.id
        LEFT JOIN floors f ON o.floor_id = f.id`;
 
-    // Count
-    const [countResult] = await pool.query(
-      `SELECT COUNT(*) as total ${fromClause} ${whereClause}`, params
-    );
-    const total = countResult[0].total;
-    const totalPages = Math.ceil(total / limit);
-
     // Sort
     const allowedSorts = {
       created_at: 'i.created_at',
@@ -1790,41 +1785,101 @@ const billingService = {
     const sortCol = allowedSorts[sortBy] || 'i.created_at';
     const order = sortOrder?.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
 
-    const [rows] = await pool.query(
-      `SELECT i.*, o.order_number, o.order_type, o.table_id, o.floor_id,
-        t.table_number, t.name as table_name,
-        f.name as floor_name
-       ${fromClause} ${whereClause}
-       ORDER BY ${sortCol} ${order}
-       LIMIT ? OFFSET ?`,
-      [...params, limit, offset]
-    );
+    // Parallel: count + data
+    const [countResult, dataResult] = await Promise.all([
+      pool.query(`SELECT COUNT(*) as total ${fromClause} ${whereClause}`, params),
+      pool.query(
+        `SELECT i.*, o.order_number, o.order_type, o.table_id, o.floor_id,
+          t.table_number, t.name as table_name,
+          f.name as floor_name
+         ${fromClause} ${whereClause}
+         ORDER BY ${sortCol} ${order}
+         LIMIT ? OFFSET ?`,
+        [...params, limit, offset]
+      )
+    ]);
+    const total = countResult[0][0].total;
+    const totalPages = Math.ceil(total / limit);
+    const rows = dataResult[0];
 
-    // Attach items (excluding cancelled) for each invoice
+    // Batch-fetch items, addons, discounts, payments for ALL invoices (eliminates N+1)
+    const orderIds = [...new Set(rows.filter(r => r.order_id).map(r => r.order_id))];
+    const invoiceIds = rows.map(r => r.id);
+
+    let itemsByOrder = {};
+    let addonsByItemId = {};
+    let discountsByOrder = {};
+    let paymentsByInvoice = {};
+
+    if (orderIds.length > 0 && invoiceIds.length > 0) {
+      const [allItems, allAddons, allDiscounts, allPayments, allSplits] = await Promise.all([
+        pool.query(
+          `SELECT oi.*, i.short_name, i.image_url
+           FROM order_items oi
+           LEFT JOIN items i ON oi.item_id = i.id
+           WHERE oi.order_id IN (?) AND oi.status != 'cancelled'
+           ORDER BY oi.id`,
+          [orderIds]
+        ).then(([r]) => r),
+        pool.query(
+          `SELECT oia.* FROM order_item_addons oia
+           INNER JOIN order_items oi ON oia.order_item_id = oi.id
+           WHERE oi.order_id IN (?) AND oi.status != 'cancelled'`,
+          [orderIds]
+        ).then(([r]) => r),
+        pool.query(
+          'SELECT * FROM order_discounts WHERE order_id IN (?)',
+          [orderIds]
+        ).then(([r]) => r),
+        pool.query(
+          'SELECT * FROM payments WHERE invoice_id IN (?)',
+          [invoiceIds]
+        ).then(([r]) => r),
+        pool.query(
+          `SELECT sp.* FROM split_payments sp
+           INNER JOIN payments p ON sp.payment_id = p.id
+           WHERE p.invoice_id IN (?) AND p.payment_mode = 'split'`,
+          [invoiceIds]
+        ).then(([r]) => r)
+      ]);
+
+      for (const a of allAddons) {
+        if (!addonsByItemId[a.order_item_id]) addonsByItemId[a.order_item_id] = [];
+        addonsByItemId[a.order_item_id].push(a);
+      }
+      const splitsByPaymentId = {};
+      for (const sp of allSplits) {
+        if (!splitsByPaymentId[sp.payment_id]) splitsByPaymentId[sp.payment_id] = [];
+        splitsByPaymentId[sp.payment_id].push({
+          paymentMode: sp.payment_mode,
+          amount: parseFloat(sp.amount) || 0,
+          reference: sp.reference_number
+        });
+      }
+      for (const item of allItems) {
+        item.addons = addonsByItemId[item.id] || [];
+        if (!itemsByOrder[item.order_id]) itemsByOrder[item.order_id] = [];
+        itemsByOrder[item.order_id].push(item);
+      }
+      for (const d of allDiscounts) {
+        if (!discountsByOrder[d.order_id]) discountsByOrder[d.order_id] = [];
+        discountsByOrder[d.order_id].push(d);
+      }
+      for (const p of allPayments) {
+        if (p.payment_mode === 'split') {
+          p.splitBreakdown = splitsByPaymentId[p.id] || [];
+        }
+        if (!paymentsByInvoice[p.invoice_id]) paymentsByInvoice[p.invoice_id] = [];
+        paymentsByInvoice[p.invoice_id].push(p);
+      }
+    }
+
+    // Build invoices from lookup maps (pure in-memory — no more DB calls)
     const invoices = [];
     for (const row of rows) {
-      const ord = await orderService.getOrderWithItems(row.order_id);
-      row.items = (ord?.items || []).filter(item => item.status !== 'cancelled');
-      row.discounts = ord?.discounts || [];
-      const [payments] = await pool.query(
-        'SELECT * FROM payments WHERE invoice_id = ?', [row.id]
-      );
-      
-      // For split payments, fetch the breakdown from split_payments table
-      for (const payment of payments) {
-        if (payment.payment_mode === 'split') {
-          const [splitDetails] = await pool.query(
-            'SELECT * FROM split_payments WHERE payment_id = ?', [payment.id]
-          );
-          payment.splitBreakdown = splitDetails.map(sp => ({
-            paymentMode: sp.payment_mode,
-            amount: parseFloat(sp.amount) || 0,
-            reference: sp.reference_number
-          }));
-        }
-      }
-      
-      row.payments = payments;
+      row.items = itemsByOrder[row.order_id] || [];
+      row.discounts = discountsByOrder[row.order_id] || [];
+      row.payments = paymentsByInvoice[row.id] || [];
       invoices.push(formatInvoice(row));
     }
 
@@ -2042,10 +2097,12 @@ const billingService = {
     // Recalculate order totals
     await orderService.recalculateTotals(orderId);
 
-    // If invoice exists, recalculate it
-    await this.recalculateInvoiceAfterDiscount(orderId);
-
+    // Fetch updated order ONCE — reuse for invoice recalc AND return value
     const updatedOrder = await orderService.getOrderWithItems(orderId);
+
+    // If invoice exists, recalculate it (pass order to avoid redundant DB fetch)
+    await this.recalculateInvoiceAfterDiscount(orderId, updatedOrder);
+
     return {
       order: updatedOrder,
       appliedDiscount: {
@@ -2069,7 +2126,11 @@ const billingService = {
   async getOrderDiscounts(orderId) {
     const pool = getPool();
 
-    const order = await orderService.getById(orderId);
+    // Lightweight validation — only need order_number + subtotal, no heavy JOINs
+    const [[order]] = await pool.query(
+      'SELECT id, order_number, subtotal FROM orders WHERE id = ?',
+      [orderId]
+    );
     if (!order) throw new Error('Order not found');
 
     const [discounts] = await pool.query(
@@ -2189,10 +2250,12 @@ const billingService = {
     // Recalculate order totals
     await orderService.recalculateTotals(orderId);
 
-    // If invoice exists, recalculate it
-    await this.recalculateInvoiceAfterDiscount(orderId);
-
+    // Fetch updated order ONCE — reuse for invoice recalc AND return value
     const updatedOrder = await orderService.getOrderWithItems(orderId);
+
+    // If invoice exists, recalculate it (pass order to avoid redundant DB fetch)
+    await this.recalculateInvoiceAfterDiscount(orderId, updatedOrder);
+
     return {
       order: updatedOrder,
       appliedDiscount: {
@@ -2243,10 +2306,12 @@ const billingService = {
     // Recalculate order totals
     await orderService.recalculateTotals(orderId);
 
-    // If invoice exists, recalculate it
-    await this.recalculateInvoiceAfterDiscount(orderId);
-
+    // Fetch updated order ONCE — reuse for invoice recalc AND return value
     const updatedOrder = await orderService.getOrderWithItems(orderId);
+
+    // If invoice exists, recalculate it (pass order to avoid redundant DB fetch)
+    await this.recalculateInvoiceAfterDiscount(orderId, updatedOrder);
+
     return {
       order: updatedOrder,
       removedDiscount: {
@@ -2262,8 +2327,10 @@ const billingService = {
 
   /**
    * Recalculate existing invoice after discount change
+   * @param {number} orderId
+   * @param {object} [preloadedOrder] - Pass pre-fetched order to avoid redundant DB call
    */
-  async recalculateInvoiceAfterDiscount(orderId) {
+  async recalculateInvoiceAfterDiscount(orderId, preloadedOrder = null) {
     const pool = getPool();
 
     const [invoices] = await pool.query(
@@ -2273,7 +2340,7 @@ const billingService = {
 
     if (!invoices[0]) return; // No invoice yet — nothing to recalculate
 
-    const order = await orderService.getOrderWithItems(orderId);
+    const order = preloadedOrder || await orderService.getOrderWithItems(orderId);
     if (!order) return;
 
     const billDetails = await this.calculateBillDetails(order, { applyServiceCharge: false });
