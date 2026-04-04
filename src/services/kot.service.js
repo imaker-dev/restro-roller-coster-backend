@@ -284,82 +284,106 @@ const kotService = {
 
       await connection.commit();
 
-      // Emit realtime events for each station and print KOT
-      // Use Promise.all for parallel emission to avoid timing issues with multi-station KOTs
-      const emissionPromises = [];
-      
-      for (const ticket of createdTickets) {
-        // Fetch properly formatted KOT with correct kot_item IDs for socket event
-        const emitPromise = (async () => {
-          try {
-            const formattedKot = await this.getKotById(ticket.id);
-            if (formattedKot) {
-              await this.emitKotUpdate(order.outlet_id, formattedKot, 'kot:created');
-              logger.info(`Multi-station KOT emit success: ${ticket.kotNumber} for station ${ticket.station} (id: ${ticket.stationId})`);
-            } else {
-              logger.warn(`Multi-station KOT: Could not fetch KOT ${ticket.id} for emission`);
-            }
-          } catch (emitErr) {
-            logger.error(`Multi-station KOT emit failed for ${ticket.kotNumber}:`, emitErr.message);
+      // ── Fire-and-forget: ALL post-commit ops run async (don't block response) ──
+      const self = this;
+      Promise.resolve().then(async () => {
+        try {
+          // Emit KOT socket events using in-memory data (skip redundant getKotById re-fetches)
+          const emissionPromises = createdTickets.map(ticket => {
+            const formattedKot = formatKot({
+              id: ticket.id,
+              outlet_id: order.outlet_id,
+              order_id: orderId,
+              kot_number: ticket.kotNumber,
+              order_number: order.order_number,
+              table_id: order.table_id,
+              table_number: order.table_number,
+              station: ticket.station,
+              station_id: ticket.stationId,
+              status: 'pending',
+              priority: order.is_priority ? 1 : 0,
+              created_by: createdBy,
+              created_at: ticket.createdAt,
+              item_count: ticket.itemCount,
+              total_item_count: ticket.itemCount,
+              cancelled_item_count: 0,
+              ready_count: 0,
+              items: ticket.items.map(i => ({
+                id: i.id,
+                kot_id: ticket.id,
+                order_item_id: i.id,
+                item_name: i.name,
+                variant_name: i.variant,
+                item_type: i.itemType,
+                quantity: i.quantity,
+                weight: i.weight,
+                is_open_item: i.isOpenItem ? 1 : 0,
+                addons_text: i.addonsText,
+                special_instructions: i.specialInstructions,
+                status: 'pending',
+                created_at: ticket.createdAt,
+                addons: i.addons || []
+              }))
+            });
+            return self.emitKotUpdate(order.outlet_id, formattedKot, 'kot:created')
+              .catch(err => logger.error(`KOT emit failed ${ticket.kotNumber}:`, err.message));
+          });
+
+          // Print KOTs in parallel
+          const printPromises = createdTickets.map(ticket => {
+            const kotPrintData = {
+              outletId: order.outlet_id,
+              kotId: ticket.id,
+              orderId,
+              orderNumber: order.order_number,
+              kotNumber: ticket.kotNumber,
+              station: ticket.station,
+              stationName: ticket.stationName,
+              stationId: ticket.stationId,
+              isCounter: ticket.isCounter,
+              tableNumber: order.table_number,
+              time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+              items: ticket.items.map(i => ({
+                itemName: i.name,
+                variantName: i.variant,
+                quantity: i.quantity,
+                weight: i.weight || null,
+                itemType: i.itemType,
+                addonsText: i.addonsText,
+                instructions: i.specialInstructions
+              })),
+              captainName: order.created_by_name || 'Staff'
+            };
+            return printerService.printKot(kotPrintData, createdBy)
+              .catch(err => logger.error(`Failed to queue KOT ${ticket.kotNumber}:`, err.message));
+          });
+
+          // Table + order update messages
+          const msgPromises = [];
+          if (order.table_id && order.order_type === 'dine_in') {
+            msgPromises.push(publishMessage('table:update', {
+              outletId: order.outlet_id,
+              tableId: order.table_id,
+              floorId: order.floor_id,
+              status: 'running',
+              event: 'kot_sent',
+              timestamp: new Date().toISOString()
+            }));
           }
-        })();
-        emissionPromises.push(emitPromise);
-      }
-      
-      // Wait for all emissions to complete
-      await Promise.all(emissionPromises);
-      logger.info(`All ${createdTickets.length} KOT socket events emitted for order ${order.order_number}`);
+          msgPromises.push(publishMessage('order:update', {
+            type: 'order:kot_sent',
+            outletId: order.outlet_id,
+            orderId,
+            tickets: createdTickets,
+            timestamp: new Date().toISOString()
+          }));
 
-      // Print KOTs in parallel (each goes through bridge queue independently)
-      const printPromises = createdTickets.map(ticket => {
-        const kotPrintData = {
-          outletId: order.outlet_id,
-          kotId: ticket.id,
-          orderId,
-          orderNumber: order.order_number,
-          kotNumber: ticket.kotNumber,
-          station: ticket.station,
-          stationName: ticket.stationName,
-          stationId: ticket.stationId,
-          isCounter: ticket.isCounter,
-          tableNumber: order.table_number,
-          time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
-          items: ticket.items.map(i => ({
-            itemName: i.name,
-            variantName: i.variant,
-            quantity: i.quantity,
-            weight: i.weight || null,
-            itemType: i.itemType,
-            addonsText: i.addonsText,
-            instructions: i.specialInstructions
-          })),
-          captainName: order.created_by_name || 'Staff'
-        };
-        return printerService.printKot(kotPrintData, createdBy)
-          .then(() => logger.info(`KOT ${ticket.kotNumber} queued for bridge printing (station: ${ticket.stationName}, stationId: ${ticket.stationId}, isCounter: ${ticket.isCounter})`))
-          .catch(printError => logger.error(`Failed to queue KOT ${ticket.kotNumber}:`, printError.message));
+          await Promise.all([...emissionPromises, ...printPromises, ...msgPromises]);
+          logger.info(`sendKot post-commit done: ${createdTickets.length} KOTs for order ${order.order_number}`);
+        } catch (postErr) {
+          logger.error('sendKot post-commit error:', postErr.message);
+        }
       });
-
-      // Emit table + order updates in parallel with printing
-      const postCommitPromises = [...printPromises];
-      if (order.table_id && order.order_type === 'dine_in') {
-        postCommitPromises.push(publishMessage('table:update', {
-          outletId: order.outlet_id,
-          tableId: order.table_id,
-          floorId: order.floor_id,
-          status: 'running',
-          event: 'kot_sent',
-          timestamp: new Date().toISOString()
-        }));
-      }
-      postCommitPromises.push(publishMessage('order:update', {
-        type: 'order:kot_sent',
-        outletId: order.outlet_id,
-        orderId,
-        tickets: createdTickets,
-        timestamp: new Date().toISOString()
-      }));
-      await Promise.all(postCommitPromises);
 
       return {
         orderId,
@@ -844,13 +868,14 @@ const kotService = {
     let query = `
       SELECT kt.*, o.order_number, o.table_id,
         t.table_number, t.name as table_name,
-        (SELECT COUNT(*) FROM kot_items ki WHERE ki.kot_id = kt.id AND ki.status != 'cancelled') as item_count,
-        (SELECT COUNT(*) FROM kot_items ki WHERE ki.kot_id = kt.id) as total_item_count,
-        (SELECT COUNT(*) FROM kot_items ki WHERE ki.kot_id = kt.id AND ki.status = 'cancelled') as cancelled_item_count,
-        (SELECT COUNT(*) FROM kot_items ki WHERE ki.kot_id = kt.id AND ki.status = 'ready') as ready_count
+        COUNT(CASE WHEN ki.status != 'cancelled' THEN 1 END) as item_count,
+        COUNT(ki.id) as total_item_count,
+        COUNT(CASE WHEN ki.status = 'cancelled' THEN 1 END) as cancelled_item_count,
+        COUNT(CASE WHEN ki.status = 'ready' THEN 1 END) as ready_count
       FROM kot_tickets kt
       JOIN orders o ON kt.order_id = o.id
       LEFT JOIN tables t ON o.table_id = t.id
+      LEFT JOIN kot_items ki ON ki.kot_id = kt.id
       WHERE kt.outlet_id = ?
     `;
     const params = [outletId];
@@ -890,7 +915,7 @@ const kotService = {
       }
     }
 
-    query += ' ORDER BY kt.priority DESC, kt.created_at DESC';
+    query += ' GROUP BY kt.id ORDER BY kt.priority DESC, kt.created_at DESC';
 
     const [kots] = await pool.query(query, params);
 
