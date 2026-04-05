@@ -1,12 +1,21 @@
 /**
  * Dashboard Service
  * Real-time dashboard data — orders, KOTs, tables, amounts
- * Optimized: 2 parallel queries + in-memory aggregation
+ * Optimized: 2 parallel queries + in-memory join/aggregation + 5s Redis cache
+ *
+ * Key design:
+ *  - Tables linked to orders via in-memory map (order.table_id) with session.order_id fallback
+ *    (same robust pattern as table.service.getByFloor)
+ *  - Table amounts come from the SAME orders data as orders summary → always match
+ *  - Table status filter: NOT IN ('available') catches running, occupied, billing, reserved, blocked, merged
+ *  - Session join uses MAX(id) subquery to prevent duplicate rows on edge-case multi-session
  */
 
 const { getPool } = require('../database');
 const { cache } = require('../config/redis');
 const logger = require('../utils/logger');
+
+const CACHE_TTL = 5; // 5 seconds
 
 const dashboardService = {
   /**
@@ -15,14 +24,23 @@ const dashboardService = {
    * @param {object} filters - { floorId, orderType }
    */
   async getRealtime(outletId, filters = {}) {
-    const pool = getPool();
     const { floorId, orderType } = filters;
+
+    // ── 5-second Redis cache ──
+    const cacheKey = `dashboard:rt:${outletId}:${floorId || 0}:${orderType || 'all'}`;
+    try {
+      const cached = await cache.get(cacheKey);
+      if (cached) return cached;
+    } catch (_) { /* redis down — continue without cache */ }
+
+    const pool = getPool();
 
     // ── Build dynamic WHERE clauses ──
     let orderWhere = `o.outlet_id = ? AND o.status NOT IN ('paid', 'completed', 'cancelled')`;
     const orderParams = [outletId];
 
-    let tableWhere = `t.outlet_id = ? AND t.is_active = 1 AND t.status IN ('occupied', 'billing', 'reserved')`;
+    // Tables: ALL non-available active tables (running, occupied, billing, reserved, blocked, merged)
+    let tableWhere = `t.outlet_id = ? AND t.is_active = 1 AND t.status NOT IN ('available')`;
     const tableParams = [outletId];
 
     if (floorId) {
@@ -36,34 +54,42 @@ const dashboardService = {
       orderParams.push(orderType);
     }
 
-    // ── 2 parallel queries (all data in 2 round-trips) ──
+    // ── 2 parallel queries ──
     const [ordersResult, tablesResult] = await Promise.all([
       // Query 1: Active orders with KOT counts
       pool.query(
         `SELECT o.id, o.order_number, o.order_type, o.status, o.table_id, o.floor_id,
-                o.subtotal, o.total_amount, o.guest_count, o.customer_name, o.created_at,
+                o.table_session_id, o.subtotal, o.discount_amount, o.tax_amount,
+                o.total_amount, o.guest_count, o.customer_name, o.created_at,
                 COUNT(DISTINCT kt.id) as kot_count,
-                SUM(CASE WHEN kt.status IN ('pending', 'accepted', 'preparing') THEN 1 ELSE 0 END) as pending_kot_count
+                COALESCE(SUM(CASE WHEN kt.status IN ('pending', 'accepted', 'preparing') THEN 1 ELSE 0 END), 0) as pending_kot_count
          FROM orders o
          LEFT JOIN kot_tickets kt ON o.id = kt.order_id AND kt.status != 'cancelled'
          WHERE ${orderWhere}
          GROUP BY o.id`,
         orderParams
       ),
-      // Query 2: Occupied/billing/reserved tables with session + order info
+      // Query 2: ALL non-available tables with latest session + floor info
+      // Uses MAX(id) subquery to guarantee 1 row per table even with edge-case duplicate sessions
       pool.query(
         `SELECT t.id, t.table_number, t.name, t.status, t.capacity, t.floor_id,
                 f.name as floor_name,
                 ts.id as session_id, ts.guest_count, ts.guest_name, ts.started_at,
+                ts.order_id as session_order_id, ts.status as session_status,
                 u.name as captain_name,
-                o.id as order_id, o.order_number, o.total_amount as order_amount,
-                o.subtotal as order_subtotal, o.status as order_status, o.order_type,
                 TIMESTAMPDIFF(MINUTE, ts.started_at, NOW()) as session_duration
          FROM tables t
          JOIN floors f ON t.floor_id = f.id
-         LEFT JOIN table_sessions ts ON t.id = ts.table_id AND ts.status IN ('active', 'billing')
+         LEFT JOIN (
+           SELECT ts1.* FROM table_sessions ts1
+           INNER JOIN (
+             SELECT table_id, MAX(id) as max_id
+             FROM table_sessions
+             WHERE status IN ('active', 'billing')
+             GROUP BY table_id
+           ) ts2 ON ts1.id = ts2.max_id
+         ) ts ON t.id = ts.table_id
          LEFT JOIN users u ON ts.started_by = u.id
-         LEFT JOIN orders o ON ts.order_id = o.id AND o.status NOT IN ('paid', 'completed', 'cancelled')
          WHERE ${tableWhere}
          ORDER BY f.floor_number, t.display_order, t.table_number`,
         tableParams
@@ -73,21 +99,37 @@ const dashboardService = {
     const orders = ordersResult[0];
     const tables = tablesResult[0];
 
-    // ── In-memory aggregation (zero additional DB calls) ──
+    // ── Build order lookup maps for table→order linking ──
+    // Primary: order.table_id → order  (most recent active order per table)
+    const orderByTableId = {};
+    for (const o of orders) {
+      if (o.table_id) {
+        // If multiple orders on same table, keep the latest (highest ID)
+        if (!orderByTableId[o.table_id] || o.id > orderByTableId[o.table_id].id) {
+          orderByTableId[o.table_id] = o;
+        }
+      }
+    }
+    // Secondary: order.id → order  (for session.order_id lookup)
+    const orderById = {};
+    for (const o of orders) {
+      orderById[o.id] = o;
+    }
+
+    // ── In-memory aggregation ──
 
     // Orders breakdown
     let totalOrderCount = 0;
     let totalOrderAmount = 0;
-    let pendingCount = 0; // orders with at least 1 pending KOT
+    let pendingCount = 0;
 
     let dineInCount = 0, dineInKots = 0, dineInAmount = 0;
     let pickupCount = 0, pickupAmount = 0;
     let deliveryCount = 0, deliveryAmount = 0;
 
-    // Pending breakdown
-    let notReadyCount = 0, notReadyAmount = 0;       // KOTs not ready yet
-    let notPickedUpCount = 0, notPickedUpAmount = 0;  // takeaway ready but not served
-    let notDeliveredCount = 0, notDeliveredAmount = 0; // delivery ready but not delivered
+    let notReadyCount = 0, notReadyAmount = 0;
+    let notPickedUpCount = 0, notPickedUpAmount = 0;
+    let notDeliveredCount = 0, notDeliveredAmount = 0;
 
     for (const o of orders) {
       const amount = parseFloat(o.total_amount) || 0;
@@ -118,7 +160,6 @@ const dashboardService = {
 
       // Pending sub-categories
       if (pendingKots > 0) {
-        // Has KOTs that are not ready
         notReadyCount++;
         notReadyAmount += amount;
       } else if (o.order_type === 'takeaway' && o.status === 'ready') {
@@ -130,18 +171,42 @@ const dashboardService = {
       }
     }
 
-    // Tables summary
+    // ── Tables: link to orders via in-memory map ──
     let totalTables = 0;
     let totalGuests = 0;
     let totalTableAmount = 0;
 
+    // Floor-wise breakdown
+    const floorMap = {};
+
     const formattedTables = [];
     for (const t of tables) {
       totalTables++;
-      const guests = parseInt(t.guest_count) || 0;
-      const orderAmt = parseFloat(t.order_amount) || 0;
+
+      // Find linked order: try session.order_id first, then fallback to order.table_id map
+      let linkedOrder = null;
+      if (t.session_order_id && orderById[t.session_order_id]) {
+        linkedOrder = orderById[t.session_order_id];
+      }
+      if (!linkedOrder && orderByTableId[t.id]) {
+        linkedOrder = orderByTableId[t.id];
+      }
+
+      const guests = parseInt(t.guest_count) || (linkedOrder ? (parseInt(linkedOrder.guest_count) || 0) : 0);
+      const orderAmt = linkedOrder ? (parseFloat(linkedOrder.total_amount) || 0) : 0;
+      const orderSubtotal = linkedOrder ? (parseFloat(linkedOrder.subtotal) || 0) : 0;
+
       totalGuests += guests;
       totalTableAmount += orderAmt;
+
+      // Floor breakdown
+      const fKey = t.floor_id;
+      if (!floorMap[fKey]) {
+        floorMap[fKey] = { floorId: t.floor_id, floorName: t.floor_name, tables: 0, guests: 0, amount: 0 };
+      }
+      floorMap[fKey].tables++;
+      floorMap[fKey].guests += guests;
+      floorMap[fKey].amount += orderAmt;
 
       formattedTables.push({
         id: t.id,
@@ -152,24 +217,26 @@ const dashboardService = {
         floorId: t.floor_id,
         floorName: t.floor_name,
         sessionId: t.session_id || null,
+        sessionStatus: t.session_status || null,
         guestCount: guests,
         guestName: t.guest_name || null,
         captainName: t.captain_name || null,
         sessionDuration: t.session_duration || 0,
         startedAt: t.started_at || null,
-        orderId: t.order_id || null,
-        orderNumber: t.order_number || null,
-        orderType: t.order_type || null,
-        orderStatus: t.order_status || null,
+        orderId: linkedOrder ? linkedOrder.id : null,
+        orderNumber: linkedOrder ? linkedOrder.order_number : null,
+        orderType: linkedOrder ? linkedOrder.order_type : null,
+        orderStatus: linkedOrder ? linkedOrder.status : null,
         orderAmount: orderAmt,
-        orderSubtotal: parseFloat(t.order_subtotal) || 0
+        orderSubtotal: orderSubtotal,
+        kotCount: linkedOrder ? (parseInt(linkedOrder.kot_count) || 0) : 0,
+        pendingKotCount: linkedOrder ? (parseInt(linkedOrder.pending_kot_count) || 0) : 0
       });
     }
 
-    // Round amounts to 2 decimal places
     const r2 = (n) => Math.round(n * 100) / 100;
 
-    return {
+    const result = {
       summary: {
         orders: {
           totalCount: totalOrderCount,
@@ -180,7 +247,12 @@ const dashboardService = {
           totalTables,
           totalGuests,
           totalAmount: r2(totalTableAmount)
-        }
+        },
+        // Floor-wise breakdown
+        floors: Object.values(floorMap).map(f => ({
+          ...f,
+          amount: r2(f.amount)
+        }))
       },
       orders: {
         dineIn: {
@@ -213,6 +285,11 @@ const dashboardService = {
       },
       tables: formattedTables
     };
+
+    // ── Store in Redis cache (5s TTL) — fire-and-forget ──
+    cache.set(cacheKey, result, CACHE_TTL).catch(() => {});
+
+    return result;
   }
 };
 
