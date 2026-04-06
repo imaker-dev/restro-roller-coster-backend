@@ -73,16 +73,17 @@ const orderService = {
        WHERE ur.user_id = ? AND ur.is_active = 1`,
       [userId]
     );
-    const isPrivileged = userRoles.some(r => ['admin', 'manager', 'super_admin', 'cashier'].includes(r.role_name));
+    // Captains and cashiers can modify any order (no ownership restriction)
+    const isPrivileged = userRoles.some(r => ['admin', 'manager', 'super_admin', 'cashier', 'captain'].includes(r.role_name));
     
     if (isPrivileged) return true;
     
-    // Check if user is session owner (convert to numbers for comparison)
+    // For other roles, check if user is session owner
     const sessionOwnerId = parseInt(order[0].started_by, 10);
     const currentUserId = parseInt(userId, 10);
     
     if (sessionOwnerId !== currentUserId) {
-      throw new Error('Only the assigned captain can modify this order. Contact manager to transfer table.');
+      throw new Error('You do not have permission to modify this order.');
     }
     
     return true;
@@ -431,6 +432,10 @@ const orderService = {
         throw new Error('Cannot add items to this order');
       }
 
+      // Fetch user roles once (reused for ownership check + open item check)
+      const hasOpenItems = items.some(i => i.isOpenItem);
+      let cachedUserRoles = null;
+
       // Verify captain ownership for dine-in orders
       if (order.table_session_id && order.order_type === 'dine_in') {
         const [[sessionOwner], [userRoles]] = await Promise.all([
@@ -445,15 +450,26 @@ const orderService = {
             [createdBy]
           )
         ]);
-        const isPrivileged = userRoles.some(r => ['admin', 'manager', 'super_admin', 'cashier'].includes(r.role_name));
+        cachedUserRoles = userRoles;
+        // Captains and cashiers can modify any order (no ownership restriction)
+        const isPrivileged = userRoles.some(r => ['admin', 'manager', 'super_admin', 'cashier', 'captain'].includes(r.role_name));
         
         // Convert to numbers for comparison (handle type mismatch)
         const sessionOwnerId = parseInt(sessionOwner[0]?.started_by, 10);
         const currentUserId = parseInt(createdBy, 10);
         
         if (sessionOwner[0] && sessionOwnerId !== currentUserId && !isPrivileged) {
-          throw new Error('Only the assigned captain can modify this order. Contact manager to transfer table.');
+          throw new Error('You do not have permission to modify this order.');
         }
+      } else if (hasOpenItems) {
+        // Non-dine_in: only fetch roles if needed for open item check
+        const [userRoles] = await connection.query(
+          `SELECT r.slug as role_name FROM user_roles ur 
+           JOIN roles r ON ur.role_id = r.id 
+           WHERE ur.user_id = ? AND ur.is_active = 1`,
+          [createdBy]
+        );
+        cachedUserRoles = userRoles;
       }
 
       const addedItems = [];
@@ -462,18 +478,8 @@ const orderService = {
         sectionId: order.section_id
       };
 
-      // Pre-fetch user roles ONCE (used by open item check + ownership check above)
-      let creatorRolesCache = null;
-      const hasOpenItems = items.some(i => i.isOpenItem);
-      if (hasOpenItems) {
-        const [creatorRoles] = await connection.query(
-          `SELECT r.slug FROM user_roles ur
-           JOIN roles r ON ur.role_id = r.id
-           WHERE ur.user_id = ? AND ur.is_active = 1`,
-          [createdBy]
-        );
-        creatorRolesCache = creatorRoles;
-      }
+      // Reuse cached roles for open item permission check
+      const creatorRolesCache = cachedUserRoles;
 
       for (const item of items) {
         const {
@@ -487,7 +493,7 @@ const orderService = {
         if (isOpenItem) {
           // Role check: only cashier/manager/admin can add open items (pre-fetched)
           const allowedOpenItemRoles = ['cashier', 'manager', 'admin', 'super_admin'];
-          if (!creatorRolesCache || !creatorRolesCache.some(r => allowedOpenItemRoles.includes(r.slug))) {
+          if (!creatorRolesCache || !creatorRolesCache.some(r => allowedOpenItemRoles.includes(r.role_name || r.slug))) {
             throw new Error('Only cashier, manager or admin can add open items');
           }
 
@@ -733,20 +739,29 @@ const orderService = {
   async recalculateTotals(orderId, connection = null) {
     const pool = connection || getPool();
 
-    // Get all non-cancelled items with their tax details
-    const [orderItems] = await pool.query(
-      `SELECT total_price, tax_amount, tax_details, is_nc, nc_amount
-       FROM order_items WHERE order_id = ? AND status != 'cancelled'`,
-      [orderId]
-    );
+    // Fetch items + discounts in parallel (items include id for discount lookup)
+    const [[orderItems], [discountRows]] = await Promise.all([
+      pool.query(
+        `SELECT id, total_price, tax_amount, tax_details, is_nc, nc_amount
+         FROM order_items WHERE order_id = ? AND status != 'cancelled'`,
+        [orderId]
+      ),
+      pool.query(
+        `SELECT id, discount_type, discount_value, discount_amount, applied_on, order_item_id
+         FROM order_discounts WHERE order_id = ?`,
+        [orderId]
+      )
+    ]);
 
-    // Calculate subtotal and NC amount, collect tax rates (only for non-NC items)
+    // Build in-memory item lookup (eliminates N+1 per-discount queries)
+    const itemById = {};
     let subtotal = 0;
     let ncAmount = 0;
     const itemsWithTax = [];
 
     for (const item of orderItems) {
       const itemTotal = parseFloat(item.total_price) || 0;
+      itemById[item.id] = { total_price: itemTotal, is_nc: !!item.is_nc };
       
       if (item.is_nc) {
         ncAmount += parseFloat(item.nc_amount || item.total_price) || 0;
@@ -755,7 +770,6 @@ const orderService = {
 
       subtotal += itemTotal;
 
-      // Extract tax rates for recalculation after discount
       if (item.tax_details) {
         const taxDetails = typeof item.tax_details === 'string' 
           ? JSON.parse(item.tax_details) 
@@ -766,59 +780,47 @@ const orderService = {
       }
     }
 
-    // Get all discounts and recalculate percentage-based discounts on new subtotal
-    const [discountRows] = await pool.query(
-      `SELECT id, discount_type, discount_value, discount_amount, applied_on, order_item_id
-       FROM order_discounts WHERE order_id = ?`,
-      [orderId]
-    );
-
+    // Recalculate discounts using in-memory item data (zero DB queries in this loop)
     let totalDiscountAmount = 0;
+    const discountUpdates = [];
     for (const discount of discountRows) {
       let newDiscountAmount = parseFloat(discount.discount_amount) || 0;
       
-      // Recalculate percentage discounts based on new subtotal
       if (discount.discount_type === 'percentage') {
         const discountValue = parseFloat(discount.discount_value) || 0;
         
         if (discount.applied_on === 'item' && discount.order_item_id) {
-          // Item-level discount - check if item is NC
-          const [itemCheck] = await pool.query(
-            `SELECT total_price, is_nc FROM order_items WHERE id = ? AND status != 'cancelled'`,
-            [discount.order_item_id]
-          );
-          if (itemCheck[0] && !itemCheck[0].is_nc) {
-            const itemPrice = parseFloat(itemCheck[0].total_price) || 0;
-            newDiscountAmount = (itemPrice * discountValue) / 100;
+          // Item-level discount - lookup from in-memory map (was N+1 DB query)
+          const itemData = itemById[discount.order_item_id];
+          if (itemData && !itemData.is_nc) {
+            newDiscountAmount = (itemData.total_price * discountValue) / 100;
           } else {
-            // Item is NC or cancelled, discount becomes 0
             newDiscountAmount = 0;
           }
         } else {
-          // Subtotal-level percentage discount - recalculate on new subtotal
           newDiscountAmount = (subtotal * discountValue) / 100;
         }
         
-        // Cap discount to not exceed subtotal
         newDiscountAmount = Math.min(newDiscountAmount, subtotal - totalDiscountAmount);
         newDiscountAmount = Math.max(0, newDiscountAmount);
         newDiscountAmount = parseFloat(newDiscountAmount.toFixed(2));
         
-        // Update the discount record with new amount
+        // Batch discount updates (execute after loop)
         if (Math.abs(newDiscountAmount - (parseFloat(discount.discount_amount) || 0)) > 0.01) {
-          await pool.query(
+          discountUpdates.push(pool.query(
             'UPDATE order_discounts SET discount_amount = ? WHERE id = ?',
             [newDiscountAmount, discount.id]
-          );
+          ));
         }
       } else {
-        // Flat discount - cap to available subtotal
         newDiscountAmount = Math.min(newDiscountAmount, subtotal - totalDiscountAmount);
         newDiscountAmount = Math.max(0, newDiscountAmount);
       }
       
       totalDiscountAmount += newDiscountAmount;
     }
+    // Execute all discount updates in parallel
+    if (discountUpdates.length > 0) await Promise.all(discountUpdates);
 
     // Calculate taxable amount after discount
     const taxableAmount = Math.max(0, subtotal - totalDiscountAmount);
@@ -1366,16 +1368,14 @@ const orderService = {
    */
   async getActiveOrders(outletId, filters = {}) {
     const pool = getPool();
+    // Step 1: Fetch orders (fast, uses indexes, no GROUP BY)
     let query = `
       SELECT o.*, t.table_number, t.name as table_name,
-        f.name as floor_name, s.name as section_name,
-        COUNT(CASE WHEN oi.status != 'cancelled' THEN 1 END) as item_count,
-        COUNT(CASE WHEN oi.status = 'ready' THEN 1 END) as ready_count
+        f.name as floor_name, s.name as section_name
       FROM orders o
       LEFT JOIN tables t ON o.table_id = t.id
       LEFT JOIN floors f ON o.floor_id = f.id
       LEFT JOIN sections s ON o.section_id = s.id
-      LEFT JOIN order_items oi ON oi.order_id = o.id
       WHERE o.outlet_id = ? AND o.status NOT IN ('paid', 'completed', 'cancelled')
     `;
     const params = [outletId];
@@ -1400,9 +1400,30 @@ const orderService = {
       params.push(filters.createdBy);
     }
 
-    query += ' GROUP BY o.id ORDER BY o.is_priority DESC, o.created_at DESC';
+    query += ' ORDER BY o.is_priority DESC, o.created_at DESC';
 
     const [orders] = await pool.query(query, params);
+
+    // Step 2: Batch-fetch item counts for these orders only (avoids GROUP BY on full join)
+    if (orders.length > 0) {
+      const orderIds = orders.map(o => o.id);
+      const [itemStats] = await pool.query(
+        `SELECT order_id,
+           COUNT(CASE WHEN status != 'cancelled' THEN 1 END) as item_count,
+           COUNT(CASE WHEN status = 'ready' THEN 1 END) as ready_count
+         FROM order_items WHERE order_id IN (?)
+         GROUP BY order_id`,
+        [orderIds]
+      );
+      const statsMap = {};
+      for (const s of itemStats) statsMap[s.order_id] = s;
+      for (const o of orders) {
+        const s = statsMap[o.id];
+        o.item_count = s ? Number(s.item_count) : 0;
+        o.ready_count = s ? Number(s.ready_count) : 0;
+      }
+    }
+
     return orders;
   },
 
@@ -1454,39 +1475,50 @@ const orderService = {
       params.push(s, s, s);
     }
 
-    // Data query — correlated subqueries replaced with LEFT JOIN aggregations
+    // Step 1: Parallel fetch — count + orders (fast, uses indexes on orders table)
     const dataQuery = `SELECT o.*,
         u.name as created_by_name,
-        COALESCE(oi_stats.item_count, 0) as item_count,
-        COALESCE(oi_stats.ready_count, 0) as ready_count,
-        oi_stats.item_summary,
-        COALESCE(oi_stats.nc_item_count, 0) as nc_item_count,
-        COALESCE(oi_stats.computed_nc_amount, 0) as computed_nc_amount,
         i.id as invoice_id, i.invoice_number, i.grand_total as invoice_total, i.payment_status as invoice_payment_status
        FROM orders o
        LEFT JOIN users u ON o.created_by = u.id
        LEFT JOIN invoices i ON i.order_id = o.id AND i.is_cancelled = 0
-       LEFT JOIN (
-         SELECT oi.order_id,
-           COUNT(CASE WHEN oi.status != 'cancelled' THEN 1 END) as item_count,
-           COUNT(CASE WHEN oi.status = 'ready' THEN 1 END) as ready_count,
-           GROUP_CONCAT(DISTINCT CASE WHEN oi.status != 'cancelled' THEN oi.item_name END SEPARATOR ', ') as item_summary,
-           COUNT(CASE WHEN oi.is_nc = 1 AND oi.status != 'cancelled' THEN 1 END) as nc_item_count,
-           COALESCE(SUM(CASE WHEN oi.is_nc = 1 AND oi.status != 'cancelled' THEN oi.total_price ELSE 0 END), 0) as computed_nc_amount
-         FROM order_items oi
-         GROUP BY oi.order_id
-       ) oi_stats ON o.id = oi_stats.order_id
        ${whereClause}
        ORDER BY o.is_priority DESC, o.${safeSortBy} ${safeSortOrder}
        LIMIT ? OFFSET ?`;
 
-    // Parallel: count + data
     const [countResult, dataResult] = await Promise.all([
       pool.query(`SELECT COUNT(*) as total FROM orders o ${whereClause}`, params),
       pool.query(dataQuery, [...params, limit, offset])
     ]);
     const total = countResult[0][0].total;
     const orders = dataResult[0];
+
+    // Step 2: Batch-fetch item stats for only the returned orders (avoids full order_items scan)
+    if (orders.length > 0) {
+      const orderIds = orders.map(o => o.id);
+      const [itemStats] = await pool.query(
+        `SELECT oi.order_id,
+           COUNT(CASE WHEN oi.status != 'cancelled' THEN 1 END) as item_count,
+           COUNT(CASE WHEN oi.status = 'ready' THEN 1 END) as ready_count,
+           GROUP_CONCAT(DISTINCT CASE WHEN oi.status != 'cancelled' THEN oi.item_name END SEPARATOR ', ') as item_summary,
+           COUNT(CASE WHEN oi.is_nc = 1 AND oi.status != 'cancelled' THEN 1 END) as nc_item_count,
+           COALESCE(SUM(CASE WHEN oi.is_nc = 1 AND oi.status != 'cancelled' THEN oi.total_price ELSE 0 END), 0) as computed_nc_amount
+         FROM order_items oi
+         WHERE oi.order_id IN (?)
+         GROUP BY oi.order_id`,
+        [orderIds]
+      );
+      const statsMap = {};
+      for (const s of itemStats) statsMap[s.order_id] = s;
+      for (const o of orders) {
+        const s = statsMap[o.id];
+        o.item_count = s ? Number(s.item_count) : 0;
+        o.ready_count = s ? Number(s.ready_count) : 0;
+        o.item_summary = s ? s.item_summary : null;
+        o.nc_item_count = s ? Number(s.nc_item_count) : 0;
+        o.computed_nc_amount = s ? Number(s.computed_nc_amount) : 0;
+      }
+    }
 
     return {
       data: orders,
@@ -2461,102 +2493,31 @@ const orderService = {
       hasNcItems     // 'true' to show only orders with NC items
     } = filters;
 
-    // Optimized query with LEFT JOIN aggregations instead of subqueries for better performance
-    // Calculate subtotal/total excluding NC items on-the-fly from order_items
+    // Lightweight query — uses pre-computed totals from orders table (set by recalculateTotals)
+    // Stats (item_count, kot_count, etc.) are batch-fetched AFTER pagination for only returned orders
     let query = `
       SELECT 
-        o.id,
-        o.order_number,
-        o.order_type,
-        o.status,
-        o.payment_status,
-        COALESCE(chargeable_stats.chargeable_subtotal, 0) as subtotal,
-        COALESCE(chargeable_stats.chargeable_tax, 0) as tax_amount,
-        o.discount_amount,
-        ROUND(COALESCE(chargeable_stats.chargeable_subtotal, 0) - o.discount_amount + 
-          COALESCE(chargeable_stats.chargeable_tax, 0) * 
-          (CASE WHEN COALESCE(chargeable_stats.chargeable_subtotal, 0) > 0 
-           THEN (COALESCE(chargeable_stats.chargeable_subtotal, 0) - o.discount_amount) / COALESCE(chargeable_stats.chargeable_subtotal, 0) 
-           ELSE 1 END)
-        ) as total_amount,
-        o.paid_amount,
-        CASE WHEN COALESCE(nc_stats.nc_item_count, 0) > 0 THEN 1 ELSE 0 END as is_nc,
-        COALESCE(nc_stats.nc_total, 0) as nc_amount,
+        o.id, o.order_number, o.order_type, o.status, o.payment_status,
+        o.subtotal, o.tax_amount, o.discount_amount, o.total_amount,
+        o.paid_amount, o.nc_amount,
         CASE 
-          WHEN o.status IN ('paid', 'completed') THEN COALESCE(o.paid_amount, 
-            ROUND(COALESCE(chargeable_stats.chargeable_subtotal, 0) - o.discount_amount + 
-              COALESCE(chargeable_stats.chargeable_tax, 0) * 
-              (CASE WHEN COALESCE(chargeable_stats.chargeable_subtotal, 0) > 0 
-               THEN (COALESCE(chargeable_stats.chargeable_subtotal, 0) - o.discount_amount) / COALESCE(chargeable_stats.chargeable_subtotal, 0) 
-               ELSE 1 END)
-            ))
-          ELSE COALESCE(inv.grand_total, 
-            ROUND(COALESCE(chargeable_stats.chargeable_subtotal, 0) - o.discount_amount + 
-              COALESCE(chargeable_stats.chargeable_tax, 0) * 
-              (CASE WHEN COALESCE(chargeable_stats.chargeable_subtotal, 0) > 0 
-               THEN (COALESCE(chargeable_stats.chargeable_subtotal, 0) - o.discount_amount) / COALESCE(chargeable_stats.chargeable_subtotal, 0) 
-               ELSE 1 END)
-            ))
+          WHEN o.status IN ('paid', 'completed') THEN COALESCE(o.paid_amount, o.total_amount)
+          ELSE COALESCE(inv.grand_total, o.total_amount)
         END as display_amount,
-        o.guest_count,
-        o.customer_name,
-        o.customer_phone,
-        o.created_at,
-        o.updated_at,
-        o.cancelled_at,
-        o.cancel_reason,
-        t.table_number,
-        t.name as table_name,
+        o.guest_count, o.customer_name, o.customer_phone,
+        o.created_at, o.updated_at, o.cancelled_at, o.cancel_reason,
+        t.table_number, t.name as table_name,
         f.name as floor_name,
-        ts.started_at as session_started_at,
-        ts.ended_at as session_ended_at,
-        COALESCE(item_stats.item_count, 0) as item_count,
-        COALESCE(kot_stats.kot_count, 0) as kot_count,
-        COALESCE(nc_stats.nc_item_count, 0) as nc_item_count,
-        COALESCE(nc_stats.nc_total, 0) as nc_items_total,
-        COALESCE(oi_stats.open_item_count, 0) as open_item_count,
-        CASE WHEN COALESCE(oi_stats.open_item_count, 0) > 0 THEN 1 ELSE 0 END as has_open_items,
+        ts.started_at as session_started_at, ts.ended_at as session_ended_at,
         u.name as created_by_name,
-        inv.grand_total as invoice_grand_total,
-        inv.is_nc as invoice_is_nc,
-        inv.nc_amount as invoice_nc_amount,
-        inv.invoice_number
+        inv.grand_total as invoice_grand_total, inv.is_nc as invoice_is_nc,
+        inv.nc_amount as invoice_nc_amount, inv.invoice_number
       FROM orders o
       LEFT JOIN tables t ON o.table_id = t.id
       LEFT JOIN floors f ON o.floor_id = f.id
       LEFT JOIN table_sessions ts ON o.table_session_id = ts.id
       LEFT JOIN users u ON o.created_by = u.id
-      LEFT JOIN (
-        SELECT order_id, COUNT(*) as item_count 
-        FROM order_items WHERE status != 'cancelled' 
-        GROUP BY order_id
-      ) item_stats ON o.id = item_stats.order_id
-      LEFT JOIN (
-        SELECT order_id, 
-          SUM(CASE WHEN is_nc = 0 THEN total_price ELSE 0 END) as chargeable_subtotal,
-          SUM(CASE WHEN is_nc = 0 THEN tax_amount ELSE 0 END) as chargeable_tax
-        FROM order_items WHERE status != 'cancelled' 
-        GROUP BY order_id
-      ) chargeable_stats ON o.id = chargeable_stats.order_id
-      LEFT JOIN (
-        SELECT order_id, COUNT(*) as kot_count 
-        FROM kot_tickets 
-        GROUP BY order_id
-      ) kot_stats ON o.id = kot_stats.order_id
-      LEFT JOIN (
-        SELECT order_id, COUNT(*) as nc_item_count, SUM(COALESCE(nc_amount, total_price)) as nc_total
-        FROM order_items WHERE is_nc = 1 AND status != 'cancelled'
-        GROUP BY order_id
-      ) nc_stats ON o.id = nc_stats.order_id
-      LEFT JOIN (
-        SELECT order_id, COUNT(*) as open_item_count
-        FROM order_items WHERE is_open_item = 1 AND status != 'cancelled'
-        GROUP BY order_id
-      ) oi_stats ON o.id = oi_stats.order_id
-      LEFT JOIN (
-        SELECT order_id, grand_total, is_nc, nc_amount, invoice_number
-        FROM invoices WHERE is_cancelled = 0
-      ) inv ON o.id = inv.order_id
+      LEFT JOIN invoices inv ON o.id = inv.order_id AND inv.is_cancelled = 0
       WHERE o.outlet_id = ?
     `;
     const params = [outletId];
@@ -2637,6 +2598,52 @@ const orderService = {
     ]);
     const total = countResult[0][0].total;
     const orders = dataResult[0];
+
+    // Step 2: Batch-fetch stats for only the returned page of orders (avoids full table scans)
+    if (orders.length > 0) {
+      const orderIds = orders.map(o => o.id);
+      const [itemStatsRes, kotStatsRes, ncStatsRes, openItemStatsRes] = await Promise.all([
+        pool.query(
+          `SELECT order_id, COUNT(*) as item_count
+           FROM order_items WHERE order_id IN (?) AND status != 'cancelled'
+           GROUP BY order_id`,
+          [orderIds]
+        ),
+        pool.query(
+          `SELECT order_id, COUNT(*) as kot_count
+           FROM kot_tickets WHERE order_id IN (?)
+           GROUP BY order_id`,
+          [orderIds]
+        ),
+        pool.query(
+          `SELECT order_id, COUNT(*) as nc_item_count, SUM(COALESCE(nc_amount, total_price)) as nc_total
+           FROM order_items WHERE order_id IN (?) AND is_nc = 1 AND status != 'cancelled'
+           GROUP BY order_id`,
+          [orderIds]
+        ),
+        pool.query(
+          `SELECT order_id, COUNT(*) as open_item_count
+           FROM order_items WHERE order_id IN (?) AND is_open_item = 1 AND status != 'cancelled'
+           GROUP BY order_id`,
+          [orderIds]
+        )
+      ]);
+      const itemMap = {}, kotMap = {}, ncMap = {}, oiMap = {};
+      for (const s of itemStatsRes[0]) itemMap[s.order_id] = s;
+      for (const s of kotStatsRes[0]) kotMap[s.order_id] = s;
+      for (const s of ncStatsRes[0]) ncMap[s.order_id] = s;
+      for (const s of openItemStatsRes[0]) oiMap[s.order_id] = s;
+
+      for (const o of orders) {
+        o.item_count = itemMap[o.id] ? Number(itemMap[o.id].item_count) : 0;
+        o.kot_count = kotMap[o.id] ? Number(kotMap[o.id].kot_count) : 0;
+        o.nc_item_count = ncMap[o.id] ? Number(ncMap[o.id].nc_item_count) : 0;
+        o.nc_items_total = ncMap[o.id] ? Number(ncMap[o.id].nc_total) : 0;
+        o.is_nc = o.nc_item_count > 0 ? 1 : 0;
+        o.open_item_count = oiMap[o.id] ? Number(oiMap[o.id].open_item_count) : 0;
+        o.has_open_items = o.open_item_count > 0 ? 1 : 0;
+      }
+    }
 
     return {
       orders,
@@ -2982,6 +2989,610 @@ const orderService = {
     }
   },
 
+  /**
+   * Transfer specific items (partial or full qty) from one order to another table.
+   * 
+   * Rules:
+   * - Source order must be active (not billed/paid/completed/cancelled)
+   * - Target table: if occupied/running → must have an active modifiable order
+   * - Target table: if available → creates new order + session automatically
+   * - KOT items are moved to a new KOT on the target order
+   * - If source order has no active items left → auto-cancel source & free table
+   * - Stock deductions stay with items (no reversal — items still exist)
+   *
+   * @param {number} sourceOrderId - Order to transfer items FROM
+   * @param {number} targetTableId - Table to transfer items TO
+   * @param {Array}  items - [{ orderItemId, quantity }] — quantity = how many to transfer
+   * @param {number} userId - User performing the transfer
+   * @returns {Object} Transfer result
+   */
+  async transferItems(sourceOrderId, targetTableId, items, userId) {
+    const pool = getPool();
+    const connection = await pool.getConnection();
+
+    try {
+      await connection.beginTransaction();
+
+      if (!items || !Array.isArray(items) || items.length === 0) {
+        throw new Error('No items specified for transfer');
+      }
+
+      // ── 1. Parallel validation: user role + source order + target table ──
+      const orderItemIds = items.map(i => i.orderItemId);
+      const [
+        [userRoles],
+        [srcRows],
+        [tgtTableRows],
+        [srcItems]
+      ] = await Promise.all([
+        connection.query(
+          `SELECT r.slug as role_name FROM user_roles ur 
+           JOIN roles r ON ur.role_id = r.id 
+           WHERE ur.user_id = ? AND ur.is_active = 1`,
+          [userId]
+        ),
+        connection.query(
+          `SELECT o.*, t.table_number as source_table_number, t.floor_id as source_floor_id
+           FROM orders o
+           LEFT JOIN tables t ON o.table_id = t.id
+           WHERE o.id = ?`,
+          [sourceOrderId]
+        ),
+        connection.query(
+          `SELECT t.*, f.name as floor_name, s.name as section_name
+           FROM tables t
+           JOIN floors f ON t.floor_id = f.id
+           LEFT JOIN sections s ON t.section_id = s.id
+           WHERE t.id = ? AND t.is_active = 1`,
+          [targetTableId]
+        ),
+        connection.query(
+          `SELECT oi.*, i.kitchen_station_id, i.counter_id, i.name as catalog_name,
+                  ks.station_type, ks.name as station_name,
+                  c.counter_type, c.name as counter_name
+           FROM order_items oi
+           JOIN items i ON oi.item_id = i.id
+           LEFT JOIN kitchen_stations ks ON i.kitchen_station_id = ks.id
+           LEFT JOIN counters c ON i.counter_id = c.id
+           WHERE oi.id IN (?) AND oi.order_id = ? AND oi.status != 'cancelled'
+           FOR UPDATE`,
+          [orderItemIds, sourceOrderId]
+        )
+      ]);
+
+      // ── 2. Validate results ──
+      const allowedRoles = ['super_admin', 'admin', 'manager', 'cashier', 'captain'];
+      if (!userRoles.some(r => allowedRoles.includes(r.role_name))) {
+        throw new Error('Only Cashier, Captain, Manager, Admin, or Super Admin can transfer items');
+      }
+
+      const srcOrder = srcRows[0];
+      if (!srcOrder) throw new Error('Source order not found');
+
+      const nonTransferableStatuses = ['billed', 'paid', 'completed', 'cancelled'];
+      if (nonTransferableStatuses.includes(srcOrder.status)) {
+        throw new Error(`Cannot transfer items from an order with status "${srcOrder.status}". Order must be active (pending/confirmed/preparing/ready/served).`);
+      }
+
+      if (srcItems.length !== orderItemIds.length) {
+        const foundIds = srcItems.map(i => i.id);
+        const missing = orderItemIds.filter(id => !foundIds.includes(id));
+        throw new Error(`Order item(s) ${missing.join(', ')} not found, not in this order, or already cancelled`);
+      }
+
+      // Build transfer map & validate quantities
+      const transferMap = {};
+      for (const ti of items) {
+        transferMap[ti.orderItemId] = parseFloat(ti.quantity);
+      }
+      for (const item of srcItems) {
+        const transferQty = transferMap[item.id];
+        if (!transferQty || transferQty <= 0) {
+          throw new Error(`Invalid transfer quantity for item ${item.id}`);
+        }
+        if (transferQty > parseFloat(item.quantity)) {
+          throw new Error(`Cannot transfer ${transferQty} of "${item.item_name}" — only ${item.quantity} available`);
+        }
+      }
+
+      const tgtTable = tgtTableRows[0];
+      if (!tgtTable) throw new Error('Target table not found');
+      if (tgtTable.outlet_id !== srcOrder.outlet_id) {
+        throw new Error('Cannot transfer between different outlets');
+      }
+      if (targetTableId === srcOrder.table_id) {
+        throw new Error('Source and target table cannot be the same');
+      }
+
+      let targetOrderId = null;
+      let targetOrderCreated = false;
+
+      // ── 5. Resolve target order ──
+      if (['occupied', 'running'].includes(tgtTable.status)) {
+        // Target table has an active session — find its order
+        const [tgtSessions] = await connection.query(
+          `SELECT ts.order_id FROM table_sessions ts
+           WHERE ts.table_id = ? AND ts.status = 'active'
+           ORDER BY ts.id DESC LIMIT 1`,
+          [targetTableId]
+        );
+        if (!tgtSessions[0] || !tgtSessions[0].order_id) {
+          throw new Error('Target table is occupied but has no active order');
+        }
+        targetOrderId = tgtSessions[0].order_id;
+
+        // Validate target order is modifiable
+        const [[tgtOrder]] = await connection.query(
+          `SELECT id, status FROM orders WHERE id = ?`,
+          [targetOrderId]
+        );
+        if (!tgtOrder) throw new Error('Target order not found');
+        if (nonTransferableStatuses.includes(tgtOrder.status)) {
+          throw new Error(`Target table order is "${tgtOrder.status}" — cannot transfer items to a billed/paid/completed order`);
+        }
+
+      } else if (tgtTable.status === 'available') {
+        // Target table is available — create order + session
+        // Close any stale sessions first
+        await connection.query(
+          `UPDATE table_sessions SET status = 'completed', ended_at = NOW(), ended_by = ?
+           WHERE table_id = ? AND status = 'active'`,
+          [userId, targetTableId]
+        );
+
+        // Create new session
+        const [sessionRes] = await connection.query(
+          `INSERT INTO table_sessions (table_id, guest_count, started_by)
+           VALUES (?, 1, ?)`,
+          [targetTableId, userId]
+        );
+        const newSessionId = sessionRes.insertId;
+
+        // Generate order number
+        const orderNumber = await this.generateOrderNumber(srcOrder.outlet_id, connection);
+        const uuid = uuidv4();
+
+        // Create new order on target table
+        const [orderRes] = await connection.query(
+          `INSERT INTO orders (
+            uuid, outlet_id, order_number, order_type,
+            table_id, table_session_id, floor_id, section_id,
+            guest_count, status, payment_status, created_by
+          ) VALUES (?, ?, ?, 'dine_in', ?, ?, ?, ?, 1, 'confirmed', 'pending', ?)`,
+          [
+            uuid, srcOrder.outlet_id, orderNumber,
+            targetTableId, newSessionId, tgtTable.floor_id, tgtTable.section_id,
+            userId
+          ]
+        );
+        targetOrderId = orderRes.insertId;
+        targetOrderCreated = true;
+
+        // Link session to order
+        await connection.query(
+          'UPDATE table_sessions SET order_id = ? WHERE id = ?',
+          [targetOrderId, newSessionId]
+        );
+
+        // Set target table to running (items have KOTs already)
+        await connection.query(
+          `UPDATE tables SET status = 'running' WHERE id = ?`,
+          [targetTableId]
+        );
+
+        logger.info(`[ITEM-TRANSFER] Created order ${orderNumber} (id=${targetOrderId}) on target table ${tgtTable.table_number} for item transfer`);
+
+      } else {
+        throw new Error(`Target table is "${tgtTable.status}" — must be available, occupied, or running`);
+      }
+
+      // ── 6. Transfer items + KOTs ──
+      const transferredItems = [];
+      // Group items by their original KOT's station for new KOT creation on target
+      const kotStationGroups = {}; // groupKey → { station, stationId, stationName, items: [] }
+
+      for (const srcItem of srcItems) {
+        const transferQty = transferMap[srcItem.id];
+        const srcQty = parseFloat(srcItem.quantity);
+        const isFullTransfer = Math.abs(transferQty - srcQty) < 0.001;
+
+        let newOrderItemId;
+
+        if (isFullTransfer) {
+          // ── Full item transfer: move entire order_item to target order ──
+          await connection.query(
+            `UPDATE order_items SET order_id = ? WHERE id = ?`,
+            [targetOrderId, srcItem.id]
+          );
+          newOrderItemId = srcItem.id;
+
+          // Move addons
+          // (addons reference order_item_id, which stays the same — no update needed)
+
+          // Move cost snapshot
+          await connection.query(
+            `UPDATE order_item_costs SET order_id = ? WHERE order_item_id = ?`,
+            [targetOrderId, srcItem.id]
+          );
+
+          // Inventory movements use reference_type='order_item', reference_id=order_item_id
+          // Since order_item_id stays the same for full transfer, no update needed
+
+        } else {
+          // ── Partial transfer: split the item ──
+          const remainQty = srcQty - transferQty;
+          const unitPrice = parseFloat(srcItem.unit_price);
+          const basePrice = parseFloat(srcItem.base_price);
+
+          // Calculate proportional amounts for transferred portion
+          const origTotalPrice = parseFloat(srcItem.total_price);
+          const origTaxAmount = parseFloat(srcItem.tax_amount || 0);
+          const origDiscountAmt = parseFloat(srcItem.discount_amount || 0);
+          const origNcAmount = parseFloat(srcItem.nc_amount || 0);
+
+          const newTotalPrice = parseFloat((unitPrice * transferQty).toFixed(2));
+          const newTaxAmount = parseFloat(((origTaxAmount / srcQty) * transferQty).toFixed(2));
+          const newDiscountAmt = parseFloat(((origDiscountAmt / srcQty) * transferQty).toFixed(2));
+          const newNcAmount = parseFloat(((origNcAmount / srcQty) * transferQty).toFixed(2));
+
+          // Reduce source item quantity & amounts
+          const remainTotalPrice = parseFloat((unitPrice * remainQty).toFixed(2));
+          const remainTaxAmount = parseFloat((origTaxAmount - newTaxAmount).toFixed(2));
+          const remainDiscountAmt = parseFloat((origDiscountAmt - newDiscountAmt).toFixed(2));
+          const remainNcAmount = parseFloat((origNcAmount - newNcAmount).toFixed(2));
+
+          await connection.query(
+            `UPDATE order_items SET 
+              quantity = ?, total_price = ?, tax_amount = ?, 
+              discount_amount = ?, nc_amount = ?
+             WHERE id = ?`,
+            [remainQty, remainTotalPrice, remainTaxAmount, remainDiscountAmt, remainNcAmount, srcItem.id]
+          );
+
+          // Create new order_item on target order
+          const [newItemRes] = await connection.query(
+            `INSERT INTO order_items (
+              order_id, item_id, variant_id, item_name, variant_name, item_type,
+              quantity, weight, unit_price, base_price, tax_amount, total_price,
+              discount_amount, tax_group_id, tax_details, special_instructions,
+              status, is_complimentary, complimentary_reason,
+              is_nc, nc_reason_id, nc_reason, nc_amount, nc_by, nc_at,
+              is_open_item, created_by
+            ) SELECT 
+              ?, item_id, variant_id, item_name, variant_name, item_type,
+              ?, weight, unit_price, base_price, ?, ?,
+              ?, tax_group_id, tax_details, special_instructions,
+              status, is_complimentary, complimentary_reason,
+              is_nc, nc_reason_id, nc_reason, ?, nc_by, nc_at,
+              is_open_item, ?
+            FROM order_items WHERE id = ?`,
+            [targetOrderId, transferQty, newTaxAmount, newTotalPrice, 
+             newDiscountAmt, newNcAmount, userId, srcItem.id]
+          );
+          newOrderItemId = newItemRes.insertId;
+
+          // Duplicate addons for the new item
+          const [srcAddons] = await connection.query(
+            `SELECT * FROM order_item_addons WHERE order_item_id = ?`,
+            [srcItem.id]
+          );
+          if (srcAddons.length > 0) {
+            const addonValues = srcAddons.map(a => [
+              newOrderItemId, a.addon_id, a.addon_group_id, a.addon_name,
+              a.addon_group_name, a.quantity, a.unit_price, a.total_price
+            ]);
+            await connection.query(
+              `INSERT INTO order_item_addons (
+                order_item_id, addon_id, addon_group_id, addon_name,
+                addon_group_name, quantity, unit_price, total_price
+              ) VALUES ?`,
+              [addonValues]
+            );
+          }
+
+          // Split cost snapshot proportionally
+          const [srcCosts] = await connection.query(
+            `SELECT * FROM order_item_costs WHERE order_item_id = ?`,
+            [srcItem.id]
+          );
+          if (srcCosts[0]) {
+            const ratio = transferQty / srcQty;
+            const sc = srcCosts[0];
+            await connection.query(
+              `INSERT INTO order_item_costs (order_id, order_item_id, item_id, variant_id,
+                making_cost, selling_price, profit, food_cost_percentage, cost_breakdown)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                targetOrderId, newOrderItemId, sc.item_id, sc.variant_id,
+                parseFloat((sc.making_cost * ratio).toFixed(2)),
+                parseFloat((sc.selling_price * ratio).toFixed(2)),
+                parseFloat((sc.profit * ratio).toFixed(2)),
+                sc.food_cost_percentage,
+                sc.cost_breakdown
+              ]
+            );
+            // Reduce source cost snapshot
+            await connection.query(
+              `UPDATE order_item_costs SET 
+                making_cost = ROUND(making_cost * ?, 2),
+                selling_price = ROUND(selling_price * ?, 2),
+                profit = ROUND(profit * ?, 2)
+               WHERE order_item_id = ?`,
+              [1 - ratio, 1 - ratio, 1 - ratio, srcItem.id]
+            );
+          }
+        }
+
+        // ── Collect KOT grouping info for this item ──
+        if (srcItem.kot_id) {
+          // Determine station grouping key
+          let station = 'kitchen', stationId = null, stationName = 'Kitchen';
+          if (srcItem.counter_id) {
+            station = srcItem.counter_name ? srcItem.counter_name.toLowerCase().replace(/\s+/g, '_') : 'bar';
+            stationId = srcItem.counter_id;
+            stationName = srcItem.counter_name || 'Bar';
+          } else if (srcItem.kitchen_station_id) {
+            station = srcItem.station_name ? srcItem.station_name.toLowerCase().replace(/\s+/g, '_') : (srcItem.station_type || 'kitchen');
+            stationId = srcItem.kitchen_station_id;
+            stationName = srcItem.station_name || station;
+          }
+          const groupKey = `${station}:${stationId || 'default'}`;
+
+          if (!kotStationGroups[groupKey]) {
+            kotStationGroups[groupKey] = { station, stationId, stationName, items: [] };
+          }
+          kotStationGroups[groupKey].items.push({
+            srcItem,
+            newOrderItemId,
+            transferQty,
+            isFullTransfer: Math.abs(transferQty - parseFloat(srcItem.quantity)) < 0.001
+          });
+        }
+
+        transferredItems.push({
+          orderItemId: srcItem.id,
+          newOrderItemId,
+          itemName: srcItem.item_name,
+          variantName: srcItem.variant_name,
+          transferredQty: transferQty,
+          originalQty: srcQty,
+          isFullTransfer: Math.abs(transferQty - srcQty) < 0.001
+        });
+      }
+
+      // ── 7. Create new KOT tickets on target order for transferred items ──
+      const kotService = require('./kot.service');
+      const createdKots = [];
+
+      for (const [groupKey, group] of Object.entries(kotStationGroups)) {
+        // Generate KOT number for target order
+        const kotNumber = await kotService.generateKotNumber(
+          srcOrder.outlet_id, group.station, group.stationName, 
+          group.station !== 'kitchen' && group.stationId
+        );
+
+        // Create new KOT ticket on target order
+        const [kotRes] = await connection.query(
+          `INSERT INTO kot_tickets (
+            outlet_id, order_id, kot_number, table_number,
+            station, station_id, status, priority, notes, created_by
+          ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, 'Item transfer', ?)`,
+          [
+            srcOrder.outlet_id, targetOrderId, kotNumber,
+            tgtTable.table_number,
+            group.station, group.stationId, userId
+          ]
+        );
+        const newKotId = kotRes.insertId;
+
+        for (const ti of group.items) {
+          const item = ti.srcItem;
+          const isFullItemTransfer = Math.abs(ti.transferQty - parseFloat(item.quantity)) < 0.001;
+
+          if (isFullItemTransfer) {
+            // Full transfer: move existing kot_items to new KOT
+            await connection.query(
+              `UPDATE kot_items SET kot_id = ? WHERE order_item_id = ?`,
+              [newKotId, item.id]
+            );
+            // Update order_item's kot_id to point to new KOT
+            await connection.query(
+              `UPDATE order_items SET kot_id = ? WHERE id = ?`,
+              [newKotId, item.id]
+            );
+          } else {
+            // Partial transfer: create new kot_item for the new order_item
+            // Get addons text for the new item
+            const [addons] = await connection.query(
+              `SELECT addon_name FROM order_item_addons WHERE order_item_id = ?`,
+              [ti.newOrderItemId]
+            );
+            const addonsText = addons.map(a => a.addon_name).join(', ');
+
+            await connection.query(
+              `INSERT INTO kot_items (
+                kot_id, order_item_id, item_name, variant_name, item_type,
+                quantity, addons_text, special_instructions, status
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                newKotId, ti.newOrderItemId, item.item_name, item.variant_name,
+                item.item_type, ti.transferQty, addonsText || null,
+                item.special_instructions, item.status
+              ]
+            );
+            // Update the new order_item's kot_id
+            await connection.query(
+              `UPDATE order_items SET kot_id = ? WHERE id = ?`,
+              [newKotId, ti.newOrderItemId]
+            );
+
+            // Update source kot_item quantity
+            await connection.query(
+              `UPDATE kot_items SET quantity = ? WHERE order_item_id = ?`,
+              [parseFloat(item.quantity) - ti.transferQty, item.id]
+            );
+          }
+        }
+
+        // Set the new KOT status to match the most advanced item status
+        const [kotItemStatuses] = await connection.query(
+          `SELECT DISTINCT status FROM kot_items WHERE kot_id = ?`,
+          [newKotId]
+        );
+        const statuses = kotItemStatuses.map(r => r.status);
+        let kotStatus = 'pending';
+        if (statuses.includes('served')) kotStatus = 'ready';
+        else if (statuses.includes('ready')) kotStatus = 'ready';
+        else if (statuses.includes('preparing')) kotStatus = 'preparing';
+        else if (statuses.every(s => s === 'cancelled')) kotStatus = 'cancelled';
+
+        if (kotStatus !== 'pending') {
+          await connection.query(
+            `UPDATE kot_tickets SET status = ? WHERE id = ?`,
+            [kotStatus, newKotId]
+          );
+        }
+
+        createdKots.push({ kotId: newKotId, kotNumber, station: group.station, stationName: group.stationName });
+        logger.info(`[ITEM-TRANSFER] Created KOT ${kotNumber} on target order ${targetOrderId} for station ${group.stationName}`);
+      }
+
+      // ── 8. Clean up empty source KOTs (single batch query) ──
+      const srcKotIds = [...new Set(srcItems.filter(i => i.kot_id).map(i => i.kot_id))];
+      if (srcKotIds.length > 0) {
+        // Cancel KOTs where all items are gone or cancelled
+        await connection.query(
+          `UPDATE kot_tickets kt SET kt.status = 'cancelled', kt.cancel_reason = 'All items transferred'
+           WHERE kt.id IN (?)
+             AND NOT EXISTS (
+               SELECT 1 FROM kot_items ki 
+               WHERE ki.kot_id = kt.id AND ki.status != 'cancelled'
+             )`,
+          [srcKotIds]
+        );
+      }
+
+      // ── 9. Recalculate totals on both orders (parallel) ──
+      await Promise.all([
+        this.recalculateTotals(sourceOrderId, connection),
+        this.recalculateTotals(targetOrderId, connection)
+      ]);
+
+      // ── 10. Check if source order is now empty → auto-cancel + free table ──
+      const [[srcActiveItems]] = await connection.query(
+        `SELECT COUNT(*) as cnt FROM order_items 
+         WHERE order_id = ? AND status != 'cancelled'`,
+        [sourceOrderId]
+      );
+      
+      let sourceOrderCancelled = false;
+      let sourceTableFreed = false;
+
+      if (Number(srcActiveItems.cnt) === 0) {
+        // No active items left — cancel the source order
+        await connection.query(
+          `UPDATE orders SET status = 'cancelled', cancel_reason = 'All items transferred', 
+           cancelled_by = ?, cancelled_at = NOW() WHERE id = ?`,
+          [userId, sourceOrderId]
+        );
+        sourceOrderCancelled = true;
+
+        // End session and free source table
+        if (srcOrder.table_id) {
+          await connection.query(
+            `UPDATE table_sessions SET status = 'completed', ended_at = NOW(), ended_by = ?
+             WHERE table_id = ? AND status = 'active'`,
+            [userId, srcOrder.table_id]
+          );
+          await connection.query(
+            `UPDATE tables SET status = 'available' WHERE id = ?`,
+            [srcOrder.table_id]
+          );
+          sourceTableFreed = true;
+        }
+      }
+
+      // ── 11. Log transfer ──
+      const transferDetails = {
+        sourceOrderId,
+        targetOrderId,
+        sourceTableId: srcOrder.table_id,
+        targetTableId,
+        targetOrderCreated,
+        sourceOrderCancelled,
+        sourceTableFreed,
+        items: transferredItems,
+        createdKots: createdKots.map(k => ({ kotId: k.kotId, kotNumber: k.kotNumber, station: k.station }))
+      };
+
+      await connection.query(
+        `INSERT INTO order_transfer_logs (
+          order_id, from_table_id, to_table_id, target_order_id,
+          transfer_type, reason, transfer_details, transferred_by
+        ) VALUES (?, ?, ?, ?, 'item', 'Item transfer', ?, ?)`,
+        [
+          sourceOrderId, srcOrder.table_id, targetTableId, targetOrderId,
+          JSON.stringify(transferDetails), userId
+        ]
+      );
+
+      await connection.commit();
+
+      // ── 12. Post-commit: emit order/table events (fire-and-forget) ──
+      // NOTE: KOT records are created in DB (section 7) for bookkeeping only.
+      // No KOT emit or print — kitchen already has the original KOT for these items.
+      const self = this;
+      const _outletId = srcOrder.outlet_id;
+      const _srcTableId = srcOrder.table_id;
+      const _srcFloorId = srcOrder.source_floor_id;
+      const _tgtFloorId = tgtTable.floor_id;
+
+      Promise.resolve().then(async () => {
+        try {
+          // Fetch updated orders in parallel
+          const [srcUpdated, tgtUpdated] = await Promise.all([
+            self.getById(sourceOrderId),
+            self.getById(targetOrderId)
+          ]);
+
+          // Emit order + table events + invalidate cache (no KOT emit, no KOT print)
+          await Promise.all([
+            self.emitOrderUpdate(_outletId, srcUpdated, 'order:items_transferred'),
+            self.emitOrderUpdate(_outletId, tgtUpdated, targetOrderCreated ? 'order:created' : 'order:items_received'),
+            self.emitTableUpdate(_outletId, _srcTableId, targetTableId),
+            tableService.invalidateCache(_outletId, _srcFloorId, _srcTableId),
+            tableService.invalidateCache(_outletId, _tgtFloorId, targetTableId)
+          ]);
+
+          logger.info(`[ITEM-TRANSFER] Post-commit done: order/table events emitted (KOT print skipped — items already in kitchen)`);
+        } catch (postErr) {
+          logger.error('[ITEM-TRANSFER] Post-commit event error:', postErr.message);
+        }
+      });
+
+      logger.info(`[ITEM-TRANSFER] Transferred ${transferredItems.length} item(s) from order ${sourceOrderId} to order ${targetOrderId} (table ${tgtTable.table_number}) by user ${userId}`);
+
+      return {
+        success: true,
+        message: `Transferred ${transferredItems.length} item(s) to table ${tgtTable.table_number}`,
+        sourceOrderId,
+        targetOrderId,
+        targetOrderCreated,
+        sourceOrderCancelled,
+        sourceTableFreed,
+        transferredItems,
+        createdKots,
+        transfer: transferDetails
+      };
+
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  },
+
   // ========================
   // REALTIME EVENTS
   // ========================
@@ -3240,54 +3851,97 @@ const orderService = {
     const safeSort = allowedSortColumns.includes(sortBy) ? sortColumnMap[sortBy] : 'o.created_at';
     const safeOrder = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
 
-    // Get total count
-    const [countResult] = await pool.query(
-      `SELECT COUNT(DISTINCT o.id) as total 
-       FROM orders o
-       LEFT JOIN tables t ON o.table_id = t.id
-       LEFT JOIN invoices inv ON o.id = inv.order_id
-       ${whereClause}`,
-      queryParams
-    );
-    const total = countResult[0].total;
+    // Run count + data + summary in parallel (was 3 sequential queries)
+    const [countResult, ordersResult, summaryResult] = await Promise.all([
+      pool.query(
+        `SELECT COUNT(DISTINCT o.id) as total 
+         FROM orders o
+         LEFT JOIN tables t ON o.table_id = t.id
+         LEFT JOIN invoices inv ON o.id = inv.order_id
+         ${whereClause}`,
+        queryParams
+      ),
+      pool.query(
+        `SELECT 
+          o.*,
+          ol.name as outlet_name,
+          t.table_number,
+          t.name as table_name,
+          f.name as floor_name,
+          s.name as section_name,
+          captain.name as captain_name,
+          inv.id as invoice_id,
+          inv.invoice_number,
+          inv.grand_total as invoice_total,
+          inv.payment_status as invoice_payment_status
+         FROM orders o
+         LEFT JOIN outlets ol ON o.outlet_id = ol.id
+         LEFT JOIN tables t ON o.table_id = t.id
+         LEFT JOIN floors f ON t.floor_id = f.id
+         LEFT JOIN sections s ON t.section_id = s.id
+         LEFT JOIN users captain ON o.created_by = captain.id
+         LEFT JOIN invoices inv ON o.id = inv.order_id
+         ${whereClause}
+         GROUP BY o.id
+         ORDER BY ${safeSort} ${safeOrder}
+         LIMIT ? OFFSET ?`,
+        [...queryParams, parseInt(limit), parseInt(offset)]
+      ),
+      pool.query(
+        `SELECT 
+          COUNT(DISTINCT o.id) as total_orders,
+          SUM(CASE WHEN o.status IN ('paid', 'completed') THEN COALESCE(o.paid_amount, o.total_amount) ELSE o.total_amount END) as total_amount,
+          SUM(CASE WHEN o.status IN ('paid', 'completed') THEN COALESCE(o.paid_amount, o.total_amount) ELSE 0 END) as completed_amount,
+          SUM(CASE WHEN o.status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_count,
+          SUM(CASE WHEN o.order_type = 'dine_in' THEN 1 ELSE 0 END) as dine_in_count,
+          SUM(CASE WHEN o.order_type = 'takeaway' THEN 1 ELSE 0 END) as takeaway_count,
+          SUM(CASE WHEN o.order_type = 'delivery' THEN 1 ELSE 0 END) as delivery_count,
+          AVG(CASE WHEN o.status IN ('paid', 'completed') THEN COALESCE(o.paid_amount, o.total_amount) ELSE o.total_amount END) as avg_order_value,
+          SUM(CASE WHEN o.is_nc = 1 THEN 1 ELSE 0 END) as nc_count,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount
+         FROM orders o
+         LEFT JOIN tables t ON o.table_id = t.id
+         LEFT JOIN invoices inv ON o.id = inv.order_id
+         ${whereClause}`,
+        queryParams
+      )
+    ]);
+    const total = countResult[0][0].total;
+    const orders = ordersResult[0];
 
-    // Get orders with all related data
-    const [orders] = await pool.query(
-      `SELECT 
-        o.*,
-        ol.name as outlet_name,
-        t.table_number,
-        t.name as table_name,
-        f.name as floor_name,
-        s.name as section_name,
-        captain.name as captain_name,
-        inv.id as invoice_id,
-        inv.invoice_number,
-        inv.grand_total as invoice_total,
-        inv.payment_status as invoice_payment_status,
-        (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count,
-        (SELECT COUNT(*) FROM kot_tickets WHERE order_id = o.id) as kot_count,
-        (SELECT SUM(total_amount) FROM payments WHERE order_id = o.id AND status = 'completed') as paid_amount
-       FROM orders o
-       LEFT JOIN outlets ol ON o.outlet_id = ol.id
-       LEFT JOIN tables t ON o.table_id = t.id
-       LEFT JOIN floors f ON t.floor_id = f.id
-       LEFT JOIN sections s ON t.section_id = s.id
-       LEFT JOIN users captain ON o.created_by = captain.id
-       LEFT JOIN invoices inv ON o.id = inv.order_id
-       ${whereClause}
-       GROUP BY o.id
-       ORDER BY ${safeSort} ${safeOrder}
-       LIMIT ? OFFSET ?`,
-      [...queryParams, parseInt(limit), parseInt(offset)]
-    );
+    // Batch-fetch item_count, kot_count, paid_amount for only returned orders (was 3 correlated subqueries per row)
+    if (orders.length > 0) {
+      const orderIds = orders.map(o => o.id);
+      const [itemRes, kotRes, payRes] = await Promise.all([
+        pool.query(
+          `SELECT order_id, COUNT(*) as cnt FROM order_items WHERE order_id IN (?) GROUP BY order_id`,
+          [orderIds]
+        ),
+        pool.query(
+          `SELECT order_id, COUNT(*) as cnt FROM kot_tickets WHERE order_id IN (?) GROUP BY order_id`,
+          [orderIds]
+        ),
+        pool.query(
+          `SELECT order_id, SUM(total_amount) as paid FROM payments WHERE order_id IN (?) AND status = 'completed' GROUP BY order_id`,
+          [orderIds]
+        )
+      ]);
+      const iMap = {}, kMap = {}, pMap = {};
+      for (const r of itemRes[0]) iMap[r.order_id] = Number(r.cnt);
+      for (const r of kotRes[0]) kMap[r.order_id] = Number(r.cnt);
+      for (const r of payRes[0]) pMap[r.order_id] = parseFloat(r.paid) || 0;
+      for (const o of orders) {
+        o.item_count = iMap[o.id] || 0;
+        o.kot_count = kMap[o.id] || 0;
+        o.paid_amount = pMap[o.id] || parseFloat(o.paid_amount) || 0;
+      }
+    }
 
-    // Format orders - use paid_amount for completed orders to show correct amount after discount
+    // Format orders
     const formattedOrders = orders.map(order => {
       const totalAmt = parseFloat(order.total_amount) || 0;
       const paidAmt = parseFloat(order.paid_amount) || 0;
       const isCompleted = ['paid', 'completed'].includes(order.status);
-      // Display amount: for completed orders use paid_amount, otherwise use total_amount
       const displayAmt = isCompleted ? (paidAmt || totalAmt) : totalAmt;
       
       return {
@@ -3330,26 +3984,6 @@ const orderService = {
       createdAt: order.created_at,
       updatedAt: order.updated_at
     }});
-
-    // Get summary statistics for the filtered results - use paid_amount for completed orders
-    const [summaryResult] = await pool.query(
-      `SELECT 
-        COUNT(DISTINCT o.id) as total_orders,
-        SUM(CASE WHEN o.status IN ('paid', 'completed') THEN COALESCE(o.paid_amount, o.total_amount) ELSE o.total_amount END) as total_amount,
-        SUM(CASE WHEN o.status IN ('paid', 'completed') THEN COALESCE(o.paid_amount, o.total_amount) ELSE 0 END) as completed_amount,
-        SUM(CASE WHEN o.status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_count,
-        SUM(CASE WHEN o.order_type = 'dine_in' THEN 1 ELSE 0 END) as dine_in_count,
-        SUM(CASE WHEN o.order_type = 'takeaway' THEN 1 ELSE 0 END) as takeaway_count,
-        SUM(CASE WHEN o.order_type = 'delivery' THEN 1 ELSE 0 END) as delivery_count,
-        AVG(CASE WHEN o.status IN ('paid', 'completed') THEN COALESCE(o.paid_amount, o.total_amount) ELSE o.total_amount END) as avg_order_value,
-        SUM(CASE WHEN o.is_nc = 1 THEN 1 ELSE 0 END) as nc_count,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount
-       FROM orders o
-       LEFT JOIN tables t ON o.table_id = t.id
-       LEFT JOIN invoices inv ON o.id = inv.order_id
-       ${whereClause}`,
-      queryParams
-    );
 
     return {
       orders: formattedOrders,

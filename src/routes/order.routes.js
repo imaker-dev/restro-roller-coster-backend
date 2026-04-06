@@ -183,6 +183,14 @@ router.put('/:id/status', validate(orderValidation.updateStatus), orderControlle
 router.post('/:id/transfer', validate(orderValidation.transferTable), orderController.transferTable);
 
 /**
+ * @route   POST /api/v1/orders/:id/transfer-items
+ * @desc    Transfer specific items from this order to another table
+ * @access  Private (Cashier, Captain, Manager, Admin, Super Admin)
+ * @body    { targetTableId: number, items: [{ orderItemId: number, quantity: number }] }
+ */
+router.post('/:id/transfer-items', validate(orderValidation.transferItems), orderController.transferItems);
+
+/**
  * @route   POST /api/v1/orders/:id/cancel
  * @desc    Cancel entire order
  * @access  Private (manager approval may be required)
@@ -461,14 +469,14 @@ router.get('/shifts/:outletId/floor/:floorId/status', orderController.getFloorSh
  * @desc    Get live dashboard
  * @access  Private
  */
-router.get('/reports/:outletId/dashboard', reportCache('order-dashboard', 120), orderController.getLiveDashboard);
+router.get('/reports/:outletId/dashboard', reportCache('order-dashboard', 30), orderController.getLiveDashboard);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/daily-sales
  * @desc    Get daily sales report
  * @access  Private (manager, admin)
  */
-router.get('/reports/:outletId/daily-sales', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-daily-sales', 120), orderController.getDailySalesReport);
+router.get('/reports/:outletId/daily-sales', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-daily-sales', 30), orderController.getDailySalesReport);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/daily-sales/detail
@@ -476,14 +484,14 @@ router.get('/reports/:outletId/daily-sales', authorize('super_admin', 'admin', '
  * @query   startDate, endDate
  * @access  Private (manager, admin, cashier)
  */
-router.get('/reports/:outletId/daily-sales/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-daily-sales-detail', 120), orderController.getDailySalesDetail);
+router.get('/reports/:outletId/daily-sales/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-daily-sales-detail', 30), orderController.getDailySalesDetail);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/item-sales
  * @desc    Get item sales report
  * @access  Private (manager, admin)
  */
-router.get('/reports/:outletId/item-sales', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-item-sales', 120), orderController.getItemSalesReport);
+router.get('/reports/:outletId/item-sales', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-item-sales', 30), orderController.getItemSalesReport);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/item-sales/detail
@@ -652,21 +660,21 @@ router.get('/reports/:outletId/nc/export', authorize('super_admin', 'admin', 'ma
  * @query   sortBy - session_date | opening_time | closing_time | total_sales | total_orders | cash_variance
  * @query   sortOrder - ASC | DESC (default: DESC)
  */
-router.get('/shifts/:outletId/history', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('shift-history', 120), orderController.getShiftHistory);
+router.get('/shifts/:outletId/history', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('shift-history', 30), orderController.getShiftHistory);
 
 /**
  * @route   GET /api/v1/orders/shifts/:shiftId/detail
  * @desc    Get detailed shift information with transactions, payments, staff activity
  * @access  Private (cashier, manager, admin)
  */
-router.get('/shifts/:shiftId/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('shift-detail', 120), orderController.getShiftDetail);
+router.get('/shifts/:shiftId/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('shift-detail', 30), orderController.getShiftDetail);
 
 /**
  * @route   GET /api/v1/orders/shifts/:shiftId/summary
  * @desc    Get single shift summary with shift-time-based calculations
  * @access  Private (cashier, manager, admin)
  */
-router.get('/shifts/:shiftId/summary', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('shift-summary', 120), orderController.getShiftSummaryById);
+router.get('/shifts/:shiftId/summary', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('shift-summary', 30), orderController.getShiftSummaryById);
 
 /**
  * @route   GET /api/v1/orders/shifts/:outletId/outlet-summary
@@ -675,7 +683,7 @@ router.get('/shifts/:shiftId/summary', authorize('super_admin', 'admin', 'manage
  * @query   startDate - Filter from date (YYYY-MM-DD)
  * @query   endDate - Filter to date (YYYY-MM-DD)
  */
-router.get('/shifts/:outletId/outlet-summary', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('shift-outlet-summary', 120), orderController.getShiftSummary);
+router.get('/shifts/:outletId/outlet-summary', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('shift-outlet-summary', 30), orderController.getShiftSummary);
 
 /**
  * @route   GET /api/v1/orders/shifts/:outletId/history/export

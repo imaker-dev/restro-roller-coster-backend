@@ -18,12 +18,13 @@ const crypto = require('crypto');
  */
 function buildKey(req, tag) {
   const outletId = req.query.outletId || req.params.outletId || '0';
+  const userId = req.user?.userId || '0';
   const params = { ...req.query, ...req.params };
   // Remove non-deterministic fields
   delete params.outletId;
   const sorted = JSON.stringify(params, Object.keys(params).sort());
   const hash = crypto.createHash('md5').update(sorted).digest('hex').slice(0, 12);
-  return `report:${outletId}:${tag}:${hash}`;
+  return `report:${outletId}:${tag}:u${userId}:${hash}`;
 }
 
 /**
