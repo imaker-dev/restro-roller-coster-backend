@@ -30,7 +30,7 @@ router.get('/dashboard', authorize(...REPORT_ROLES), reportCache('dashboard', 60
  * @query   date - shortcut for single date
  * @note    Single date → hourly 4-hour blocks, Multiple dates → daily breakdown
  */
-router.get('/running-dashboard', authorize(...REPORT_ROLES), reportCache('running-dashboard', 1800), reportsController.getRunningDashboard);
+router.get('/running-dashboard', authorize(...REPORT_ROLES), reportCache('running-dashboard', 30), reportsController.getRunningDashboard);
 
 /**
  * @route   GET /api/v1/reports/running-orders

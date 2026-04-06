@@ -195,6 +195,23 @@ const orderController = {
     }
   },
 
+  async transferItems(req, res) {
+    try {
+      const result = await orderService.transferItems(
+        parseInt(req.params.id),
+        req.body.targetTableId,
+        req.body.items,
+        req.user.userId
+      );
+      res.json({ success: true, message: result.message, data: result });
+    } catch (error) {
+      logger.error('Transfer items error:', error);
+      const status = error.message.includes('not found') ? 404 : 
+                     error.message.includes('Cannot') || error.message.includes('Only') ? 403 : 500;
+      res.status(status).json({ success: false, message: error.message });
+    }
+  },
+
   async getCancelReasons(req, res) {
     try {
       const { outletId } = req.params;

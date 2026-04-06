@@ -27,14 +27,19 @@ function _getCachedServiceCharge(pool, outletId) {
   }).catch(() => null);
 }
 
+const BUSINESS_DAY_START_HOUR = 4;
+
 /**
- * Get local date string (YYYY-MM-DD) accounting for server timezone
+ * Get local date string (YYYY-MM-DD) for the current business day.
+ * If the current time is before BUSINESS_DAY_START_HOUR (e.g. 4 AM),
+ * the business day is still "yesterday".
  */
 function getLocalDate(date = new Date()) {
   const d = date instanceof Date ? date : new Date(date);
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
+  const shifted = new Date(d.getTime() - BUSINESS_DAY_START_HOUR * 60 * 60 * 1000);
+  const year = shifted.getFullYear();
+  const month = String(shifted.getMonth() + 1).padStart(2, '0');
+  const day = String(shifted.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 }
 
@@ -803,10 +808,15 @@ const tableService = {
    * Get tables by floor with real-time data including KOT summary and shift status
    */
   async getByFloor(floorId) {
+    // Short-lived cache (2s) — absorbs burst polling from multiple devices at peak
+    const _cacheKey = `tables:floor:${floorId}`;
+    const _cached = await cache.get(_cacheKey);
+    if (_cached) return _cached;
+
     const pool = getPool();
     
-    // Parallel: floor info + tables + sections (all independent, all use only floorId)
-    const [floorInfoResult, tablesResult, sectionsResult] = await Promise.all([
+    // Phase 1: All 4 independent queries in parallel (floor, tables, sections, direct orders)
+    const [floorInfoResult, tablesResult, sectionsResult, directOrdersResult] = await Promise.all([
       pool.query(
         `SELECT f.id, f.name, f.outlet_id, f.floor_number,
           ds.id as shift_id, ds.status as shift_status, ds.cashier_id,
@@ -852,29 +862,27 @@ const tableService = {
          WHERE fs.floor_id = ? AND s.is_active = 1
          ORDER BY s.display_order, s.name`,
         [floorId]
+      ),
+      // Direct active orders by floor (fallback for session gaps) — uses floor_id JOIN, no table IDs needed
+      pool.query(
+        `SELECT o.table_id, MAX(o.id) as order_id FROM orders o
+         JOIN tables t ON o.table_id = t.id
+         WHERE t.floor_id = ? AND t.is_active = 1 AND o.status NOT IN ('paid', 'completed', 'cancelled')
+         GROUP BY o.table_id`,
+        [floorId]
       )
     ]);
     const floorInfo = floorInfoResult[0];
     const tables = tablesResult[0];
     const sections = sectionsResult[0];
 
-    // Batch-fetch KOT summaries, item counts, NC items, merges, and direct active orders for ALL tables
+    // Build direct orders lookup and fill missing current_order_id
+    const directOrderByTable = {};
+    for (const row of directOrdersResult[0]) directOrderByTable[row.table_id] = row.order_id;
+
     const allTableIds = tables.map(t => t.id);
     const mergedTableIds = tables.filter(t => t.status === 'merged').map(t => t.id);
 
-    // First: get reliable active order IDs directly from orders table (fallback for session gaps)
-    let directOrderByTable = {};
-    if (allTableIds.length > 0) {
-      const [directOrders] = await pool.query(
-        `SELECT table_id, MAX(id) as order_id FROM orders
-         WHERE table_id IN (?) AND status NOT IN ('paid', 'completed', 'cancelled')
-         GROUP BY table_id`,
-        [allTableIds]
-      );
-      for (const row of directOrders) directOrderByTable[row.table_id] = row.order_id;
-    }
-
-    // Fill in missing current_order_id from direct orders lookup
     for (const table of tables) {
       if (!table.current_order_id && directOrderByTable[table.id]) {
         table.current_order_id = directOrderByTable[table.id];
@@ -989,7 +997,7 @@ const tableService = {
 
     // Build response with floor info, shift status, sections, and tables
     const floor = floorInfo[0] || {};
-    return {
+    const result = {
       floor: {
         id: floor.id,
         name: floor.name,
@@ -1011,6 +1019,10 @@ const tableService = {
       })),
       tables
     };
+
+    // Cache for 2s — short enough for freshness, long enough to absorb peak polling
+    await cache.set(_cacheKey, result, 2);
+    return result;
   },
 
   /**
@@ -2271,9 +2283,12 @@ const tableService = {
    * Invalidate cache
    */
   async invalidateCache(outletId, floorId, tableId) {
-    await cache.del(`tables:outlet:${outletId}`);
-    await cache.del(`tables:floor:${floorId}`);
-    if (tableId) await cache.del(`table:detail:${tableId}`);
+    const delOps = [
+      cache.del(`tables:outlet:${outletId}`),
+      cache.del(`tables:floor:${floorId}`)
+    ];
+    if (tableId) delOps.push(cache.del(`table:detail:${tableId}`));
+    await Promise.all(delOps);
   },
 
   /**

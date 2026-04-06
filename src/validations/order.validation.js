@@ -80,6 +80,14 @@ module.exports = {
     toTableId: Joi.number().integer().positive().required()
   }),
 
+  transferItems: Joi.object({
+    targetTableId: Joi.number().integer().positive().required(),
+    items: Joi.array().items(Joi.object({
+      orderItemId: Joi.number().integer().positive().required(),
+      quantity: Joi.number().min(0.5).required()
+    })).min(1).required()
+  }),
+
   updateStatus: Joi.object({
     status: Joi.string().valid(...ORDER_STATUS).required()
   }),

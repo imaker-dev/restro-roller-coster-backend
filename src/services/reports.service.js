@@ -37,8 +37,16 @@ function getLocalDate(date = new Date()) {
  */
 function floorFilter(floorIds, alias = 'o') {
   if (!floorIds || floorIds.length === 0) return { sql: '', params: [] };
+  const placeholders = floorIds.map(() => '?').join(',');
+  // When filtering orders table, include takeaway/delivery (floor_id IS NULL)
+  if (alias === 'o') {
+    return {
+      sql: ` AND (${alias}.floor_id IN (${placeholders}) OR (${alias}.floor_id IS NULL AND ${alias}.order_type IN ('takeaway', 'delivery')))`,
+      params: [...floorIds]
+    };
+  }
   return {
-    sql: ` AND ${alias}.floor_id IN (${floorIds.map(() => '?').join(',')})`,
+    sql: ` AND ${alias}.floor_id IN (${placeholders})`,
     params: [...floorIds]
   };
 }
@@ -99,6 +107,36 @@ function businessDayRange(startDate, endDate) {
  */
 function bdWhere(column) {
   return `${column} >= ? AND ${column} < ?`;
+}
+
+/**
+ * Build unified collection summary block.
+ * totalCollection = actual money received (from payments table, status=completed)
+ *   Includes tax. Excludes unpaid due, NC, cancelled.
+ * freshCollection = totalCollection - dueCollection
+ * dueCollection = money collected today from older due orders
+ */
+function buildCollectionBlock(data) {
+  const r2 = (n) => parseFloat((parseFloat(n) || 0).toFixed(2));
+  const tc = r2(data.totalCollection);
+  const dc = r2(data.dueCollection);
+  return {
+    totalCollection: tc,
+    freshCollection: r2(tc - dc),
+    dueCollection: dc,
+    paymentBreakdown: {
+      cash: r2(data.cash),
+      card: r2(data.card),
+      upi: r2(data.upi),
+      wallet: r2(data.wallet),
+      credit: r2(data.credit)
+    },
+    totalDue: r2(data.totalDue),
+    totalNC: r2(data.totalNC),
+    ncOrderCount: parseInt(data.ncOrderCount) || 0,
+    totalAdjustment: r2(data.totalAdjustment),
+    adjustmentCount: parseInt(data.adjustmentCount) || 0
+  };
 }
 
 const reportsService = {
@@ -373,71 +411,98 @@ const reportsService = {
     const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
     const ff = floorFilter(floorIds);
 
-    const [rows] = await pool.query(
-      `SELECT 
-        ${toISTDate('o.created_at')} as report_date,
-        COUNT(*) as total_orders,
-        COUNT(CASE WHEN o.order_type = 'dine_in' THEN 1 END) as dine_in_orders,
-        COUNT(CASE WHEN o.order_type = 'takeaway' THEN 1 END) as takeaway_orders,
-        COUNT(CASE WHEN o.order_type = 'delivery' THEN 1 END) as delivery_orders,
-        COUNT(CASE WHEN o.status = 'cancelled' THEN 1 END) as cancelled_orders,
-        COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
-        SUM(o.guest_count) as total_guests,
-        SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal + o.tax_amount) ELSE 0 END) as gross_sales,
-        SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END) as net_sales,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.discount_amount ELSE 0 END) as discount_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.tax_amount ELSE 0 END) as tax_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.service_charge ELSE 0 END) as service_charge,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.packaging_charge ELSE 0 END) as packaging_charge,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.delivery_charge ELSE 0 END) as delivery_charge,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.round_off ELSE 0 END) as round_off,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount,
-        COUNT(CASE WHEN o.is_adjustment = 1 AND o.status != 'cancelled' THEN 1 END) as adjustment_count,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.adjustment_amount, 0) ELSE 0 END) as adjustment_amount
-       FROM orders o
-       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}
-       GROUP BY ${toISTDate('o.created_at')}
-       ORDER BY report_date DESC`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
+    // Execute all 5 independent queries in parallel
+    const [rowsRes, payRowsRes, splitPayRowsRes, costRowsRes, wastageRowsRes] = await Promise.all([
+      pool.query(
+        `SELECT 
+          ${toISTDate('o.created_at')} as report_date,
+          COUNT(*) as total_orders,
+          COUNT(CASE WHEN o.order_type = 'dine_in' THEN 1 END) as dine_in_orders,
+          COUNT(CASE WHEN o.order_type = 'takeaway' THEN 1 END) as takeaway_orders,
+          COUNT(CASE WHEN o.order_type = 'delivery' THEN 1 END) as delivery_orders,
+          COUNT(CASE WHEN o.status = 'cancelled' THEN 1 END) as cancelled_orders,
+          COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
+          SUM(o.guest_count) as total_guests,
+          SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal + o.tax_amount) ELSE 0 END) as gross_sales,
+          SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END) as net_sales,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.discount_amount ELSE 0 END) as discount_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.tax_amount ELSE 0 END) as tax_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.service_charge ELSE 0 END) as service_charge,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.packaging_charge ELSE 0 END) as packaging_charge,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.delivery_charge ELSE 0 END) as delivery_charge,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.round_off ELSE 0 END) as round_off,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount,
+          COUNT(CASE WHEN o.is_adjustment = 1 AND o.status != 'cancelled' THEN 1 END) as adjustment_count,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.adjustment_amount, 0) ELSE 0 END) as adjustment_amount
+         FROM orders o
+         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}
+         GROUP BY ${toISTDate('o.created_at')}
+         ORDER BY report_date DESC`,
+        [outletId, startDt, endDt, ...ff.params]
+      ),
+      pool.query(
+        `SELECT 
+          ${toISTDate('p.created_at')} as report_date,
+          SUM(p.total_amount) as total_collection,
+          SUM(CASE WHEN p.payment_mode = 'cash' THEN p.total_amount ELSE 0 END) as cash_collection,
+          SUM(CASE WHEN p.payment_mode = 'card' THEN p.total_amount ELSE 0 END) as card_collection,
+          SUM(CASE WHEN p.payment_mode = 'upi' THEN p.total_amount ELSE 0 END) as upi_collection,
+          SUM(CASE WHEN p.payment_mode = 'wallet' THEN p.total_amount ELSE 0 END) as wallet_collection,
+          SUM(CASE WHEN p.payment_mode = 'credit' THEN p.total_amount ELSE 0 END) as credit_collection,
+          SUM(p.tip_amount) as tip_amount,
+          SUM(CASE WHEN COALESCE(p.is_due_collection, 0) = 1 THEN p.total_amount ELSE 0 END) as due_collection_amount
+         FROM payments p
+         JOIN orders o ON p.order_id = o.id
+         WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed' AND p.payment_mode != 'split'${ff.sql}
+         GROUP BY ${toISTDate('p.created_at')}`,
+        [outletId, startDt, endDt, ...ff.params]
+      ),
+      pool.query(
+        `SELECT 
+          ${toISTDate('p.created_at')} as report_date,
+          SUM(sp.amount) as total_collection,
+          SUM(CASE WHEN sp.payment_mode = 'cash' THEN sp.amount ELSE 0 END) as cash_collection,
+          SUM(CASE WHEN sp.payment_mode = 'card' THEN sp.amount ELSE 0 END) as card_collection,
+          SUM(CASE WHEN sp.payment_mode = 'upi' THEN sp.amount ELSE 0 END) as upi_collection,
+          SUM(CASE WHEN sp.payment_mode = 'wallet' THEN sp.amount ELSE 0 END) as wallet_collection,
+          SUM(CASE WHEN sp.payment_mode = 'credit' THEN sp.amount ELSE 0 END) as credit_collection,
+          SUM(CASE WHEN COALESCE(p.is_due_collection, 0) = 1 THEN sp.amount ELSE 0 END) as due_collection_amount
+         FROM split_payments sp
+         JOIN payments p ON sp.payment_id = p.id
+         JOIN orders o ON p.order_id = o.id
+         WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed' AND p.payment_mode = 'split'${ff.sql}
+         GROUP BY ${toISTDate('p.created_at')}`,
+        [outletId, startDt, endDt, ...ff.params]
+      ),
+      pool.query(
+        `SELECT ${toISTDate('o.created_at')} as report_date,
+          COALESCE(SUM(oic.making_cost), 0) as making_cost,
+          COALESCE(SUM(oic.profit), 0) as profit
+         FROM order_item_costs oic
+         JOIN orders o ON oic.order_id = o.id
+         WHERE o.outlet_id = ? AND o.status IN ('paid','completed')
+           AND ${bdWhere('o.created_at')}${ff.sql}
+         GROUP BY ${toISTDate('o.created_at')}`,
+        [outletId, startDt, endDt, ...ff.params]
+      ),
+      pool.query(
+        `SELECT wl.wastage_date as report_date,
+          COUNT(*) as wastage_count,
+          COALESCE(SUM(wl.total_cost), 0) as wastage_cost
+         FROM wastage_logs wl
+         WHERE wl.outlet_id = ? AND wl.wastage_date BETWEEN ? AND ?
+         GROUP BY wl.wastage_date`,
+        [outletId, start, end]
+      )
+    ]);
+    const rows = rowsRes[0];
+    const payRows = payRowsRes[0];
+    const splitPayRows = splitPayRowsRes[0];
+    const costRows = costRowsRes[0];
+    const wastageRows = wastageRowsRes[0];
 
-    // Attach payment breakdown per day (regular payments, non-split)
-    const [payRows] = await pool.query(
-      `SELECT 
-        ${toISTDate('p.created_at')} as report_date,
-        SUM(p.total_amount) as total_collection,
-        SUM(CASE WHEN p.payment_mode = 'cash' THEN p.total_amount ELSE 0 END) as cash_collection,
-        SUM(CASE WHEN p.payment_mode = 'card' THEN p.total_amount ELSE 0 END) as card_collection,
-        SUM(CASE WHEN p.payment_mode = 'upi' THEN p.total_amount ELSE 0 END) as upi_collection,
-        SUM(CASE WHEN p.payment_mode = 'wallet' THEN p.total_amount ELSE 0 END) as wallet_collection,
-        SUM(CASE WHEN p.payment_mode = 'credit' THEN p.total_amount ELSE 0 END) as credit_collection,
-        SUM(p.tip_amount) as tip_amount
-       FROM payments p
-       JOIN orders o ON p.order_id = o.id
-       WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed' AND p.payment_mode != 'split'${ff.sql}
-       GROUP BY ${toISTDate('p.created_at')}`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
-    
-    // Get split payment breakdown per day
-    const [splitPayRows] = await pool.query(
-      `SELECT 
-        ${toISTDate('p.created_at')} as report_date,
-        SUM(sp.amount) as total_collection,
-        SUM(CASE WHEN sp.payment_mode = 'cash' THEN sp.amount ELSE 0 END) as cash_collection,
-        SUM(CASE WHEN sp.payment_mode = 'card' THEN sp.amount ELSE 0 END) as card_collection,
-        SUM(CASE WHEN sp.payment_mode = 'upi' THEN sp.amount ELSE 0 END) as upi_collection,
-        SUM(CASE WHEN sp.payment_mode = 'wallet' THEN sp.amount ELSE 0 END) as wallet_collection,
-        SUM(CASE WHEN sp.payment_mode = 'credit' THEN sp.amount ELSE 0 END) as credit_collection
-       FROM split_payments sp
-       JOIN payments p ON sp.payment_id = p.id
-       JOIN orders o ON p.order_id = o.id
-       WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed' AND p.payment_mode = 'split'${ff.sql}
-       GROUP BY ${toISTDate('p.created_at')}`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
     const splitPayMap = {};
     splitPayRows.forEach(r => { splitPayMap[r.report_date instanceof Date ? r.report_date.toISOString().slice(0, 10) : r.report_date] = r; });
     
@@ -452,7 +517,8 @@ const reportsService = {
         card_collection: (parseFloat(r.card_collection) || 0) + (parseFloat(splitPay.card_collection) || 0),
         upi_collection: (parseFloat(r.upi_collection) || 0) + (parseFloat(splitPay.upi_collection) || 0),
         wallet_collection: (parseFloat(r.wallet_collection) || 0) + (parseFloat(splitPay.wallet_collection) || 0),
-        credit_collection: (parseFloat(r.credit_collection) || 0) + (parseFloat(splitPay.credit_collection) || 0)
+        credit_collection: (parseFloat(r.credit_collection) || 0) + (parseFloat(splitPay.credit_collection) || 0),
+        due_collection_amount: (parseFloat(r.due_collection_amount) || 0) + (parseFloat(splitPay.due_collection_amount) || 0)
       };
     });
     // Handle days that only have split payments
@@ -466,39 +532,18 @@ const reportsService = {
           upi_collection: parseFloat(r.upi_collection) || 0,
           wallet_collection: parseFloat(r.wallet_collection) || 0,
           credit_collection: parseFloat(r.credit_collection) || 0,
+          due_collection_amount: parseFloat(r.due_collection_amount) || 0,
           tip_amount: 0
         };
       }
     });
 
-    // Cost/Profit data from order_item_costs grouped by date
-    const [costRows] = await pool.query(
-      `SELECT ${toISTDate('o.created_at')} as report_date,
-        COALESCE(SUM(oic.making_cost), 0) as making_cost,
-        COALESCE(SUM(oic.profit), 0) as profit
-       FROM order_item_costs oic
-       JOIN orders o ON oic.order_id = o.id
-       WHERE o.outlet_id = ? AND o.status IN ('paid','completed')
-         AND ${bdWhere('o.created_at')}${ff.sql}
-       GROUP BY ${toISTDate('o.created_at')}`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
     const costMap = {};
     costRows.forEach(r => {
       const dk = r.report_date instanceof Date ? r.report_date.toISOString().slice(0, 10) : r.report_date;
       costMap[dk] = { making_cost: parseFloat(r.making_cost) || 0, profit: parseFloat(r.profit) || 0 };
     });
 
-    // Wastage data grouped by date
-    const [wastageRows] = await pool.query(
-      `SELECT wl.wastage_date as report_date,
-        COUNT(*) as wastage_count,
-        COALESCE(SUM(wl.total_cost), 0) as wastage_cost
-       FROM wastage_logs wl
-       WHERE wl.outlet_id = ? AND wl.wastage_date BETWEEN ? AND ?
-       GROUP BY wl.wastage_date`,
-      [outletId, start, end]
-    );
     const wastageMap = {};
     wastageRows.forEach(r => {
       const dk = r.report_date instanceof Date ? r.report_date.toISOString().slice(0, 10) : r.report_date;
@@ -529,7 +574,21 @@ const reportsService = {
         wastage_count: wst.wastage_count,
         wastage_cost: wst.wastage_cost,
         average_order_value: avgOrderValue,
-        average_guest_spend: avgGuestSpend
+        average_guest_spend: avgGuestSpend,
+        collection: buildCollectionBlock({
+          totalCollection: pay.total_collection || 0,
+          dueCollection: pay.due_collection_amount || 0,
+          cash: pay.cash_collection || 0,
+          card: pay.card_collection || 0,
+          upi: pay.upi_collection || 0,
+          wallet: pay.wallet_collection || 0,
+          credit: pay.credit_collection || 0,
+          totalDue: parseFloat(r.due_amount) || 0,
+          totalNC: parseFloat(r.nc_amount) || 0,
+          ncOrderCount: r.nc_orders || 0,
+          totalAdjustment: parseFloat(r.adjustment_amount) || 0,
+          adjustmentCount: r.adjustment_count || 0
+        })
       };
     });
 
@@ -557,6 +616,7 @@ const reportsService = {
     const totalPaidAmount = rows.reduce((s, r) => s + parseFloat(r.paid_amount || 0), 0);
     const totalAdjustmentCount = rows.reduce((s, r) => s + (r.adjustment_count || 0), 0);
     const totalAdjustmentAmount = rows.reduce((s, r) => s + parseFloat(r.adjustment_amount || 0), 0);
+    const totalDueCollection = daily.reduce((s, r) => s + (r.collection ? r.collection.dueCollection : 0), 0);
 
     return {
       dateRange: { start, end },
@@ -594,7 +654,21 @@ const reportsService = {
         wastage_cost: daily.reduce((s, r) => s + (r.wastage_cost || 0), 0).toFixed(2),
         average_order_value: totalOrders > 0 ? (netSales / totalOrders).toFixed(2) : '0.00',
         average_guest_spend: totalGuests > 0 ? (netSales / totalGuests).toFixed(2) : '0.00',
-        average_daily_sales: daily.length > 0 ? (netSales / daily.length).toFixed(2) : '0.00'
+        average_daily_sales: daily.length > 0 ? (netSales / daily.length).toFixed(2) : '0.00',
+        collection: buildCollectionBlock({
+          totalCollection: totalCollection,
+          dueCollection: totalDueCollection,
+          cash: cashCollection,
+          card: cardCollection,
+          upi: upiCollection,
+          wallet: walletCollection,
+          credit: creditCollection,
+          totalDue: totalDueAmount,
+          totalNC: totalNCAmount,
+          ncOrderCount: totalNCOrders,
+          totalAdjustment: totalAdjustmentAmount,
+          adjustmentCount: totalAdjustmentCount
+        })
       }
     };
   },
@@ -609,69 +683,67 @@ const reportsService = {
     const ff = floorFilter(floorIds);
     const stf = serviceTypeFilter(serviceType);
 
-    // Get item counts from order_items (for total_items count)
-    const [itemCountResult] = await pool.query(
-      `SELECT 
-        COUNT(DISTINCT CONCAT(oi.item_id, '-', COALESCE(oi.variant_name, ''))) as total_items,
-        SUM(CASE WHEN oi.status != 'cancelled' THEN oi.quantity ELSE 0 END) as total_quantity,
-        SUM(CASE WHEN oi.status = 'cancelled' THEN oi.quantity ELSE 0 END) as cancelled_quantity,
-        SUM(CASE WHEN oi.status != 'cancelled' AND oi.is_nc = 1 THEN oi.quantity ELSE 0 END) as nc_quantity,
-        SUM(CASE WHEN oi.status != 'cancelled' AND oi.is_nc = 1 THEN oi.total_price ELSE 0 END) as nc_amount
-       FROM order_items oi
-       JOIN orders o ON oi.order_id = o.id
-       LEFT JOIN items i ON oi.item_id = i.id
-       LEFT JOIN categories c ON i.category_id = c.id
-       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}${stf.sql}`,
-      [outletId, startDt, endDt, ...ff.params, ...stf.params]
-    );
-    const itemCount = itemCountResult[0];
-
-    // Get financial summary from ORDERS table for consistency with daily sales report
-    // Gross = subtotal + tax, Net = subtotal - discount
-    const [orderSummary] = await pool.query(
-      `SELECT 
-        SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal + o.tax_amount) ELSE 0 END) as gross_revenue,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.discount_amount ELSE 0 END) as discount_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.tax_amount ELSE 0 END) as tax_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END) as net_revenue,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount
-       FROM orders o
-       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'${ff.sql}`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
-    const summary = { ...itemCount, ...orderSummary[0] };
-
-    // Then get item details with LIMIT for display
-    const [rows] = await pool.query(
-      `SELECT 
-        oi.item_id, oi.item_name, oi.variant_name,
-        c.name as category_name, i.category_id,
-        c.service_type as category_service_type,
-        SUM(CASE WHEN oi.status != 'cancelled' THEN oi.quantity ELSE 0 END) as total_quantity,
-        SUM(CASE WHEN oi.status = 'cancelled' THEN oi.quantity ELSE 0 END) as cancelled_quantity,
-        SUM(CASE WHEN oi.status != 'cancelled' THEN oi.total_price ELSE 0 END) as gross_revenue,
-        SUM(CASE WHEN oi.status != 'cancelled' THEN oi.discount_amount ELSE 0 END) as discount_amount,
-        SUM(CASE WHEN oi.status != 'cancelled' THEN oi.tax_amount ELSE 0 END) as tax_amount,
-        SUM(CASE WHEN oi.status != 'cancelled' THEN (oi.total_price - oi.discount_amount) ELSE 0 END) as net_revenue,
-        COUNT(DISTINCT oi.order_id) as order_count,
-        AVG(CASE WHEN oi.status != 'cancelled' THEN oi.unit_price ELSE NULL END) as avg_price,
-        SUM(CASE WHEN oi.status != 'cancelled' AND oi.is_nc = 1 THEN oi.quantity ELSE 0 END) as nc_quantity,
-        SUM(CASE WHEN oi.status != 'cancelled' AND oi.is_nc = 1 THEN oi.total_price ELSE 0 END) as nc_amount,
-        COALESCE(SUM(oic.making_cost), 0) as making_cost,
-        COALESCE(SUM(oic.profit), 0) as item_profit,
-        COALESCE(AVG(oic.making_cost / NULLIF(oi.quantity, 0)), 0) as avg_cost_per_unit
-       FROM order_items oi
-       JOIN orders o ON oi.order_id = o.id
-       LEFT JOIN items i ON oi.item_id = i.id
-       LEFT JOIN categories c ON i.category_id = c.id
-       LEFT JOIN order_item_costs oic ON oic.order_item_id = oi.id
-       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}${stf.sql}
-       GROUP BY oi.item_id, oi.item_name, oi.variant_name, c.name, i.category_id, c.service_type
-       ORDER BY total_quantity DESC
-       LIMIT ?`,
-      [outletId, startDt, endDt, ...ff.params, ...stf.params, limit]
-    );
+    // Execute all 3 independent queries in parallel
+    const [itemCountRes, orderSummaryRes, rowsRes] = await Promise.all([
+      pool.query(
+        `SELECT 
+          COUNT(DISTINCT CONCAT(oi.item_id, '-', COALESCE(oi.variant_name, ''))) as total_items,
+          SUM(CASE WHEN oi.status != 'cancelled' THEN oi.quantity ELSE 0 END) as total_quantity,
+          SUM(CASE WHEN oi.status = 'cancelled' THEN oi.quantity ELSE 0 END) as cancelled_quantity,
+          SUM(CASE WHEN oi.status != 'cancelled' AND oi.is_nc = 1 THEN oi.quantity ELSE 0 END) as nc_quantity,
+          SUM(CASE WHEN oi.status != 'cancelled' AND oi.is_nc = 1 THEN oi.total_price ELSE 0 END) as nc_amount
+         FROM order_items oi
+         JOIN orders o ON oi.order_id = o.id
+         LEFT JOIN items i ON oi.item_id = i.id
+         LEFT JOIN categories c ON i.category_id = c.id
+         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}${stf.sql}`,
+        [outletId, startDt, endDt, ...ff.params, ...stf.params]
+      ),
+      pool.query(
+        `SELECT 
+          SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal + o.tax_amount) ELSE 0 END) as gross_revenue,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.discount_amount ELSE 0 END) as discount_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.tax_amount ELSE 0 END) as tax_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END) as net_revenue,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount
+         FROM orders o
+         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'${ff.sql}`,
+        [outletId, startDt, endDt, ...ff.params]
+      ),
+      pool.query(
+        `SELECT 
+          oi.item_id, oi.item_name, oi.variant_name,
+          c.name as category_name, i.category_id,
+          c.service_type as category_service_type,
+          SUM(CASE WHEN oi.status != 'cancelled' THEN oi.quantity ELSE 0 END) as total_quantity,
+          SUM(CASE WHEN oi.status = 'cancelled' THEN oi.quantity ELSE 0 END) as cancelled_quantity,
+          SUM(CASE WHEN oi.status != 'cancelled' THEN oi.total_price ELSE 0 END) as gross_revenue,
+          SUM(CASE WHEN oi.status != 'cancelled' THEN oi.discount_amount ELSE 0 END) as discount_amount,
+          SUM(CASE WHEN oi.status != 'cancelled' THEN oi.tax_amount ELSE 0 END) as tax_amount,
+          SUM(CASE WHEN oi.status != 'cancelled' THEN (oi.total_price - oi.discount_amount) ELSE 0 END) as net_revenue,
+          COUNT(DISTINCT oi.order_id) as order_count,
+          AVG(CASE WHEN oi.status != 'cancelled' THEN oi.unit_price ELSE NULL END) as avg_price,
+          SUM(CASE WHEN oi.status != 'cancelled' AND oi.is_nc = 1 THEN oi.quantity ELSE 0 END) as nc_quantity,
+          SUM(CASE WHEN oi.status != 'cancelled' AND oi.is_nc = 1 THEN oi.total_price ELSE 0 END) as nc_amount,
+          COALESCE(SUM(oic.making_cost), 0) as making_cost,
+          COALESCE(SUM(oic.profit), 0) as item_profit,
+          COALESCE(AVG(oic.making_cost / NULLIF(oi.quantity, 0)), 0) as avg_cost_per_unit
+         FROM order_items oi
+         JOIN orders o ON oi.order_id = o.id
+         LEFT JOIN items i ON oi.item_id = i.id
+         LEFT JOIN categories c ON i.category_id = c.id
+         LEFT JOIN order_item_costs oic ON oic.order_item_id = oi.id
+         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}${stf.sql}
+         GROUP BY oi.item_id, oi.item_name, oi.variant_name, c.name, i.category_id, c.service_type
+         ORDER BY total_quantity DESC
+         LIMIT ?`,
+        [outletId, startDt, endDt, ...ff.params, ...stf.params, limit]
+      )
+    ]);
+    const itemCount = itemCountRes[0][0];
+    const summary = { ...itemCount, ...orderSummaryRes[0][0] };
+    const rows = rowsRes[0];
 
     // Use summary totals from the first query (accurate counts without LIMIT)
     const totalItems = parseInt(summary.total_items || 0);
@@ -721,44 +793,45 @@ const reportsService = {
     const ff = floorFilter(floorIds);
     const stf = serviceTypeFilter(serviceType);
 
-    // Get category breakdown from order_items
-    const [rows] = await pool.query(
-      `SELECT 
-        i.category_id, c.name as category_name,
-        c.service_type as category_service_type,
-        SUM(CASE WHEN oi.status != 'cancelled' THEN oi.quantity ELSE 0 END) as total_quantity,
-        SUM(CASE WHEN oi.status != 'cancelled' THEN oi.total_price ELSE 0 END) as gross_revenue,
-        SUM(CASE WHEN oi.status != 'cancelled' THEN oi.discount_amount ELSE 0 END) as discount_amount,
-        SUM(CASE WHEN oi.status != 'cancelled' THEN (oi.total_price - oi.discount_amount) ELSE 0 END) as net_revenue,
-        COUNT(DISTINCT oi.item_id) as item_count,
-        COUNT(DISTINCT oi.order_id) as order_count,
-        SUM(CASE WHEN oi.status != 'cancelled' AND oi.is_nc = 1 THEN oi.quantity ELSE 0 END) as nc_quantity,
-        SUM(CASE WHEN oi.status != 'cancelled' AND oi.is_nc = 1 THEN oi.total_price ELSE 0 END) as nc_amount
-       FROM order_items oi
-       JOIN orders o ON oi.order_id = o.id
-       LEFT JOIN items i ON oi.item_id = i.id
-       LEFT JOIN categories c ON i.category_id = c.id
-       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}${stf.sql}
-       GROUP BY i.category_id, c.name, c.service_type
-       ORDER BY net_revenue DESC`,
-      [outletId, startDt, endDt, ...ff.params, ...stf.params]
-    );
-
-    // Get financial summary from ORDERS table for consistency with daily sales report
-    // Gross = subtotal + tax, Net = subtotal - discount
-    const [orderSummary] = await pool.query(
-      `SELECT 
-        SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal + o.tax_amount) ELSE 0 END) as gross_revenue,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.discount_amount ELSE 0 END) as discount_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END) as net_revenue,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount,
-        COUNT(CASE WHEN o.is_nc = 1 AND o.status != 'cancelled' THEN 1 END) as nc_orders
-       FROM orders o
-       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'${ff.sql}`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
+    // Execute both independent queries in parallel
+    const [rowsRes, orderSummaryRes] = await Promise.all([
+      pool.query(
+        `SELECT 
+          i.category_id, c.name as category_name,
+          c.service_type as category_service_type,
+          SUM(CASE WHEN oi.status != 'cancelled' THEN oi.quantity ELSE 0 END) as total_quantity,
+          SUM(CASE WHEN oi.status != 'cancelled' THEN oi.total_price ELSE 0 END) as gross_revenue,
+          SUM(CASE WHEN oi.status != 'cancelled' THEN oi.discount_amount ELSE 0 END) as discount_amount,
+          SUM(CASE WHEN oi.status != 'cancelled' THEN (oi.total_price - oi.discount_amount) ELSE 0 END) as net_revenue,
+          COUNT(DISTINCT oi.item_id) as item_count,
+          COUNT(DISTINCT oi.order_id) as order_count,
+          SUM(CASE WHEN oi.status != 'cancelled' AND oi.is_nc = 1 THEN oi.quantity ELSE 0 END) as nc_quantity,
+          SUM(CASE WHEN oi.status != 'cancelled' AND oi.is_nc = 1 THEN oi.total_price ELSE 0 END) as nc_amount
+         FROM order_items oi
+         JOIN orders o ON oi.order_id = o.id
+         LEFT JOIN items i ON oi.item_id = i.id
+         LEFT JOIN categories c ON i.category_id = c.id
+         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}${stf.sql}
+         GROUP BY i.category_id, c.name, c.service_type
+         ORDER BY net_revenue DESC`,
+        [outletId, startDt, endDt, ...ff.params, ...stf.params]
+      ),
+      pool.query(
+        `SELECT 
+          SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal + o.tax_amount) ELSE 0 END) as gross_revenue,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.discount_amount ELSE 0 END) as discount_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END) as net_revenue,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount,
+          COUNT(CASE WHEN o.is_nc = 1 AND o.status != 'cancelled' THEN 1 END) as nc_orders
+         FROM orders o
+         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'${ff.sql}`,
+        [outletId, startDt, endDt, ...ff.params]
+      )
+    ]);
+    const rows = rowsRes[0];
+    const orderSummary = orderSummaryRes[0];
 
     const totalQuantity = rows.reduce((s, r) => s + parseInt(r.total_quantity || 0), 0);
     const grossRevenue = parseFloat(orderSummary[0].gross_revenue || 0);
@@ -799,38 +872,58 @@ const reportsService = {
     const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
     const ff = floorFilter(floorIds);
 
-    // Get regular payments (non-split)
-    const [regularRows] = await pool.query(
-      `SELECT 
-        p.payment_mode,
-        COUNT(*) as transaction_count,
-        SUM(p.total_amount) as total_amount,
-        SUM(p.amount) as base_amount,
-        SUM(p.tip_amount) as tip_amount
-       FROM payments p
-       JOIN orders o ON p.order_id = o.id
-       WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed' AND p.payment_mode != 'split'${ff.sql}
-       GROUP BY p.payment_mode
-       ORDER BY total_amount DESC`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
-
-    // Get split payment breakdown from split_payments table
-    const [splitRows] = await pool.query(
-      `SELECT 
-        sp.payment_mode,
-        COUNT(*) as transaction_count,
-        SUM(sp.amount) as total_amount,
-        SUM(sp.amount) as base_amount,
-        0 as tip_amount
-       FROM split_payments sp
-       JOIN payments p ON sp.payment_id = p.id
-       JOIN orders o ON p.order_id = o.id
-       WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed' AND p.payment_mode = 'split'${ff.sql}
-       GROUP BY sp.payment_mode
-       ORDER BY total_amount DESC`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
+    // Execute all 4 independent queries in parallel
+    const [regularRes, splitRes, ncSummaryRes, dueSummaryRes] = await Promise.all([
+      pool.query(
+        `SELECT 
+          p.payment_mode,
+          COUNT(*) as transaction_count,
+          SUM(p.total_amount) as total_amount,
+          SUM(p.amount) as base_amount,
+          SUM(p.tip_amount) as tip_amount
+         FROM payments p
+         JOIN orders o ON p.order_id = o.id
+         WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed' AND p.payment_mode != 'split'${ff.sql}
+         GROUP BY p.payment_mode
+         ORDER BY total_amount DESC`,
+        [outletId, startDt, endDt, ...ff.params]
+      ),
+      pool.query(
+        `SELECT 
+          sp.payment_mode,
+          COUNT(*) as transaction_count,
+          SUM(sp.amount) as total_amount,
+          SUM(sp.amount) as base_amount,
+          0 as tip_amount
+         FROM split_payments sp
+         JOIN payments p ON sp.payment_id = p.id
+         JOIN orders o ON p.order_id = o.id
+         WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed' AND p.payment_mode = 'split'${ff.sql}
+         GROUP BY sp.payment_mode
+         ORDER BY total_amount DESC`,
+        [outletId, startDt, endDt, ...ff.params]
+      ),
+      pool.query(
+        `SELECT 
+          COUNT(DISTINCT oi.order_id) as nc_orders,
+          COALESCE(SUM(oi.total_price), 0) as nc_amount
+         FROM order_items oi
+         JOIN orders o ON oi.order_id = o.id
+         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'
+         AND oi.is_nc = 1 AND oi.status != 'cancelled'${ff.sql}`,
+        [outletId, startDt, endDt, ...ff.params]
+      ),
+      pool.query(
+        `SELECT SUM(COALESCE(o.due_amount, 0)) as due_amount
+         FROM orders o
+         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'${ff.sql}`,
+        [outletId, startDt, endDt, ...ff.params]
+      )
+    ]);
+    const regularRows = regularRes[0];
+    const splitRows = splitRes[0];
+    const ncData = ncSummaryRes[0][0] || {};
+    const dueData = dueSummaryRes[0][0] || {};
 
     // Merge regular and split payments by payment_mode
     const modeMap = {};
@@ -865,28 +958,6 @@ const reportsService = {
     const totalTips = rows.reduce((sum, r) => sum + r.tip_amount, 0);
     const totalTransactions = rows.reduce((sum, r) => sum + r.transaction_count, 0);
 
-    // NC summary — compute from order_items (item-level is_nc) since orders table may not be updated
-    const [ncSummary] = await pool.query(
-      `SELECT 
-        COUNT(DISTINCT oi.order_id) as nc_orders,
-        COALESCE(SUM(oi.total_price), 0) as nc_amount
-       FROM order_items oi
-       JOIN orders o ON oi.order_id = o.id
-       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'
-       AND oi.is_nc = 1 AND oi.status != 'cancelled'${ff.sql}`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
-    const ncData = ncSummary[0] || {};
-
-    // Due summary from orders
-    const [dueSummary] = await pool.query(
-      `SELECT SUM(COALESCE(o.due_amount, 0)) as due_amount
-       FROM orders o
-       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'${ff.sql}`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
-    const dueData = dueSummary[0] || {};
-
     return {
       dateRange: { start, end },
       modes: rows.map(r => ({
@@ -914,37 +985,57 @@ const reportsService = {
     const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
     const ff = floorFilter(floorIds);
 
-    // Daily aggregated from invoice columns
-    const [rows] = await pool.query(
-      `SELECT 
-        ${toISTDate('i.created_at')} as report_date,
-        SUM(i.subtotal) as subtotal,
-        SUM(i.discount_amount) as discount_amount,
-        SUM(i.taxable_amount) as taxable_amount,
-        SUM(i.cgst_amount) as cgst_amount,
-        SUM(i.sgst_amount) as sgst_amount,
-        SUM(i.igst_amount) as igst_amount,
-        SUM(i.vat_amount) as vat_amount,
-        SUM(i.cess_amount) as cess_amount,
-        SUM(i.total_tax) as total_tax,
-        SUM(i.service_charge) as service_charge,
-        SUM(i.grand_total) as grand_total,
-        COUNT(*) as invoice_count
-       FROM invoices i
-       JOIN orders o ON i.order_id = o.id
-       WHERE i.outlet_id = ? AND ${bdWhere('i.created_at')} AND i.is_cancelled = 0${ff.sql}
-       GROUP BY ${toISTDate('i.created_at')}
-       ORDER BY report_date DESC`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
-
-    // Parse tax_breakup JSON from each invoice for accurate per-component breakdown
-    const [invoices] = await pool.query(
-      `SELECT i.tax_breakup FROM invoices i
-       JOIN orders o ON i.order_id = o.id
-       WHERE i.outlet_id = ? AND ${bdWhere('i.created_at')} AND i.is_cancelled = 0${ff.sql}`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
+    // Execute all 4 independent queries in parallel
+    const [rowsRes, invoicesRes, ncSummaryRes, dueSummaryRes] = await Promise.all([
+      pool.query(
+        `SELECT 
+          ${toISTDate('i.created_at')} as report_date,
+          SUM(i.subtotal) as subtotal,
+          SUM(i.discount_amount) as discount_amount,
+          SUM(i.taxable_amount) as taxable_amount,
+          SUM(i.cgst_amount) as cgst_amount,
+          SUM(i.sgst_amount) as sgst_amount,
+          SUM(i.igst_amount) as igst_amount,
+          SUM(i.vat_amount) as vat_amount,
+          SUM(i.cess_amount) as cess_amount,
+          SUM(i.total_tax) as total_tax,
+          SUM(i.service_charge) as service_charge,
+          SUM(i.grand_total) as grand_total,
+          COUNT(*) as invoice_count
+         FROM invoices i
+         JOIN orders o ON i.order_id = o.id
+         WHERE i.outlet_id = ? AND ${bdWhere('i.created_at')} AND i.is_cancelled = 0${ff.sql}
+         GROUP BY ${toISTDate('i.created_at')}
+         ORDER BY report_date DESC`,
+        [outletId, startDt, endDt, ...ff.params]
+      ),
+      pool.query(
+        `SELECT i.tax_breakup FROM invoices i
+         JOIN orders o ON i.order_id = o.id
+         WHERE i.outlet_id = ? AND ${bdWhere('i.created_at')} AND i.is_cancelled = 0${ff.sql}`,
+        [outletId, startDt, endDt, ...ff.params]
+      ),
+      pool.query(
+        `SELECT 
+          COUNT(DISTINCT oi.order_id) as nc_orders,
+          COALESCE(SUM(oi.total_price), 0) as nc_amount
+         FROM order_items oi
+         JOIN orders o ON oi.order_id = o.id
+         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'
+         AND oi.is_nc = 1 AND oi.status != 'cancelled'${ff.sql}`,
+        [outletId, startDt, endDt, ...ff.params]
+      ),
+      pool.query(
+        `SELECT SUM(COALESCE(o.due_amount, 0)) as due_amount
+         FROM orders o
+         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'${ff.sql}`,
+        [outletId, startDt, endDt, ...ff.params]
+      )
+    ]);
+    const rows = rowsRes[0];
+    const invoices = invoicesRes[0];
+    const ncData = ncSummaryRes[0][0] || {};
+    const dueData = dueSummaryRes[0][0] || {};
 
     const componentTotals = {};
     for (const inv of invoices) {
@@ -995,30 +1086,9 @@ const reportsService = {
       total_grand: rows.reduce((s, r) => s + parseFloat(r.grand_total || 0), 0).toFixed(2),
       total_invoices: rows.reduce((s, r) => s + r.invoice_count, 0)
     };
-
-    // NC summary — compute from order_items (item-level is_nc) since orders table may not be updated
-    const [ncSummary] = await pool.query(
-      `SELECT 
-        COUNT(DISTINCT oi.order_id) as nc_orders,
-        COALESCE(SUM(oi.total_price), 0) as nc_amount
-       FROM order_items oi
-       JOIN orders o ON oi.order_id = o.id
-       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'
-       AND oi.is_nc = 1 AND oi.status != 'cancelled'${ff.sql}`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
-    const ncData = ncSummary[0] || {};
     summary.nc_orders = parseInt(ncData.nc_orders) || 0;
     summary.nc_amount = parseFloat(ncData.nc_amount || 0).toFixed(2);
-
-    // Due summary from orders
-    const [dueSummary] = await pool.query(
-      `SELECT SUM(COALESCE(o.due_amount, 0)) as due_amount
-       FROM orders o
-       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'${ff.sql}`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
-    summary.due_amount = parseFloat((dueSummary[0] || {}).due_amount || 0).toFixed(2);
+    summary.due_amount = parseFloat(dueData.due_amount || 0).toFixed(2);
 
     return { dateRange: { start, end }, daily: rows, taxComponents, summary };
   },
@@ -1083,40 +1153,42 @@ const reportsService = {
     const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
     const ff = floorFilter(floorIds);
 
-    const [rows] = await pool.query(
-      `SELECT 
-        o.created_by as user_id, u.name as user_name,
-        COUNT(*) as total_orders,
-        SUM(o.guest_count) as total_guests,
-        SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END) as total_sales,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.discount_amount ELSE 0 END) as total_discounts,
-        COUNT(CASE WHEN o.status = 'cancelled' THEN 1 END) as cancelled_orders,
-        SUM(CASE WHEN o.status = 'cancelled' THEN o.total_amount ELSE 0 END) as cancelled_amount,
-        COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount,
-        COUNT(CASE WHEN o.is_adjustment = 1 AND o.status != 'cancelled' THEN 1 END) as adjustment_count,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.adjustment_amount, 0) ELSE 0 END) as adjustment_amount
-       FROM orders o
-       JOIN users u ON o.created_by = u.id
-       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}
-       GROUP BY o.created_by, u.name
-       ORDER BY total_sales DESC`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
-
-    // Get tips per staff
-    const [tips] = await pool.query(
-      `SELECT p.received_by as user_id, SUM(p.tip_amount) as tips
-       FROM payments p
-       JOIN orders o ON p.order_id = o.id
-       WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed' AND p.tip_amount > 0${ff.sql}
-       GROUP BY p.received_by`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
+    // Execute both independent queries in parallel
+    const [rowsRes, tipsRes] = await Promise.all([
+      pool.query(
+        `SELECT 
+          o.created_by as user_id, u.name as user_name,
+          COUNT(*) as total_orders,
+          SUM(o.guest_count) as total_guests,
+          SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END) as total_sales,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.discount_amount ELSE 0 END) as total_discounts,
+          COUNT(CASE WHEN o.status = 'cancelled' THEN 1 END) as cancelled_orders,
+          SUM(CASE WHEN o.status = 'cancelled' THEN o.total_amount ELSE 0 END) as cancelled_amount,
+          COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount,
+          COUNT(CASE WHEN o.is_adjustment = 1 AND o.status != 'cancelled' THEN 1 END) as adjustment_count,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.adjustment_amount, 0) ELSE 0 END) as adjustment_amount
+         FROM orders o
+         JOIN users u ON o.created_by = u.id
+         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}
+         GROUP BY o.created_by, u.name
+         ORDER BY total_sales DESC`,
+        [outletId, startDt, endDt, ...ff.params]
+      ),
+      pool.query(
+        `SELECT p.received_by as user_id, SUM(p.tip_amount) as tips
+         FROM payments p
+         JOIN orders o ON p.order_id = o.id
+         WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed' AND p.tip_amount > 0${ff.sql}
+         GROUP BY p.received_by`,
+        [outletId, startDt, endDt, ...ff.params]
+      )
+    ]);
+    const rows = rowsRes[0];
     const tipMap = {};
-    tips.forEach(t => { tipMap[t.user_id] = parseFloat(t.tips); });
+    tipsRes[0].forEach(t => { tipMap[t.user_id] = parseFloat(t.tips); });
 
     const staff = rows.map(r => ({
       ...r,
@@ -1201,61 +1273,62 @@ const reportsService = {
     const validSorts = ['net_sales', 'order_count', 'guest_count', 'floor_name', 'section_name'];
     const orderCol = validSorts.includes(sortBy) ? sortBy : 'net_sales';
 
-    // Get floor-wise breakdown (exclude orders without floor_id - delivery/takeaway/counter)
-    const [floorRows] = await pool.query(
-      `SELECT 
-        o.floor_id, 
-        f.name as floor_name,
-        COUNT(*) as order_count,
-        COALESCE(SUM(CAST(o.guest_count AS UNSIGNED)), 0) as guest_count,
-        COALESCE(SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END), 0) as net_sales,
-        SUM(CASE WHEN o.status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_orders,
-        COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount
-       FROM orders o
-       INNER JOIN floors f ON o.floor_id = f.id
-       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.floor_id IS NOT NULL${ff.sql}${floorSearchSql}
-       GROUP BY o.floor_id, f.name
-       ORDER BY net_sales DESC`,
-      [outletId, startDt, endDt, ...ff.params, ...floorSearchParams]
-    );
-
-    // Get section-wise breakdown with pagination (exclude orders without floor_id)
-    const [countResult] = await pool.query(
-      `SELECT COUNT(DISTINCT CONCAT(o.floor_id, '-', COALESCE(o.section_id, 0))) as total
-       FROM orders o
-       INNER JOIN floors f ON o.floor_id = f.id
-       LEFT JOIN sections s ON o.section_id = s.id
-       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.floor_id IS NOT NULL${ff.sql}${sectionSearchSql}`,
-      [outletId, startDt, endDt, ...ff.params, ...sectionSearchParams]
-    );
-    const total = countResult[0]?.total || 0;
-
-    const [sectionRows] = await pool.query(
-      `SELECT 
-        o.floor_id, 
-        f.name as floor_name,
-        o.section_id, 
-        s.name as section_name,
-        COUNT(*) as order_count,
-        COALESCE(SUM(CAST(o.guest_count AS UNSIGNED)), 0) as guest_count,
-        COALESCE(SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END), 0) as net_sales,
-        SUM(CASE WHEN o.status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_orders,
-        COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount
-       FROM orders o
-       INNER JOIN floors f ON o.floor_id = f.id
-       LEFT JOIN sections s ON o.section_id = s.id
-       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.floor_id IS NOT NULL${ff.sql}${sectionSearchSql}
-       GROUP BY o.floor_id, f.name, o.section_id, s.name
-       ORDER BY ${orderCol} ${sortOrder}
-       LIMIT ? OFFSET ?`,
-      [outletId, startDt, endDt, ...ff.params, ...sectionSearchParams, limit, offset]
-    );
+    // Execute all 3 independent queries in parallel
+    const [floorRowsRes, countResultRes, sectionRowsRes] = await Promise.all([
+      pool.query(
+        `SELECT 
+          o.floor_id, 
+          f.name as floor_name,
+          COUNT(*) as order_count,
+          COALESCE(SUM(CAST(o.guest_count AS UNSIGNED)), 0) as guest_count,
+          COALESCE(SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END), 0) as net_sales,
+          SUM(CASE WHEN o.status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_orders,
+          COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount
+         FROM orders o
+         INNER JOIN floors f ON o.floor_id = f.id
+         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.floor_id IS NOT NULL${ff.sql}${floorSearchSql}
+         GROUP BY o.floor_id, f.name
+         ORDER BY net_sales DESC`,
+        [outletId, startDt, endDt, ...ff.params, ...floorSearchParams]
+      ),
+      pool.query(
+        `SELECT COUNT(DISTINCT CONCAT(o.floor_id, '-', COALESCE(o.section_id, 0))) as total
+         FROM orders o
+         INNER JOIN floors f ON o.floor_id = f.id
+         LEFT JOIN sections s ON o.section_id = s.id
+         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.floor_id IS NOT NULL${ff.sql}${sectionSearchSql}`,
+        [outletId, startDt, endDt, ...ff.params, ...sectionSearchParams]
+      ),
+      pool.query(
+        `SELECT 
+          o.floor_id, 
+          f.name as floor_name,
+          o.section_id, 
+          s.name as section_name,
+          COUNT(*) as order_count,
+          COALESCE(SUM(CAST(o.guest_count AS UNSIGNED)), 0) as guest_count,
+          COALESCE(SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END), 0) as net_sales,
+          SUM(CASE WHEN o.status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_orders,
+          COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount
+         FROM orders o
+         INNER JOIN floors f ON o.floor_id = f.id
+         LEFT JOIN sections s ON o.section_id = s.id
+         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.floor_id IS NOT NULL${ff.sql}${sectionSearchSql}
+         GROUP BY o.floor_id, f.name, o.section_id, s.name
+         ORDER BY ${orderCol} ${sortOrder}
+         LIMIT ? OFFSET ?`,
+        [outletId, startDt, endDt, ...ff.params, ...sectionSearchParams, limit, offset]
+      )
+    ]);
+    const floorRows = floorRowsRes[0];
+    const total = countResultRes[0][0]?.total || 0;
+    const sectionRows = sectionRowsRes[0];
 
     // Format sections first for grouping
     const formattedSections = sectionRows.map(r => ({
@@ -1481,7 +1554,7 @@ const reportsService = {
     let params = [outletId, startDt, endDt];
 
     if (floorIds.length > 0) {
-      conditions.push(`o.floor_id IN (${floorIds.map(() => '?').join(',')})`);
+      conditions.push(`(o.floor_id IN (${floorIds.map(() => '?').join(',')}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`);
       params.push(...floorIds);
     }
     if (station) { conditions.push('kt.station = ?'); params.push(station); }
@@ -1761,93 +1834,94 @@ const reportsService = {
     const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
     const ff = floorFilter(floorIds);
 
-    // Order-level cancellations - use created_at as fallback if cancelled_at is NULL
-    const [orderCancels] = await pool.query(
-      `SELECT 
-        'full_order' as cancel_type,
-        o.id as order_id,
-        o.order_number, 
-        o.order_type, 
-        o.subtotal,
-        o.total_amount,
-        o.cancel_reason as reason,
-        u.name as cancelled_by_name,
-        c.name as captain_name,
-        f.name as floor_name,
-        t.table_number,
-        COALESCE(o.cancelled_at, o.updated_at) as cancelled_at,
-        ${toISTDate('COALESCE(o.cancelled_at, o.updated_at)')} as cancel_date
-       FROM orders o
-       LEFT JOIN users u ON o.cancelled_by = u.id
-       LEFT JOIN users c ON o.created_by = c.id
-       LEFT JOIN floors f ON o.floor_id = f.id
-       LEFT JOIN tables t ON o.table_id = t.id
-       WHERE o.outlet_id = ? 
-         AND ${bdWhere('COALESCE(o.cancelled_at, o.created_at)')} 
-         AND o.status = 'cancelled'${ff.sql}
-       ORDER BY COALESCE(o.cancelled_at, o.updated_at) DESC`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
-
-    // Item-level cancellations - include items cancelled within active orders
-    const [itemCancels] = await pool.query(
-      `SELECT 
-        'item' as cancel_type,
-        o.id as order_id,
-        o.order_number, 
-        o.order_type,
-        oi.id as item_id,
-        oi.item_name, 
-        oi.variant_name,
-        oi.quantity as cancelled_quantity,
-        oi.unit_price,
-        oi.total_price as cancelled_amount,
-        oi.cancel_reason as reason,
-        u.name as cancelled_by_name,
-        c.name as captain_name,
-        f.name as floor_name,
-        t.table_number,
-        COALESCE(oi.cancelled_at, oi.updated_at) as cancelled_at,
-        ${toISTDate('COALESCE(oi.cancelled_at, oi.updated_at)')} as cancel_date
-       FROM order_items oi
-       JOIN orders o ON oi.order_id = o.id
-       LEFT JOIN users u ON oi.cancelled_by = u.id
-       LEFT JOIN users c ON o.created_by = c.id
-       LEFT JOIN floors f ON o.floor_id = f.id
-       LEFT JOIN tables t ON o.table_id = t.id
-       WHERE o.outlet_id = ? 
-         AND ${bdWhere('COALESCE(oi.cancelled_at, oi.created_at)')} 
-         AND oi.status = 'cancelled'${ff.sql}
-       ORDER BY COALESCE(oi.cancelled_at, oi.updated_at) DESC`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
-
-    // Summary by reason - combine both order and item cancellations
-    const [reasonSummary] = await pool.query(
-      `SELECT reason, SUM(cnt) as count, SUM(amount) as total_amount FROM (
-        SELECT 
-          COALESCE(o.cancel_reason, 'No reason') as reason,
-          1 as cnt,
-          o.total_amount as amount
-        FROM orders o
-        WHERE o.outlet_id = ? 
-          AND ${bdWhere('COALESCE(o.cancelled_at, o.created_at)')} 
-          AND o.status = 'cancelled'${ff.sql}
-        UNION ALL
-        SELECT 
-          COALESCE(oi.cancel_reason, 'No reason') as reason,
-          1 as cnt,
-          oi.total_price as amount
-        FROM order_items oi
-        JOIN orders o ON oi.order_id = o.id
-        WHERE o.outlet_id = ? 
-          AND ${bdWhere('COALESCE(oi.cancelled_at, oi.created_at)')} 
-          AND oi.status = 'cancelled'${ff.sql}
-      ) combined
-      GROUP BY reason
-      ORDER BY count DESC`,
-      [outletId, startDt, endDt, ...ff.params, outletId, startDt, endDt, ...ff.params]
-    );
+    // Execute all 3 independent queries in parallel
+    const [orderCancelsRes, itemCancelsRes, reasonSummaryRes] = await Promise.all([
+      pool.query(
+        `SELECT 
+          'full_order' as cancel_type,
+          o.id as order_id,
+          o.order_number, 
+          o.order_type, 
+          o.subtotal,
+          o.total_amount,
+          o.cancel_reason as reason,
+          u.name as cancelled_by_name,
+          c.name as captain_name,
+          f.name as floor_name,
+          t.table_number,
+          COALESCE(o.cancelled_at, o.updated_at) as cancelled_at,
+          ${toISTDate('COALESCE(o.cancelled_at, o.updated_at)')} as cancel_date
+         FROM orders o
+         LEFT JOIN users u ON o.cancelled_by = u.id
+         LEFT JOIN users c ON o.created_by = c.id
+         LEFT JOIN floors f ON o.floor_id = f.id
+         LEFT JOIN tables t ON o.table_id = t.id
+         WHERE o.outlet_id = ? 
+           AND ${bdWhere('COALESCE(o.cancelled_at, o.created_at)')} 
+           AND o.status = 'cancelled'${ff.sql}
+         ORDER BY COALESCE(o.cancelled_at, o.updated_at) DESC`,
+        [outletId, startDt, endDt, ...ff.params]
+      ),
+      pool.query(
+        `SELECT 
+          'item' as cancel_type,
+          o.id as order_id,
+          o.order_number, 
+          o.order_type,
+          oi.id as item_id,
+          oi.item_name, 
+          oi.variant_name,
+          oi.quantity as cancelled_quantity,
+          oi.unit_price,
+          oi.total_price as cancelled_amount,
+          oi.cancel_reason as reason,
+          u.name as cancelled_by_name,
+          c.name as captain_name,
+          f.name as floor_name,
+          t.table_number,
+          COALESCE(oi.cancelled_at, oi.updated_at) as cancelled_at,
+          ${toISTDate('COALESCE(oi.cancelled_at, oi.updated_at)')} as cancel_date
+         FROM order_items oi
+         JOIN orders o ON oi.order_id = o.id
+         LEFT JOIN users u ON oi.cancelled_by = u.id
+         LEFT JOIN users c ON o.created_by = c.id
+         LEFT JOIN floors f ON o.floor_id = f.id
+         LEFT JOIN tables t ON o.table_id = t.id
+         WHERE o.outlet_id = ? 
+           AND ${bdWhere('COALESCE(oi.cancelled_at, oi.created_at)')} 
+           AND oi.status = 'cancelled'${ff.sql}
+         ORDER BY COALESCE(oi.cancelled_at, oi.updated_at) DESC`,
+        [outletId, startDt, endDt, ...ff.params]
+      ),
+      pool.query(
+        `SELECT reason, SUM(cnt) as count, SUM(amount) as total_amount FROM (
+          SELECT 
+            COALESCE(o.cancel_reason, 'No reason') as reason,
+            1 as cnt,
+            o.total_amount as amount
+          FROM orders o
+          WHERE o.outlet_id = ? 
+            AND ${bdWhere('COALESCE(o.cancelled_at, o.created_at)')} 
+            AND o.status = 'cancelled'${ff.sql}
+          UNION ALL
+          SELECT 
+            COALESCE(oi.cancel_reason, 'No reason') as reason,
+            1 as cnt,
+            oi.total_price as amount
+          FROM order_items oi
+          JOIN orders o ON oi.order_id = o.id
+          WHERE o.outlet_id = ? 
+            AND ${bdWhere('COALESCE(oi.cancelled_at, oi.created_at)')} 
+            AND oi.status = 'cancelled'${ff.sql}
+        ) combined
+        GROUP BY reason
+        ORDER BY count DESC`,
+        [outletId, startDt, endDt, ...ff.params, outletId, startDt, endDt, ...ff.params]
+      )
+    ]);
+    const orderCancels = orderCancelsRes[0];
+    const itemCancels = itemCancelsRes[0];
+    const reasonSummary = reasonSummaryRes[0];
 
     // Daily breakdown
     const dailyBreakdown = {};
@@ -1965,7 +2039,7 @@ const reportsService = {
     let params = [outletId, startDt, endDt];
 
     if (floorIds.length > 0) {
-      conditions.push(`o.floor_id IN (${floorIds.map(() => '?').join(',')})`);
+      conditions.push(`(o.floor_id IN (${floorIds.map(() => '?').join(',')}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`);
       params.push(...floorIds);
     }
     if (cancelType) { conditions.push('ocl.cancel_type = ?'); params.push(cancelType); }
@@ -2394,58 +2468,101 @@ const reportsService = {
     const ff = floorFilter(floorIds);
     const ffT = floorFilter(floorIds, 't');
 
-    // Today's sales - use paid_amount for completed orders for accurate sales
-    const [todaySales] = await pool.query(
-      `SELECT 
-        COUNT(*) as total_orders,
-        SUM(guest_count) as total_guests,
-        SUM(CASE WHEN status != 'cancelled' THEN (subtotal - discount_amount) ELSE 0 END) as net_sales,
-        COUNT(CASE WHEN status NOT IN ('paid', 'completed', 'cancelled') THEN 1 END) as active_orders,
-        COUNT(CASE WHEN is_nc = 1 THEN 1 END) as nc_orders,
-        SUM(CASE WHEN status != 'cancelled' THEN COALESCE(nc_amount, 0) ELSE 0 END) as nc_amount,
-        SUM(CASE WHEN status != 'cancelled' THEN COALESCE(due_amount, 0) ELSE 0 END) as due_amount,
-        SUM(CASE WHEN status != 'cancelled' THEN COALESCE(paid_amount, 0) ELSE 0 END) as paid_amount
-       FROM orders o
-       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
+    // Execute all 5 independent queries in parallel
+    const [todaySalesRes, activeTablesRes, pendingKotsRes, regularPayRes, splitPayRes] = await Promise.all([
+      pool.query(
+        `SELECT 
+          COUNT(*) as total_orders,
+          SUM(guest_count) as total_guests,
+          SUM(CASE WHEN status != 'cancelled' THEN (subtotal - discount_amount) ELSE 0 END) as net_sales,
+          COUNT(CASE WHEN status NOT IN ('paid', 'completed', 'cancelled') THEN 1 END) as active_orders,
+          COUNT(CASE WHEN is_nc = 1 THEN 1 END) as nc_orders,
+          SUM(CASE WHEN status != 'cancelled' THEN COALESCE(nc_amount, 0) ELSE 0 END) as nc_amount,
+          SUM(CASE WHEN status != 'cancelled' THEN COALESCE(due_amount, 0) ELSE 0 END) as due_amount,
+          SUM(CASE WHEN status != 'cancelled' THEN COALESCE(paid_amount, 0) ELSE 0 END) as paid_amount,
+          COUNT(CASE WHEN is_adjustment = 1 AND status != 'cancelled' THEN 1 END) as adjustment_count,
+          SUM(CASE WHEN status != 'cancelled' THEN COALESCE(adjustment_amount, 0) ELSE 0 END) as adjustment_amount
+         FROM orders o
+         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}`,
+        [outletId, startDt, endDt, ...ff.params]
+      ),
+      pool.query(
+        `SELECT COUNT(*) as count FROM tables t WHERE t.outlet_id = ? AND t.status = 'occupied'${ffT.sql}`,
+        [outletId, ...ffT.params]
+      ),
+      pool.query(
+        `SELECT 
+          kt.station,
+          COUNT(*) as count
+         FROM kot_tickets kt
+         JOIN orders o ON kt.order_id = o.id
+         WHERE kt.outlet_id = ? AND kt.status NOT IN ('served', 'cancelled') AND ${bdWhere('kt.created_at')}${ff.sql}
+         GROUP BY kt.station`,
+        [outletId, startDt, endDt, ...ff.params]
+      ),
+      pool.query(
+        `SELECT 
+          p.payment_mode,
+          SUM(p.total_amount) as amount,
+          SUM(CASE WHEN COALESCE(p.is_due_collection, 0) = 1 THEN p.total_amount ELSE 0 END) as due_collection
+         FROM payments p
+         JOIN orders o ON p.order_id = o.id
+         WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed' AND p.payment_mode != 'split'${ff.sql}
+         GROUP BY p.payment_mode`,
+        [outletId, startDt, endDt, ...ff.params]
+      ),
+      pool.query(
+        `SELECT 
+          sp.payment_mode,
+          SUM(sp.amount) as amount,
+          SUM(CASE WHEN COALESCE(p.is_due_collection, 0) = 1 THEN sp.amount ELSE 0 END) as due_collection
+         FROM split_payments sp
+         JOIN payments p ON sp.payment_id = p.id
+         JOIN orders o ON p.order_id = o.id
+         WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed' AND p.payment_mode = 'split'${ff.sql}
+         GROUP BY sp.payment_mode`,
+        [outletId, startDt, endDt, ...ff.params]
+      )
+    ]);
+    const todaySales = todaySalesRes[0];
+    const activeTables = activeTablesRes[0];
+    const pendingKots = pendingKotsRes[0];
+    const regularPay = regularPayRes[0];
+    const splitPay = splitPayRes[0];
 
-    // Active tables
-    const [activeTables] = await pool.query(
-      `SELECT COUNT(*) as count FROM tables t WHERE t.outlet_id = ? AND t.status = 'occupied'${ffT.sql}`,
-      [outletId, ...ffT.params]
-    );
+    // Merge regular + split into a single breakdown
+    const payBreakdown = {};
+    let totalCollAmt = 0, totalDueCollAmt = 0;
+    for (const p of [...regularPay, ...splitPay]) {
+      const mode = p.payment_mode;
+      const amt = parseFloat(p.amount) || 0;
+      payBreakdown[mode] = (payBreakdown[mode] || 0) + amt;
+      totalCollAmt += amt;
+      totalDueCollAmt += parseFloat(p.due_collection) || 0;
+    }
 
-    // Pending KOTs by station
-    const [pendingKots] = await pool.query(
-      `SELECT 
-        kt.station,
-        COUNT(*) as count
-       FROM kot_tickets kt
-       JOIN orders o ON kt.order_id = o.id
-       WHERE kt.outlet_id = ? AND kt.status NOT IN ('served', 'cancelled') AND ${bdWhere('kt.created_at')}${ff.sql}
-       GROUP BY kt.station`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
-
-    // Payment breakdown
-    const [payments] = await pool.query(
-      `SELECT 
-        p.payment_mode,
-        SUM(p.total_amount) as amount
-       FROM payments p
-       JOIN orders o ON p.order_id = o.id
-       WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed'${ff.sql}
-       GROUP BY p.payment_mode`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
+    const sales = todaySales[0];
 
     return {
       date: today,
-      sales: todaySales[0],
+      sales,
       activeTables: activeTables[0].count,
       pendingKots: pendingKots.reduce((obj, k) => { obj[k.station] = k.count; return obj; }, {}),
-      paymentBreakdown: payments.reduce((obj, p) => { obj[p.payment_mode] = p.amount; return obj; }, {})
+      paymentBreakdown: payBreakdown,
+      collection: buildCollectionBlock({
+        totalCollection: totalCollAmt,
+        dueCollection: totalDueCollAmt,
+        cash: payBreakdown.cash || 0,
+        card: payBreakdown.card || 0,
+        upi: payBreakdown.upi || 0,
+        wallet: payBreakdown.wallet || 0,
+        credit: payBreakdown.credit || 0,
+        totalDue: parseFloat(sales.due_amount) || 0,
+        totalNC: parseFloat(sales.nc_amount) || 0,
+        ncOrderCount: parseInt(sales.nc_orders) || 0,
+        totalAdjustment: parseFloat(sales.adjustment_amount) || 0,
+        adjustmentCount: parseInt(sales.adjustment_count) || 0
+      })
     };
   },
 
@@ -2506,9 +2623,9 @@ const reportsService = {
     let conditions = ['o.outlet_id = ?', `${bdWhere('o.created_at')}`];
     let params = [outletId, startDt, endDt];
 
-    // Floor restriction for assigned-floor users
+    // Floor restriction for assigned-floor users (include takeaway/delivery with NULL floor)
     if (options.floorIds && options.floorIds.length > 0) {
-      conditions.push(`o.floor_id IN (${options.floorIds.map(() => '?').join(',')})`);
+      conditions.push(`(o.floor_id IN (${options.floorIds.map(() => '?').join(',')}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`);
       params.push(...options.floorIds);
     }
 
@@ -2545,125 +2662,135 @@ const reportsService = {
 
     const totalPages = Math.ceil(totalCount / limit);
 
-    // 1. Summary aggregation over ALL filtered orders (not paginated)
-    const [summaryRows] = await pool.query(
-      `SELECT
-        COUNT(*) as total_orders,
-        SUM(CASE WHEN o.status IN ('paid','completed') THEN 1 ELSE 0 END) as completed_orders,
-        SUM(CASE WHEN o.status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_orders,
-        SUM(CASE WHEN o.status NOT IN ('paid','completed','cancelled') THEN 1 ELSE 0 END) as active_orders,
-        SUM(CASE WHEN o.order_type = 'dine_in' THEN 1 ELSE 0 END) as dine_in_count,
-        SUM(CASE WHEN o.order_type = 'takeaway' THEN 1 ELSE 0 END) as takeaway_count,
-        SUM(CASE WHEN o.order_type = 'delivery' THEN 1 ELSE 0 END) as delivery_count,
-        SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal + o.tax_amount) ELSE 0 END) as gross_sales,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.discount_amount ELSE 0 END) as total_discount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.tax_amount ELSE 0 END) as total_tax,
-        SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END) as net_sales,
-        SUM(CASE WHEN o.is_adjustment = 1 AND o.status != 'cancelled' THEN 1 ELSE 0 END) as adjustment_count,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.adjustment_amount, 0) ELSE 0 END) as adjustment_amount
-       ${baseFrom} ${whereClause}`,
-      params
-    );
-    const sr = summaryRows[0];
+    // Execute all 7 independent queries in parallel (was sequential)
+    const [summaryRes, paymentRes, splitPayRes, ncRes, costRes, wastageRes, dueCollRes] = await Promise.all([
+      // 1. Summary aggregation over ALL filtered orders (not paginated)
+      pool.query(
+        `SELECT
+          COUNT(*) as total_orders,
+          SUM(CASE WHEN o.status IN ('paid','completed') THEN 1 ELSE 0 END) as completed_orders,
+          SUM(CASE WHEN o.status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_orders,
+          SUM(CASE WHEN o.status NOT IN ('paid','completed','cancelled') THEN 1 ELSE 0 END) as active_orders,
+          SUM(CASE WHEN o.order_type = 'dine_in' THEN 1 ELSE 0 END) as dine_in_count,
+          SUM(CASE WHEN o.order_type = 'takeaway' THEN 1 ELSE 0 END) as takeaway_count,
+          SUM(CASE WHEN o.order_type = 'delivery' THEN 1 ELSE 0 END) as delivery_count,
+          SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal + o.tax_amount) ELSE 0 END) as gross_sales,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.discount_amount ELSE 0 END) as total_discount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.tax_amount ELSE 0 END) as total_tax,
+          SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END) as net_sales,
+          SUM(CASE WHEN o.is_adjustment = 1 AND o.status != 'cancelled' THEN 1 ELSE 0 END) as adjustment_count,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.adjustment_amount, 0) ELSE 0 END) as adjustment_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
+          SUM(CASE WHEN o.is_nc = 1 THEN 1 ELSE 0 END) as nc_orders,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount
+         ${baseFrom} ${whereClause}`,
+        params
+      ),
+      // 2. Payment summary
+      pool.query(
+        `SELECT p.payment_mode, SUM(p.total_amount) as total, SUM(p.tip_amount) as tips
+         FROM payments p JOIN orders o ON p.order_id = o.id
+         LEFT JOIN tables t ON o.table_id = t.id LEFT JOIN floors f ON o.floor_id = f.id
+         LEFT JOIN users u_captain ON o.created_by = u_captain.id
+         LEFT JOIN users u_biller ON o.billed_by = u_biller.id
+         LEFT JOIN users u_cancel ON o.cancelled_by = u_cancel.id
+         ${whereClause} AND p.status = 'completed'
+         GROUP BY p.payment_mode`,
+        params
+      ),
+      // 3. Split payments breakdown
+      pool.query(
+        `SELECT sp.payment_mode, SUM(sp.amount) as total
+         FROM split_payments sp JOIN payments p ON sp.payment_id = p.id
+         JOIN orders o ON p.order_id = o.id
+         LEFT JOIN tables t ON o.table_id = t.id LEFT JOIN floors f ON o.floor_id = f.id
+         LEFT JOIN users u_captain ON o.created_by = u_captain.id
+         LEFT JOIN users u_biller ON o.billed_by = u_biller.id
+         LEFT JOIN users u_cancel ON o.cancelled_by = u_cancel.id
+         ${whereClause} AND p.status = 'completed' AND p.payment_mode = 'split'
+         GROUP BY sp.payment_mode`,
+        params
+      ),
+      // 4. NC summary from order_items
+      pool.query(
+        `SELECT COUNT(DISTINCT oi.order_id) as nc_orders, SUM(oi.total_price) as nc_amount
+         FROM order_items oi JOIN orders o ON oi.order_id = o.id
+         LEFT JOIN tables t ON o.table_id = t.id LEFT JOIN floors f ON o.floor_id = f.id
+         LEFT JOIN users u_captain ON o.created_by = u_captain.id
+         LEFT JOIN users u_biller ON o.billed_by = u_biller.id
+         LEFT JOIN users u_cancel ON o.cancelled_by = u_cancel.id
+         ${whereClause} AND oi.is_nc = 1 AND oi.status != 'cancelled'`,
+        params
+      ),
+      // 5. Cost/Profit aggregates
+      pool.query(
+        `SELECT COALESCE(SUM(oic.making_cost), 0) as making_cost, COALESCE(SUM(oic.profit), 0) as profit
+         FROM order_item_costs oic JOIN orders o ON oic.order_id = o.id
+         LEFT JOIN tables t ON o.table_id = t.id LEFT JOIN floors f ON o.floor_id = f.id
+         LEFT JOIN users u_captain ON o.created_by = u_captain.id
+         LEFT JOIN users u_biller ON o.billed_by = u_biller.id
+         LEFT JOIN users u_cancel ON o.cancelled_by = u_cancel.id
+         ${whereClause} AND o.status IN ('paid','completed')`,
+        params
+      ),
+      // 6. Wastage aggregates
+      pool.query(
+        `SELECT COUNT(*) as wastage_count, COALESCE(SUM(wl.total_cost), 0) as wastage_cost
+         FROM wastage_logs wl
+         WHERE wl.outlet_id = ? AND wl.wastage_date BETWEEN ? AND ?`,
+        [outletId, start, end]
+      ),
+      // 7. Due collections
+      pool.query(
+        `SELECT cdt.payment_id, cdt.order_id, ABS(cdt.amount) as collected_amount,
+          p.payment_mode, cdt.created_at,
+          o2.order_number, o2.customer_name, o2.customer_phone, o2.total_amount as order_total
+         FROM customer_due_transactions cdt
+         JOIN orders o2 ON cdt.order_id = o2.id
+         LEFT JOIN payments p ON cdt.payment_id = p.id
+         WHERE cdt.outlet_id = ? AND cdt.transaction_type = 'due_collected'
+           AND ${bdWhere('cdt.created_at')}
+           AND (p.is_adjustment IS NULL OR p.is_adjustment = 0)
+         ORDER BY cdt.created_at DESC`,
+        [outletId, startDt, endDt]
+      )
+    ]);
+    const sr = summaryRes[0][0];
+    const paymentSummary = paymentRes[0];
+    const splitPaySummary = splitPayRes[0];
+    const ncSr = ncRes[0][0] || {};
+    const costSr = costRes[0][0] || {};
+    const wastageSr = wastageRes[0][0] || {};
+    const dsrDueCollRows = dueCollRes[0];
 
-    // Payment summary over all filtered orders
-    const [paymentSummary] = await pool.query(
-      `SELECT p.payment_mode, SUM(p.total_amount) as total, SUM(p.tip_amount) as tips
-       FROM payments p
-       JOIN orders o ON p.order_id = o.id
-       LEFT JOIN tables t ON o.table_id = t.id
-       LEFT JOIN floors f ON o.floor_id = f.id
-       LEFT JOIN users u_captain ON o.created_by = u_captain.id
-       LEFT JOIN users u_biller ON o.billed_by = u_biller.id
-       LEFT JOIN users u_cancel ON o.cancelled_by = u_cancel.id
-       ${whereClause} AND p.status = 'completed'
-       GROUP BY p.payment_mode`,
-      params
-    );
     const paymentModeBreakdown = {};
     let totalPaidAll = 0, totalTipsAll = 0;
     for (const pm of paymentSummary) {
       const amt = parseFloat(pm.total) || 0;
-      paymentModeBreakdown[pm.payment_mode] = parseFloat(amt.toFixed(2));
+      if (pm.payment_mode !== 'split') {
+        paymentModeBreakdown[pm.payment_mode] = parseFloat(amt.toFixed(2));
+      }
       totalPaidAll += amt;
       totalTipsAll += parseFloat(pm.tips) || 0;
+    }
+    for (const sp of splitPaySummary) {
+      const amt = parseFloat(sp.total) || 0;
+      paymentModeBreakdown[sp.payment_mode] = (paymentModeBreakdown[sp.payment_mode] || 0) + parseFloat(amt.toFixed(2));
     }
 
     const completedCount = parseInt(sr.completed_orders) || 0;
     const netSales = parseFloat(sr.net_sales) || 0;
-
-    // NC summary — compute from order_items (item-level is_nc) since orders table may not be updated
-    const [ncSummaryRows] = await pool.query(
-      `SELECT 
-        COUNT(DISTINCT oi.order_id) as nc_orders,
-        SUM(oi.total_price) as nc_amount
-       FROM order_items oi
-       JOIN orders o ON oi.order_id = o.id
-       LEFT JOIN tables t ON o.table_id = t.id
-       LEFT JOIN floors f ON o.floor_id = f.id
-       LEFT JOIN users u_captain ON o.created_by = u_captain.id
-       LEFT JOIN users u_biller ON o.billed_by = u_biller.id
-       LEFT JOIN users u_cancel ON o.cancelled_by = u_cancel.id
-       ${whereClause}
-       AND oi.is_nc = 1 AND oi.status != 'cancelled'`,
-      params
-    );
-    const ncSr = ncSummaryRows[0] || {};
-
-    // Cost/Profit aggregates from order_item_costs
-    const [costSummaryRows] = await pool.query(
-      `SELECT COALESCE(SUM(oic.making_cost), 0) as making_cost,
-              COALESCE(SUM(oic.profit), 0) as profit
-       FROM order_item_costs oic
-       JOIN orders o ON oic.order_id = o.id
-       LEFT JOIN tables t ON o.table_id = t.id
-       LEFT JOIN floors f ON o.floor_id = f.id
-       LEFT JOIN users u_captain ON o.created_by = u_captain.id
-       LEFT JOIN users u_biller ON o.billed_by = u_biller.id
-       LEFT JOIN users u_cancel ON o.cancelled_by = u_cancel.id
-       ${whereClause} AND o.status IN ('paid','completed')`,
-      params
-    );
-    const costSr = costSummaryRows[0] || {};
     const totalMakingCost = parseFloat(costSr.making_cost) || 0;
     const totalProfit = parseFloat(costSr.profit) || 0;
     const foodCostPct = netSales > 0 ? parseFloat(((totalMakingCost / netSales) * 100).toFixed(2)) : 0;
-
-    // Wastage aggregates from wastage_logs
-    const [wastageSummaryRows] = await pool.query(
-      `SELECT COUNT(*) as wastage_count, COALESCE(SUM(wl.total_cost), 0) as wastage_cost
-       FROM wastage_logs wl
-       WHERE wl.outlet_id = ? AND wl.wastage_date BETWEEN ? AND ?`,
-      [outletId, start, end]
-    );
-    const wastageSr = wastageSummaryRows[0] || {};
     const totalWastageCount = parseInt(wastageSr.wastage_count) || 0;
     const totalWastageCost = parseFloat(wastageSr.wastage_cost) || 0;
 
-    // Due collections during this period — from customer_due_transactions for accurate collected amounts
-    const [dsrDueCollRows] = await pool.query(
-      `SELECT cdt.payment_id, cdt.order_id, ABS(cdt.amount) as collected_amount,
-        p.payment_mode, cdt.created_at,
-        o2.order_number, o2.customer_name, o2.customer_phone, o2.total_amount as order_total
-       FROM customer_due_transactions cdt
-       JOIN orders o2 ON cdt.order_id = o2.id
-       LEFT JOIN payments p ON cdt.payment_id = p.id
-       WHERE cdt.outlet_id = ? AND cdt.transaction_type = 'due_collected'
-         AND ${bdWhere('cdt.created_at')}
-         AND (p.is_adjustment IS NULL OR p.is_adjustment = 0)
-       ORDER BY cdt.created_at DESC`,
-      [outletId, startDt, endDt]
-    );
     const dsrDueCollections = dsrDueCollRows.map(r => ({
-      paymentId: r.payment_id,
-      orderId: r.order_id,
-      orderNumber: r.order_number,
-      customerName: r.customer_name || null,
-      customerPhone: r.customer_phone || null,
-      orderTotal: parseFloat(r.order_total) || 0,
-      collectedAmount: parseFloat(r.collected_amount) || 0,
-      paymentMode: r.payment_mode,
-      createdAt: r.created_at
+      paymentId: r.payment_id, orderId: r.order_id, orderNumber: r.order_number,
+      customerName: r.customer_name || null, customerPhone: r.customer_phone || null,
+      orderTotal: parseFloat(r.order_total) || 0, collectedAmount: parseFloat(r.collected_amount) || 0,
+      paymentMode: r.payment_mode, createdAt: r.created_at
     }));
     const dsrTotalDueCollected = dsrDueCollections.reduce((s, d) => s + d.collectedAmount, 0);
 
@@ -2694,7 +2821,21 @@ const reportsService = {
       wastageCount: totalWastageCount,
       wastageCost: parseFloat(totalWastageCost.toFixed(2)),
       averageOrderValue: completedCount > 0 ? parseFloat((netSales / completedCount).toFixed(2)) : 0,
-      paymentModeBreakdown
+      paymentModeBreakdown,
+      collection: buildCollectionBlock({
+        totalCollection: totalPaidAll,
+        dueCollection: dsrTotalDueCollected,
+        cash: paymentModeBreakdown.cash || 0,
+        card: paymentModeBreakdown.card || 0,
+        upi: paymentModeBreakdown.upi || 0,
+        wallet: paymentModeBreakdown.wallet || 0,
+        credit: paymentModeBreakdown.credit || 0,
+        totalDue: parseFloat(sr.due_amount) || 0,
+        totalNC: parseFloat(sr.nc_amount) || 0,
+        ncOrderCount: parseInt(sr.nc_orders) || 0,
+        totalAdjustment: parseFloat(sr.adjustment_amount) || 0,
+        adjustmentCount: parseInt(sr.adjustment_count) || 0
+      })
     };
 
     // 2. Paginated orders
@@ -3134,7 +3275,7 @@ const reportsService = {
     let params = [outletId, startDt, endDt];
 
     if (floorIds.length > 0) {
-      conditions.push(`o.floor_id IN (${floorIds.map(() => '?').join(',')})`);
+      conditions.push(`(o.floor_id IN (${floorIds.map(() => '?').join(',')}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`);
       params.push(...floorIds);
     }
     if (itemType) { conditions.push('oi.item_type = ?'); params.push(itemType); }
@@ -3609,7 +3750,7 @@ const reportsService = {
     let params = [outletId, startDt, endDt];
 
     if (floorIds.length > 0) {
-      conditions.push(`o.floor_id IN (${floorIds.map(() => '?').join(',')})`);
+      conditions.push(`(o.floor_id IN (${floorIds.map(() => '?').join(',')}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`);
       params.push(...floorIds);
     }
     if (itemType) { conditions.push('oi.item_type = ?'); params.push(itemType); }
@@ -4058,7 +4199,7 @@ const reportsService = {
     let params = [outletId, startDt, endDt];
 
     if (floorIds.length > 0) {
-      conditions.push(`o.floor_id IN (${floorIds.map(() => '?').join(',')})`);
+      conditions.push(`(o.floor_id IN (${floorIds.map(() => '?').join(',')}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`);
       params.push(...floorIds);
     }
     if (paymentMode) { conditions.push('p.payment_mode = ?'); params.push(paymentMode); }
@@ -4435,7 +4576,7 @@ const reportsService = {
     let params = [outletId, startDt, endDt];
 
     if (floorIds.length > 0) {
-      conditions.push(`o.floor_id IN (${floorIds.map(() => '?').join(',')})`);
+      conditions.push(`(o.floor_id IN (${floorIds.map(() => '?').join(',')}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`);
       params.push(...floorIds);
     }
     if (paymentStatus) { conditions.push('inv.payment_status = ?'); params.push(paymentStatus); }
@@ -4930,44 +5071,46 @@ const reportsService = {
     const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
     const ff = floorFilter(floorIds);
 
-    const [rows] = await pool.query(
-      `SELECT 
-        COALESCE(c.service_type, 'both') as service_type,
-        COUNT(DISTINCT o.id) as order_count,
-        SUM(CASE WHEN oi.status != 'cancelled' THEN oi.quantity ELSE 0 END) as total_quantity,
-        SUM(CASE WHEN oi.status != 'cancelled' THEN oi.total_price ELSE 0 END) as gross_revenue,
-        SUM(CASE WHEN oi.status != 'cancelled' THEN oi.discount_amount ELSE 0 END) as discount_amount,
-        SUM(CASE WHEN oi.status != 'cancelled' THEN oi.tax_amount ELSE 0 END) as tax_amount,
-        SUM(CASE WHEN oi.status != 'cancelled' THEN (oi.total_price - oi.discount_amount) ELSE 0 END) as net_revenue,
-        COUNT(DISTINCT oi.item_id) as unique_items,
-        SUM(CASE WHEN oi.status != 'cancelled' AND oi.is_nc = 1 THEN oi.quantity ELSE 0 END) as nc_quantity,
-        SUM(CASE WHEN oi.status != 'cancelled' AND oi.is_nc = 1 THEN oi.total_price ELSE 0 END) as nc_amount
-       FROM order_items oi
-       JOIN orders o ON oi.order_id = o.id
-       LEFT JOIN items i ON oi.item_id = i.id
-       LEFT JOIN categories c ON i.category_id = c.id
-       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}
-       GROUP BY COALESCE(c.service_type, 'both')
-       ORDER BY net_revenue DESC`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
-
-    // Get order-level summary for consistency with other reports
-    // Gross = subtotal + tax, Net = subtotal - discount
-    const [orderSummary] = await pool.query(
-      `SELECT 
-        SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal + o.tax_amount) ELSE 0 END) as gross_revenue,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.discount_amount ELSE 0 END) as discount_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.tax_amount ELSE 0 END) as tax_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END) as net_revenue,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount,
-        COUNT(CASE WHEN o.is_nc = 1 AND o.status != 'cancelled' THEN 1 END) as nc_orders
-       FROM orders o
-       WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'${ff.sql}`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
+    // Execute both independent queries in parallel
+    const [rowsRes, orderSummaryRes] = await Promise.all([
+      pool.query(
+        `SELECT 
+          COALESCE(c.service_type, 'both') as service_type,
+          COUNT(DISTINCT o.id) as order_count,
+          SUM(CASE WHEN oi.status != 'cancelled' THEN oi.quantity ELSE 0 END) as total_quantity,
+          SUM(CASE WHEN oi.status != 'cancelled' THEN oi.total_price ELSE 0 END) as gross_revenue,
+          SUM(CASE WHEN oi.status != 'cancelled' THEN oi.discount_amount ELSE 0 END) as discount_amount,
+          SUM(CASE WHEN oi.status != 'cancelled' THEN oi.tax_amount ELSE 0 END) as tax_amount,
+          SUM(CASE WHEN oi.status != 'cancelled' THEN (oi.total_price - oi.discount_amount) ELSE 0 END) as net_revenue,
+          COUNT(DISTINCT oi.item_id) as unique_items,
+          SUM(CASE WHEN oi.status != 'cancelled' AND oi.is_nc = 1 THEN oi.quantity ELSE 0 END) as nc_quantity,
+          SUM(CASE WHEN oi.status != 'cancelled' AND oi.is_nc = 1 THEN oi.total_price ELSE 0 END) as nc_amount
+         FROM order_items oi
+         JOIN orders o ON oi.order_id = o.id
+         LEFT JOIN items i ON oi.item_id = i.id
+         LEFT JOIN categories c ON i.category_id = c.id
+         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}
+         GROUP BY COALESCE(c.service_type, 'both')
+         ORDER BY net_revenue DESC`,
+        [outletId, startDt, endDt, ...ff.params]
+      ),
+      pool.query(
+        `SELECT 
+          SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal + o.tax_amount) ELSE 0 END) as gross_revenue,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.discount_amount ELSE 0 END) as discount_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.tax_amount ELSE 0 END) as tax_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END) as net_revenue,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount,
+          COUNT(CASE WHEN o.is_nc = 1 AND o.status != 'cancelled' THEN 1 END) as nc_orders
+         FROM orders o
+         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'${ff.sql}`,
+        [outletId, startDt, endDt, ...ff.params]
+      )
+    ]);
+    const rows = rowsRes[0];
+    const orderSummary = orderSummaryRes[0];
 
     // Calculate totals from item-level for breakdown, order-level for summary
     const totalRevenue = rows.reduce((sum, r) => sum + parseFloat(r.net_revenue || 0), 0);
@@ -5056,109 +5199,112 @@ const reportsService = {
 
     const whereClause = 'WHERE ' + conditions.join(' AND ');
 
-    const [rows] = await pool.query(
-      `SELECT 
-        ${toISTDate('o.created_at')} as report_date,
-        COUNT(*) as total_orders,
-        COUNT(CASE WHEN o.status IN ('paid', 'completed') THEN 1 END) as completed_orders,
-        COUNT(CASE WHEN o.status = 'cancelled' THEN 1 END) as cancelled_orders,
-        COUNT(CASE WHEN o.order_type = 'dine_in' AND o.status != 'cancelled' THEN 1 END) as dine_in_orders,
-        COUNT(CASE WHEN o.order_type = 'takeaway' AND o.status != 'cancelled' THEN 1 END) as takeaway_orders,
-        COUNT(CASE WHEN o.order_type = 'delivery' AND o.status != 'cancelled' THEN 1 END) as delivery_orders,
-        SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END) as total_sales,
-        SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal + o.tax_amount) ELSE 0 END) as gross_sales,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.discount_amount ELSE 0 END) as total_discount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.tax_amount ELSE 0 END) as total_tax,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.service_charge ELSE 0 END) as total_sc,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.guest_count ELSE 0 END) as total_guests,
-        COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount,
-        COUNT(CASE WHEN o.is_adjustment = 1 AND o.status != 'cancelled' THEN 1 END) as adjustment_count,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.adjustment_amount, 0) ELSE 0 END) as adjustment_amount
-       FROM orders o
-       ${whereClause}
-       GROUP BY ${toISTDate('o.created_at')}
-       ORDER BY report_date DESC`,
-      params
-    );
-
-    // Get payment breakdown (regular payments)
-    const [payRows] = await pool.query(
-      `SELECT 
-        ${toISTDate('p.created_at')} as report_date,
-        p.payment_mode,
-        COUNT(*) as payment_count,
-        SUM(p.total_amount) as amount
-       FROM payments p
-       JOIN orders o ON p.order_id = o.id
-       ${whereClause} AND p.status = 'completed'
-       GROUP BY ${toISTDate('p.created_at')}, p.payment_mode`,
-      params
-    );
-
-    // Get split payment breakdown (actual payment modes from split_payments table)
-    const [splitRows] = await pool.query(
-      `SELECT 
-        ${toISTDate('p.created_at')} as report_date,
-        sp.payment_mode,
-        COUNT(*) as payment_count,
-        SUM(sp.amount) as amount
-       FROM split_payments sp
-       JOIN payments p ON sp.payment_id = p.id
-       JOIN orders o ON p.order_id = o.id
-       ${whereClause} AND p.status = 'completed' AND p.payment_mode = 'split'
-       GROUP BY ${toISTDate('p.created_at')}, sp.payment_mode`,
-      params
-    );
+    // Execute all 5 independent queries in parallel
+    const [rowsRes, payRowsRes, splitRowsRes, costByDateRes, wastageByDateRes] = await Promise.all([
+      pool.query(
+        `SELECT 
+          ${toISTDate('o.created_at')} as report_date,
+          COUNT(*) as total_orders,
+          COUNT(CASE WHEN o.status IN ('paid', 'completed') THEN 1 END) as completed_orders,
+          COUNT(CASE WHEN o.status = 'cancelled' THEN 1 END) as cancelled_orders,
+          COUNT(CASE WHEN o.order_type = 'dine_in' AND o.status != 'cancelled' THEN 1 END) as dine_in_orders,
+          COUNT(CASE WHEN o.order_type = 'takeaway' AND o.status != 'cancelled' THEN 1 END) as takeaway_orders,
+          COUNT(CASE WHEN o.order_type = 'delivery' AND o.status != 'cancelled' THEN 1 END) as delivery_orders,
+          SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END) as total_sales,
+          SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal + o.tax_amount) ELSE 0 END) as gross_sales,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.discount_amount ELSE 0 END) as total_discount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.tax_amount ELSE 0 END) as total_tax,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.service_charge ELSE 0 END) as total_sc,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.guest_count ELSE 0 END) as total_guests,
+          COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount,
+          COUNT(CASE WHEN o.is_adjustment = 1 AND o.status != 'cancelled' THEN 1 END) as adjustment_count,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.adjustment_amount, 0) ELSE 0 END) as adjustment_amount
+         FROM orders o
+         ${whereClause}
+         GROUP BY ${toISTDate('o.created_at')}
+         ORDER BY report_date DESC`,
+        params
+      ),
+      pool.query(
+        `SELECT 
+          ${toISTDate('p.created_at')} as report_date,
+          p.payment_mode,
+          COUNT(*) as payment_count,
+          SUM(p.total_amount) as amount,
+          SUM(CASE WHEN COALESCE(p.is_due_collection, 0) = 1 THEN p.total_amount ELSE 0 END) as due_collection
+         FROM payments p
+         JOIN orders o ON p.order_id = o.id
+         ${whereClause} AND p.status = 'completed'
+         GROUP BY ${toISTDate('p.created_at')}, p.payment_mode`,
+        params
+      ),
+      pool.query(
+        `SELECT 
+          ${toISTDate('p.created_at')} as report_date,
+          sp.payment_mode,
+          COUNT(*) as payment_count,
+          SUM(sp.amount) as amount,
+          SUM(CASE WHEN COALESCE(p.is_due_collection, 0) = 1 THEN sp.amount ELSE 0 END) as due_collection
+         FROM split_payments sp
+         JOIN payments p ON sp.payment_id = p.id
+         JOIN orders o ON p.order_id = o.id
+         ${whereClause} AND p.status = 'completed' AND p.payment_mode = 'split'
+         GROUP BY ${toISTDate('p.created_at')}, sp.payment_mode`,
+        params
+      ),
+      pool.query(
+        `SELECT ${toISTDate('o.created_at')} as report_date,
+          COALESCE(SUM(oic.making_cost), 0) as making_cost,
+          COALESCE(SUM(oic.profit), 0) as profit
+         FROM order_item_costs oic
+         JOIN orders o ON oic.order_id = o.id
+         ${whereClause} AND o.status IN ('paid','completed')
+         GROUP BY ${toISTDate('o.created_at')}`,
+        params
+      ),
+      pool.query(
+        `SELECT wl.wastage_date as report_date,
+          COUNT(*) as wastage_count,
+          COALESCE(SUM(wl.total_cost), 0) as wastage_cost
+         FROM wastage_logs wl
+         WHERE wl.outlet_id = ? AND wl.wastage_date BETWEEN ? AND ?
+         GROUP BY wl.wastage_date`,
+        [outletId, start, end]
+      )
+    ]);
+    const rows = rowsRes[0];
+    const payRows = payRowsRes[0];
+    const splitRows = splitRowsRes[0];
+    const costByDate = costByDateRes[0];
+    const wastageByDate = wastageByDateRes[0];
 
     const paymentByDate = {};
-    // Add regular payments (excluding split which we'll break down)
     for (const pr of payRows) {
       const dateKey = pr.report_date instanceof Date ? pr.report_date.toISOString().slice(0, 10) : pr.report_date;
-      if (!paymentByDate[dateKey]) paymentByDate[dateKey] = { breakdown: {}, splitBreakdown: {} };
+      if (!paymentByDate[dateKey]) paymentByDate[dateKey] = { breakdown: {}, splitBreakdown: {}, dueCollection: 0 };
       if (pr.payment_mode !== 'split') {
         paymentByDate[dateKey].breakdown[pr.payment_mode] = parseFloat(pr.amount) || 0;
+        paymentByDate[dateKey].dueCollection += parseFloat(pr.due_collection) || 0;
       }
     }
-    // Add split payment breakdown
     for (const sp of splitRows) {
       const dateKey = sp.report_date instanceof Date ? sp.report_date.toISOString().slice(0, 10) : sp.report_date;
-      if (!paymentByDate[dateKey]) paymentByDate[dateKey] = { breakdown: {}, splitBreakdown: {} };
+      if (!paymentByDate[dateKey]) paymentByDate[dateKey] = { breakdown: {}, splitBreakdown: {}, dueCollection: 0 };
       paymentByDate[dateKey].splitBreakdown[sp.payment_mode] = parseFloat(sp.amount) || 0;
-      // Also add to main breakdown for totals
       paymentByDate[dateKey].breakdown[sp.payment_mode] = 
         (paymentByDate[dateKey].breakdown[sp.payment_mode] || 0) + (parseFloat(sp.amount) || 0);
+      paymentByDate[dateKey].dueCollection += parseFloat(sp.due_collection) || 0;
     }
 
-    // Cost/Profit data from order_item_costs grouped by date
-    const [costByDate] = await pool.query(
-      `SELECT ${toISTDate('o.created_at')} as report_date,
-        COALESCE(SUM(oic.making_cost), 0) as making_cost,
-        COALESCE(SUM(oic.profit), 0) as profit
-       FROM order_item_costs oic
-       JOIN orders o ON oic.order_id = o.id
-       ${whereClause} AND o.status IN ('paid','completed')
-       GROUP BY ${toISTDate('o.created_at')}`,
-      params
-    );
     const costByDateMap = {};
     costByDate.forEach(r => {
       const dk = r.report_date instanceof Date ? r.report_date.toISOString().slice(0, 10) : r.report_date;
       costByDateMap[dk] = { making_cost: parseFloat(r.making_cost) || 0, profit: parseFloat(r.profit) || 0 };
     });
 
-    // Wastage data grouped by date
-    const [wastageByDate] = await pool.query(
-      `SELECT wl.wastage_date as report_date,
-        COUNT(*) as wastage_count,
-        COALESCE(SUM(wl.total_cost), 0) as wastage_cost
-       FROM wastage_logs wl
-       WHERE wl.outlet_id = ? AND wl.wastage_date BETWEEN ? AND ?
-       GROUP BY wl.wastage_date`,
-      [outletId, start, end]
-    );
     const wastageByDateMap = {};
     wastageByDate.forEach(r => {
       const dk = r.report_date instanceof Date ? r.report_date.toISOString().slice(0, 10) : r.report_date;
@@ -5167,7 +5313,7 @@ const reportsService = {
 
     const summary = rows.map(r => {
       const dateKey = r.report_date instanceof Date ? r.report_date.toISOString().slice(0, 10) : r.report_date;
-      const payments = paymentByDate[dateKey] || { breakdown: {}, splitBreakdown: {} };
+      const payments = paymentByDate[dateKey] || { breakdown: {}, splitBreakdown: {}, dueCollection: 0 };
       const cost = costByDateMap[dateKey] || { making_cost: 0, profit: 0 };
       const wst = wastageByDateMap[dateKey] || { wastage_count: 0, wastage_cost: 0 };
       // Total collection = sum of all payment mode amounts for this date
@@ -5204,7 +5350,21 @@ const reportsService = {
         wastageCost: wst.wastage_cost,
         avgOrderValue: r.completed_orders > 0 ? parseFloat((r.total_sales / r.completed_orders).toFixed(2)) : 0,
         payments: payments.breakdown,
-        splitPaymentBreakdown: payments.splitBreakdown
+        splitPaymentBreakdown: payments.splitBreakdown,
+        collection: buildCollectionBlock({
+          totalCollection: totalCollection,
+          dueCollection: payments.dueCollection || 0,
+          cash: payments.breakdown.cash || 0,
+          card: payments.breakdown.card || 0,
+          upi: payments.breakdown.upi || 0,
+          wallet: payments.breakdown.wallet || 0,
+          credit: payments.breakdown.credit || 0,
+          totalDue: parseFloat(r.due_amount) || 0,
+          totalNC: parseFloat(r.nc_amount) || 0,
+          ncOrderCount: parseInt(r.nc_orders) || 0,
+          totalAdjustment: parseFloat(r.adjustment_amount) || 0,
+          adjustmentCount: parseInt(r.adjustment_count) || 0
+        })
       };
     });
 
@@ -5237,7 +5397,21 @@ const reportsService = {
       profit: parseFloat(summary.reduce((s, r) => s + r.profit, 0).toFixed(2)),
       foodCostPercentage: grandTotalSales > 0 ? parseFloat(((grandMakingCost / grandTotalSales) * 100).toFixed(2)) : 0,
       wastageCount: summary.reduce((s, r) => s + r.wastageCount, 0),
-      wastageCost: parseFloat(summary.reduce((s, r) => s + r.wastageCost, 0).toFixed(2))
+      wastageCost: parseFloat(summary.reduce((s, r) => s + r.wastageCost, 0).toFixed(2)),
+      collection: buildCollectionBlock({
+        totalCollection: parseFloat(summary.reduce((s, r) => s + r.totalCollection, 0).toFixed(2)),
+        dueCollection: summary.reduce((s, r) => s + (r.collection ? r.collection.dueCollection : 0), 0),
+        cash: summary.reduce((s, r) => s + (r.collection ? r.collection.paymentBreakdown.cash : 0), 0),
+        card: summary.reduce((s, r) => s + (r.collection ? r.collection.paymentBreakdown.card : 0), 0),
+        upi: summary.reduce((s, r) => s + (r.collection ? r.collection.paymentBreakdown.upi : 0), 0),
+        wallet: summary.reduce((s, r) => s + (r.collection ? r.collection.paymentBreakdown.wallet : 0), 0),
+        credit: summary.reduce((s, r) => s + (r.collection ? r.collection.paymentBreakdown.credit : 0), 0),
+        totalDue: parseFloat(summary.reduce((s, r) => s + r.dueAmount, 0).toFixed(2)),
+        totalNC: parseFloat(summary.reduce((s, r) => s + r.ncAmount, 0).toFixed(2)),
+        ncOrderCount: summary.reduce((s, r) => s + r.ncOrders, 0),
+        totalAdjustment: parseFloat(summary.reduce((s, r) => s + r.adjustmentAmount, 0).toFixed(2)),
+        adjustmentCount: summary.reduce((s, r) => s + r.adjustmentCount, 0)
+      })
     };
 
     return {
@@ -5276,221 +5450,155 @@ const reportsService = {
 
     const whereClause = 'WHERE ' + conditions.join(' AND ');
 
-    // 1. Order Summary Statistics
-    const [summaryRows] = await pool.query(
-      `SELECT 
-        COUNT(*) as total_orders,
-        COUNT(CASE WHEN o.status IN ('paid', 'completed') THEN 1 END) as completed_orders,
-        COUNT(CASE WHEN o.status = 'cancelled' THEN 1 END) as cancelled_orders,
-        COUNT(CASE WHEN o.order_type = 'dine_in' AND o.status != 'cancelled' THEN 1 END) as dine_in_orders,
-        COUNT(CASE WHEN o.order_type = 'takeaway' AND o.status != 'cancelled' THEN 1 END) as takeaway_orders,
-        COUNT(CASE WHEN o.order_type = 'delivery' AND o.status != 'cancelled' THEN 1 END) as delivery_orders,
-        SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END) as total_sales,
-        SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal + o.tax_amount) ELSE 0 END) as gross_sales,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.discount_amount ELSE 0 END) as total_discount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.tax_amount ELSE 0 END) as total_tax,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.service_charge ELSE 0 END) as total_service_charge,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.guest_count ELSE 0 END) as total_guests,
-        AVG(CASE WHEN o.status IN ('paid', 'completed') THEN COALESCE(o.paid_amount, 0) END) as avg_order_value,
-        MAX(CASE WHEN o.status IN ('paid', 'completed') THEN COALESCE(o.paid_amount, 0) END) as max_order_value,
-        MIN(CASE WHEN o.status IN ('paid', 'completed') AND COALESCE(o.paid_amount, 0) > 0 THEN COALESCE(o.paid_amount, 0) END) as min_order_value,
-        COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount,
-        COUNT(CASE WHEN o.is_adjustment = 1 AND o.status != 'cancelled' THEN 1 END) as adjustment_count,
-        SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.adjustment_amount, 0) ELSE 0 END) as adjustment_amount
-       FROM orders o
-       ${whereClause}`,
-      params
-    );
-
-    // 2. Payment Breakdown
-    const [paymentRows] = await pool.query(
-      `SELECT 
-        p.payment_mode,
-        COUNT(*) as count,
-        SUM(p.total_amount) as amount
-       FROM payments p
-       JOIN orders o ON p.order_id = o.id
-       ${whereClause} AND p.status = 'completed'
-       GROUP BY p.payment_mode`,
-      params
-    );
-
-    // 3. Split Payment Breakdown
-    const [splitPaymentRows] = await pool.query(
-      `SELECT 
-        sp.payment_mode,
-        COUNT(*) as count,
-        SUM(sp.amount) as amount
-       FROM split_payments sp
-       JOIN payments p ON sp.payment_id = p.id
-       JOIN orders o ON p.order_id = o.id
-       ${whereClause} AND p.status = 'completed' AND p.payment_mode = 'split'
-       GROUP BY sp.payment_mode`,
-      params
-    );
-
-    // 4. Hourly Breakdown
-    const [hourlyRows] = await pool.query(
-      `SELECT 
-        HOUR(o.created_at) as hour,
-        COUNT(*) as order_count,
-        SUM(CASE WHEN o.status IN ('paid', 'completed') THEN o.total_amount ELSE 0 END) as sales,
-        SUM(CASE WHEN o.status != 'cancelled' THEN o.guest_count ELSE 0 END) as guests
-       FROM orders o
-       ${whereClause} AND o.status != 'cancelled'
-       GROUP BY HOUR(o.created_at)
-       ORDER BY hour`,
-      params
-    );
-
-    // 5. Category-wise Sales
-    const [categoryRows] = await pool.query(
-      `SELECT 
-        c.id as category_id,
-        c.name as category_name,
-        COUNT(DISTINCT oi.id) as items_sold,
-        SUM(oi.quantity) as total_quantity,
-        SUM(oi.total_price) as total_sales
-       FROM order_items oi
-       JOIN orders o ON oi.order_id = o.id
-       LEFT JOIN items i ON oi.item_id = i.id
-       LEFT JOIN categories c ON i.category_id = c.id
-       ${whereClause} AND oi.status != 'cancelled' AND o.status != 'cancelled'
-       GROUP BY c.id, c.name
-       ORDER BY total_sales DESC`,
-      params
-    );
-
-    // 6. Top Selling Items
-    const [topItemRows] = await pool.query(
-      `SELECT 
-        i.id as item_id,
-        COALESCE(i.name, oi.item_name) as item_name,
-        c.name as category_name,
-        SUM(oi.quantity) as quantity_sold,
-        SUM(oi.total_price) as total_sales,
-        COUNT(DISTINCT o.id) as order_count
-       FROM order_items oi
-       JOIN orders o ON oi.order_id = o.id
-       LEFT JOIN items i ON oi.item_id = i.id
-       LEFT JOIN categories c ON i.category_id = c.id
-       ${whereClause} AND oi.status != 'cancelled' AND o.status != 'cancelled'
-       GROUP BY i.id, COALESCE(i.name, oi.item_name), c.name
-       ORDER BY quantity_sold DESC
-       LIMIT 20`,
-      params
-    );
-
-    // 7. Staff Performance
-    const [staffRows] = await pool.query(
-      `SELECT 
-        u.id as user_id,
-        u.name as user_name,
-        GROUP_CONCAT(DISTINCT r.name) as role_name,
-        COUNT(DISTINCT CASE WHEN o.status != 'cancelled' THEN o.id END) as orders_handled,
-        SUM(CASE WHEN o.status IN ('paid', 'completed') THEN o.total_amount ELSE 0 END) as total_sales,
-        AVG(CASE WHEN o.status IN ('paid', 'completed') THEN o.total_amount END) as avg_order_value
-       FROM orders o
-       JOIN users u ON o.created_by = u.id
-       LEFT JOIN user_roles ur ON u.id = ur.user_id AND ur.is_active = 1
-       LEFT JOIN roles r ON ur.role_id = r.id AND r.is_active = 1
-       ${whereClause}
-       GROUP BY u.id, u.name
-       ORDER BY total_sales DESC`,
-      params
-    );
-
-    // 8. Discounts Applied
-    const [discountRows] = await pool.query(
-      `SELECT 
-        od.discount_name,
-        od.discount_type,
-        COUNT(*) as times_applied,
-        SUM(od.discount_amount) as total_amount,
-        u.name as approved_by_name
-       FROM order_discounts od
-       JOIN orders o ON od.order_id = o.id
-       LEFT JOIN users u ON od.approved_by = u.id
-       ${whereClause}
-       GROUP BY od.discount_name, od.discount_type, u.name
-       ORDER BY total_amount DESC`,
-      params
-    );
-
-    // 9. Refunds - query separately with direct date filter
-    let refundRows = [];
-    try {
-      const [refunds] = await pool.query(
+    // Execute all 12 independent queries in parallel (was 12 sequential round-trips)
+    const [
+      summaryRes, paymentRes, splitPayRes, hourlyRes, categoryRes, topItemRes,
+      staffRes, discountRes, refundRes, ordersRes, floorRes, cancelledRes
+    ] = await Promise.all([
+      // 1. Order Summary Statistics
+      pool.query(
         `SELECT 
-          rf.id, rf.refund_amount, rf.reason, rf.status, rf.created_at,
-          o.order_number, o.total_amount as order_total,
-          u.name as refunded_by
-         FROM refunds rf
-         JOIN orders o ON rf.order_id = o.id
-         LEFT JOIN users u ON rf.refunded_by = u.id
+          COUNT(*) as total_orders,
+          COUNT(CASE WHEN o.status IN ('paid', 'completed') THEN 1 END) as completed_orders,
+          COUNT(CASE WHEN o.status = 'cancelled' THEN 1 END) as cancelled_orders,
+          COUNT(CASE WHEN o.order_type = 'dine_in' AND o.status != 'cancelled' THEN 1 END) as dine_in_orders,
+          COUNT(CASE WHEN o.order_type = 'takeaway' AND o.status != 'cancelled' THEN 1 END) as takeaway_orders,
+          COUNT(CASE WHEN o.order_type = 'delivery' AND o.status != 'cancelled' THEN 1 END) as delivery_orders,
+          SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END) as total_sales,
+          SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal + o.tax_amount) ELSE 0 END) as gross_sales,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.discount_amount ELSE 0 END) as total_discount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.tax_amount ELSE 0 END) as total_tax,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.service_charge ELSE 0 END) as total_service_charge,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.guest_count ELSE 0 END) as total_guests,
+          AVG(CASE WHEN o.status IN ('paid', 'completed') THEN COALESCE(o.paid_amount, 0) END) as avg_order_value,
+          MAX(CASE WHEN o.status IN ('paid', 'completed') THEN COALESCE(o.paid_amount, 0) END) as max_order_value,
+          MIN(CASE WHEN o.status IN ('paid', 'completed') AND COALESCE(o.paid_amount, 0) > 0 THEN COALESCE(o.paid_amount, 0) END) as min_order_value,
+          COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount,
+          COUNT(CASE WHEN o.is_adjustment = 1 AND o.status != 'cancelled' THEN 1 END) as adjustment_count,
+          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.adjustment_amount, 0) ELSE 0 END) as adjustment_amount
+         FROM orders o
+         ${whereClause}`,
+        params
+      ),
+      // 2. Payment Breakdown
+      pool.query(
+        `SELECT p.payment_mode, COUNT(*) as count, SUM(p.total_amount) as amount
+         FROM payments p JOIN orders o ON p.order_id = o.id
+         ${whereClause} AND p.status = 'completed'
+         GROUP BY p.payment_mode`,
+        params
+      ),
+      // 3. Split Payment Breakdown
+      pool.query(
+        `SELECT sp.payment_mode, COUNT(*) as count, SUM(sp.amount) as amount
+         FROM split_payments sp JOIN payments p ON sp.payment_id = p.id JOIN orders o ON p.order_id = o.id
+         ${whereClause} AND p.status = 'completed' AND p.payment_mode = 'split'
+         GROUP BY sp.payment_mode`,
+        params
+      ),
+      // 4. Hourly Breakdown
+      pool.query(
+        `SELECT HOUR(o.created_at) as hour, COUNT(*) as order_count,
+          SUM(CASE WHEN o.status IN ('paid', 'completed') THEN o.total_amount ELSE 0 END) as sales,
+          SUM(CASE WHEN o.status != 'cancelled' THEN o.guest_count ELSE 0 END) as guests
+         FROM orders o ${whereClause} AND o.status != 'cancelled'
+         GROUP BY HOUR(o.created_at) ORDER BY hour`,
+        params
+      ),
+      // 5. Category-wise Sales
+      pool.query(
+        `SELECT c.id as category_id, c.name as category_name,
+          COUNT(DISTINCT oi.id) as items_sold, SUM(oi.quantity) as total_quantity, SUM(oi.total_price) as total_sales
+         FROM order_items oi JOIN orders o ON oi.order_id = o.id
+         LEFT JOIN items i ON oi.item_id = i.id LEFT JOIN categories c ON i.category_id = c.id
+         ${whereClause} AND oi.status != 'cancelled' AND o.status != 'cancelled'
+         GROUP BY c.id, c.name ORDER BY total_sales DESC`,
+        params
+      ),
+      // 6. Top Selling Items
+      pool.query(
+        `SELECT i.id as item_id, COALESCE(i.name, oi.item_name) as item_name, c.name as category_name,
+          SUM(oi.quantity) as quantity_sold, SUM(oi.total_price) as total_sales, COUNT(DISTINCT o.id) as order_count
+         FROM order_items oi JOIN orders o ON oi.order_id = o.id
+         LEFT JOIN items i ON oi.item_id = i.id LEFT JOIN categories c ON i.category_id = c.id
+         ${whereClause} AND oi.status != 'cancelled' AND o.status != 'cancelled'
+         GROUP BY i.id, COALESCE(i.name, oi.item_name), c.name ORDER BY quantity_sold DESC LIMIT 20`,
+        params
+      ),
+      // 7. Staff Performance
+      pool.query(
+        `SELECT u.id as user_id, u.name as user_name, GROUP_CONCAT(DISTINCT r.name) as role_name,
+          COUNT(DISTINCT CASE WHEN o.status != 'cancelled' THEN o.id END) as orders_handled,
+          SUM(CASE WHEN o.status IN ('paid', 'completed') THEN o.total_amount ELSE 0 END) as total_sales,
+          AVG(CASE WHEN o.status IN ('paid', 'completed') THEN o.total_amount END) as avg_order_value
+         FROM orders o JOIN users u ON o.created_by = u.id
+         LEFT JOIN user_roles ur ON u.id = ur.user_id AND ur.is_active = 1
+         LEFT JOIN roles r ON ur.role_id = r.id AND r.is_active = 1
+         ${whereClause} GROUP BY u.id, u.name ORDER BY total_sales DESC`,
+        params
+      ),
+      // 8. Discounts Applied
+      pool.query(
+        `SELECT od.discount_name, od.discount_type, COUNT(*) as times_applied,
+          SUM(od.discount_amount) as total_amount, u.name as approved_by_name
+         FROM order_discounts od JOIN orders o ON od.order_id = o.id LEFT JOIN users u ON od.approved_by = u.id
+         ${whereClause} GROUP BY od.discount_name, od.discount_type, u.name ORDER BY total_amount DESC`,
+        params
+      ),
+      // 9. Refunds (may fail if table doesn't exist)
+      pool.query(
+        `SELECT rf.id, rf.refund_amount, rf.reason, rf.status, rf.created_at,
+          o.order_number, o.total_amount as order_total, u.name as refunded_by
+         FROM refunds rf JOIN orders o ON rf.order_id = o.id LEFT JOIN users u ON rf.refunded_by = u.id
          WHERE o.outlet_id = ? AND ${bdWhere('rf.created_at')} AND rf.status IN ('completed', 'approved')
          ORDER BY rf.created_at DESC`,
         [outletId, startDt, endDt]
-      );
-      refundRows = refunds;
-    } catch (e) {
-      // Refunds table may not exist or have different structure
-      refundRows = [];
-    }
-
-    // 10. Orders List (with basic details)
-    const [ordersRows] = await pool.query(
-      `SELECT 
-        o.id, o.uuid, o.order_number, o.order_type, o.status, o.payment_status,
-        o.customer_name, o.customer_phone, o.guest_count,
-        o.subtotal, o.discount_amount, o.tax_amount, o.service_charge, o.total_amount,
-        o.is_nc, o.nc_amount, o.nc_reason, o.due_amount, o.paid_amount,
-        o.is_adjustment, o.adjustment_amount,
-        o.created_at, o.updated_at,
-        t.table_number, f.name as floor_name,
-        u.name as created_by_name,
-        p.payment_mode
-       FROM orders o
-       LEFT JOIN tables t ON o.table_id = t.id
-       LEFT JOIN floors f ON o.floor_id = f.id
-       LEFT JOIN users u ON o.created_by = u.id
-       LEFT JOIN payments p ON p.order_id = o.id AND p.status = 'completed'
-       ${whereClause}
-       ORDER BY o.created_at DESC`,
-      params
-    );
-
-    // 11. Floor-wise breakdown
-    const [floorRows] = await pool.query(
-      `SELECT 
-        COALESCE(f.name, 'Takeaway/Delivery') as floor_name,
-        o.order_type,
-        COUNT(*) as order_count,
-        SUM(CASE WHEN o.status IN ('paid', 'completed') THEN o.total_amount ELSE 0 END) as sales
-       FROM orders o
-       LEFT JOIN floors f ON o.floor_id = f.id
-       ${whereClause} AND o.status != 'cancelled'
-       GROUP BY f.name, o.order_type
-       ORDER BY sales DESC`,
-      params
-    );
-
-    // 12. Cancelled orders summary
-    const [cancelledRows] = await pool.query(
-      `SELECT 
-        o.id, o.order_number, o.order_type, o.total_amount,
-        o.customer_name, o.cancel_reason,
-        o.created_at, o.updated_at as cancelled_at,
-        u.name as created_by_name
-       FROM orders o
-       LEFT JOIN users u ON o.created_by = u.id
-       ${whereClause} AND o.status = 'cancelled'
-       ORDER BY o.updated_at DESC`,
-      params
-    );
+      ).catch(() => [[]]),
+      // 10. Orders List
+      pool.query(
+        `SELECT o.id, o.uuid, o.order_number, o.order_type, o.status, o.payment_status,
+          o.customer_name, o.customer_phone, o.guest_count,
+          o.subtotal, o.discount_amount, o.tax_amount, o.service_charge, o.total_amount,
+          o.is_nc, o.nc_amount, o.nc_reason, o.due_amount, o.paid_amount,
+          o.is_adjustment, o.adjustment_amount, o.created_at, o.updated_at,
+          t.table_number, f.name as floor_name, u.name as created_by_name, p.payment_mode
+         FROM orders o LEFT JOIN tables t ON o.table_id = t.id LEFT JOIN floors f ON o.floor_id = f.id
+         LEFT JOIN users u ON o.created_by = u.id LEFT JOIN payments p ON p.order_id = o.id AND p.status = 'completed'
+         ${whereClause} ORDER BY o.created_at DESC`,
+        params
+      ),
+      // 11. Floor-wise breakdown
+      pool.query(
+        `SELECT COALESCE(f.name, 'Takeaway/Delivery') as floor_name, o.order_type,
+          COUNT(*) as order_count, SUM(CASE WHEN o.status IN ('paid', 'completed') THEN o.total_amount ELSE 0 END) as sales
+         FROM orders o LEFT JOIN floors f ON o.floor_id = f.id
+         ${whereClause} AND o.status != 'cancelled' GROUP BY f.name, o.order_type ORDER BY sales DESC`,
+        params
+      ),
+      // 12. Cancelled orders
+      pool.query(
+        `SELECT o.id, o.order_number, o.order_type, o.total_amount, o.customer_name, o.cancel_reason,
+          o.created_at, o.updated_at as cancelled_at, u.name as created_by_name
+         FROM orders o LEFT JOIN users u ON o.created_by = u.id
+         ${whereClause} AND o.status = 'cancelled' ORDER BY o.updated_at DESC`,
+        params
+      )
+    ]);
+    const summaryRows = summaryRes[0];
+    const paymentRows = paymentRes[0];
+    const splitPaymentRows = splitPayRes[0];
+    const hourlyRows = hourlyRes[0];
+    const categoryRows = categoryRes[0];
+    const topItemRows = topItemRes[0];
+    const staffRows = staffRes[0];
+    const discountRows = discountRes[0];
+    const refundRows = refundRes[0] || [];
+    const ordersRows = ordersRes[0];
+    const floorRows = floorRes[0];
+    const cancelledRows = cancelledRes[0];
 
     // Format summary
     const summary = summaryRows[0] || {};
@@ -5631,32 +5739,7 @@ const reportsService = {
     const totalRefunds = refunds.reduce((sum, r) => sum + r.refundAmount, 0);
     const totalDiscounts = discountsApplied.reduce((sum, d) => sum + d.totalAmount, 0);
 
-    // Cost/Profit data from order_item_costs for this date
-    const [detailCostRows] = await pool.query(
-      `SELECT COALESCE(SUM(oic.making_cost), 0) as making_cost,
-              COALESCE(SUM(oic.profit), 0) as profit
-       FROM order_item_costs oic
-       JOIN orders o ON oic.order_id = o.id
-       ${whereClause} AND o.status IN ('paid','completed')`,
-      params
-    );
-    const detailMakingCost = parseFloat(detailCostRows[0]?.making_cost) || 0;
-    const detailProfit = parseFloat(detailCostRows[0]?.profit) || 0;
-    const detailTotalSales = parseFloat(summary.total_sales) || 0;
-    const detailFoodCostPct = detailTotalSales > 0
-      ? parseFloat(((detailMakingCost / detailTotalSales) * 100).toFixed(2)) : 0;
-
-    // Wastage data for this date
-    const [detailWastageRows] = await pool.query(
-      `SELECT COUNT(*) as wastage_count, COALESCE(SUM(wl.total_cost), 0) as wastage_cost
-       FROM wastage_logs wl
-       WHERE wl.outlet_id = ? AND wl.wastage_date = ?`,
-      [outletId, targetDate]
-    );
-    const detailWastageCount = parseInt(detailWastageRows[0]?.wastage_count) || 0;
-    const detailWastageCost = parseFloat(detailWastageRows[0]?.wastage_cost) || 0;
-
-    // Due collections during this period — from customer_due_transactions for accurate collected amounts
+    // Build due collection query (conditional floor filter)
     let dueCollSql = `
       SELECT cdt.payment_id, cdt.order_id, ABS(cdt.amount) as collected_amount,
         p.payment_mode, cdt.created_at,
@@ -5674,8 +5757,33 @@ const reportsService = {
       dueCollParams.push(...floorIds);
     }
     dueCollSql += ` ORDER BY cdt.created_at DESC`;
-    const [dueCollRows] = await pool.query(dueCollSql, dueCollParams);
-    const dueCollections = dueCollRows.map(r => ({
+
+    // Execute cost, wastage, due collections in parallel
+    const [detailCostRes, detailWastageRes, dueCollRes] = await Promise.all([
+      pool.query(
+        `SELECT COALESCE(SUM(oic.making_cost), 0) as making_cost,
+                COALESCE(SUM(oic.profit), 0) as profit
+         FROM order_item_costs oic
+         JOIN orders o ON oic.order_id = o.id
+         ${whereClause} AND o.status IN ('paid','completed')`,
+        params
+      ),
+      pool.query(
+        `SELECT COUNT(*) as wastage_count, COALESCE(SUM(wl.total_cost), 0) as wastage_cost
+         FROM wastage_logs wl
+         WHERE wl.outlet_id = ? AND wl.wastage_date = ?`,
+        [outletId, targetDate]
+      ),
+      pool.query(dueCollSql, dueCollParams)
+    ]);
+    const detailMakingCost = parseFloat(detailCostRes[0][0]?.making_cost) || 0;
+    const detailProfit = parseFloat(detailCostRes[0][0]?.profit) || 0;
+    const detailTotalSales = parseFloat(summary.total_sales) || 0;
+    const detailFoodCostPct = detailTotalSales > 0
+      ? parseFloat(((detailMakingCost / detailTotalSales) * 100).toFixed(2)) : 0;
+    const detailWastageCount = parseInt(detailWastageRes[0][0]?.wastage_count) || 0;
+    const detailWastageCost = parseFloat(detailWastageRes[0][0]?.wastage_cost) || 0;
+    const dueCollections = dueCollRes[0].map(r => ({
       paymentId: r.payment_id,
       orderId: r.order_id,
       orderNumber: r.order_number,
@@ -5721,7 +5829,21 @@ const reportsService = {
         maxOrderValue: parseFloat(summary.max_order_value) || 0,
         minOrderValue: parseFloat(summary.min_order_value) || 0,
         totalRefunds,
-        totalDiscountsApplied: totalDiscounts
+        totalDiscountsApplied: totalDiscounts,
+        collection: buildCollectionBlock({
+          totalCollection: totalPayments,
+          dueCollection: totalDueCollected,
+          cash: (paymentBreakdown.cash && paymentBreakdown.cash.amount) || 0,
+          card: (paymentBreakdown.card && paymentBreakdown.card.amount) || 0,
+          upi: (paymentBreakdown.upi && paymentBreakdown.upi.amount) || 0,
+          wallet: (paymentBreakdown.wallet && paymentBreakdown.wallet.amount) || 0,
+          credit: (paymentBreakdown.credit && paymentBreakdown.credit.amount) || 0,
+          totalDue: parseFloat(summary.due_amount) || 0,
+          totalNC: parseFloat(summary.nc_amount) || 0,
+          ncOrderCount: parseInt(summary.nc_orders) || 0,
+          totalAdjustment: parseFloat(summary.adjustment_amount) || 0,
+          adjustmentCount: parseInt(summary.adjustment_count) || 0
+        })
       },
       paymentBreakdown,
       hourlyBreakdown,
@@ -5758,7 +5880,7 @@ const reportsService = {
     let params = [outletId];
 
     if (floorIds.length > 0) {
-      conditions.push(`o.floor_id IN (${floorIds.map(() => '?').join(',')})`);
+      conditions.push(`(o.floor_id IN (${floorIds.map(() => '?').join(',')}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`);
       params.push(...floorIds);
     }
 
@@ -5913,7 +6035,7 @@ const reportsService = {
     let params = [outletId, startDt, endDt];
 
     if (floorIds.length > 0) {
-      conditions.push(`o.floor_id IN (${floorIds.map(() => '?').join(',')})`);
+      conditions.push(`(o.floor_id IN (${floorIds.map(() => '?').join(',')}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`);
       params.push(...floorIds);
     }
 

@@ -214,29 +214,33 @@ const kotService = {
 
         const kotId = kotResult.insertId;
 
-        // Create KOT items — use pre-fetched addons
+        // Prepare KOT items data + attach addons info
+        const kotItemValues = [];
+        const itemIdsForUpdate = [];
         for (const item of items) {
           const itemAddons = addonsMap[item.id] || [];
           const addonsText = itemAddons.map(a => a.addon_name).join(', ');
           item._addons = itemAddons;
           item._addonsText = addonsText;
-
           const itemType = item.item_type || item.menu_item_type || null;
+          kotItemValues.push([kotId, item.id, item.item_name, item.variant_name, itemType, item.quantity, addonsText, item.special_instructions, 'pending']);
+          itemIdsForUpdate.push(item.id);
+        }
 
-          await connection.query(
+        // Batch insert all KOT items + batch update order_items in parallel
+        await Promise.all([
+          connection.query(
             `INSERT INTO kot_items (
               kot_id, order_item_id, item_name, variant_name, item_type,
               quantity, addons_text, special_instructions, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
-            [kotId, item.id, item.item_name, item.variant_name, itemType, item.quantity, addonsText, item.special_instructions]
-          );
-
-          // Update order item status and kot_id
-          await connection.query(
-            `UPDATE order_items SET status = 'sent_to_kitchen', kot_id = ? WHERE id = ?`,
-            [kotId, item.id]
-          );
-        }
+            ) VALUES ?`,
+            [kotItemValues]
+          ),
+          connection.query(
+            `UPDATE order_items SET status = 'sent_to_kitchen', kot_id = ? WHERE id IN (?)`,
+            [kotId, itemIdsForUpdate]
+          )
+        ]);
 
         createdTickets.push({
           id: kotId,

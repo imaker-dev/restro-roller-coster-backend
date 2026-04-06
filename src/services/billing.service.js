@@ -13,14 +13,19 @@ const taxService = require('./tax.service');
 const printerService = require('./printer.service');
 const { prefixImageUrl } = require('../utils/helpers');
 
+const BUSINESS_DAY_START_HOUR = 4;
+
 /**
- * Get local date string (YYYY-MM-DD) accounting for server timezone
+ * Get local date string (YYYY-MM-DD) for the current business day.
+ * If the current time is before BUSINESS_DAY_START_HOUR (e.g. 4 AM),
+ * the business day is still "yesterday".
  */
 function getLocalDate(date = new Date()) {
   const d = date instanceof Date ? date : new Date(date);
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
+  const shifted = new Date(d.getTime() - BUSINESS_DAY_START_HOUR * 60 * 60 * 1000);
+  const year = shifted.getFullYear();
+  const month = String(shifted.getMonth() + 1).padStart(2, '0');
+  const day = String(shifted.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 }
 
