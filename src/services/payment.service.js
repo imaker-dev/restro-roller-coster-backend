@@ -1810,15 +1810,15 @@ const paymentService = {
           SUM(total_amount) as total_sale,
           SUM(COALESCE(discount_amount, 0)) as discount_amount,
           COUNT(CASE WHEN is_nc = 1 THEN 1 END) as nc_order_count,
-          SUM(COALESCE(nc_amount, 0)) as nc_amount,
+          SUM(CASE WHEN is_nc = 1 THEN COALESCE(nc_amount, 0) ELSE 0 END) as nc_amount,
           COUNT(CASE WHEN is_adjustment = 1 THEN 1 END) as adjustment_count,
-          SUM(COALESCE(adjustment_amount, 0)) as adjustment_amount,
+          SUM(CASE WHEN is_adjustment = 1 THEN COALESCE(adjustment_amount, 0) ELSE 0 END) as adjustment_amount,
           SUM(COALESCE(due_amount, 0)) as due_amount
          FROM orders
          WHERE outlet_id = ? AND status = 'completed' AND created_at >= ? AND created_at <= ?${orderFloorCond}`,
         [outletId, shiftStartTime, shiftEndTime, ...orderFloorParams]
       ),
-      // Payments EXCLUDING due collections
+      // ALL payments during shift (including due collections — real money received)
       pool.query(
         `SELECT 
           p.payment_mode,
@@ -1828,8 +1828,7 @@ const paymentService = {
          JOIN orders o ON p.order_id = o.id
          LEFT JOIN tables t ON o.table_id = t.id
          WHERE p.outlet_id = ? AND p.created_at >= ? AND p.created_at <= ? 
-           AND p.status = 'completed' AND p.payment_mode != 'split'
-           AND COALESCE(p.is_due_collection, 0) = 0${paymentFloorCondition}
+           AND p.status = 'completed' AND p.payment_mode != 'split'${paymentFloorCondition}
          GROUP BY p.payment_mode`,
         [outletId, shiftStartTime, shiftEndTime, ...floorPayParam]
       ),
@@ -1843,8 +1842,7 @@ const paymentService = {
          JOIN orders o ON p.order_id = o.id
          LEFT JOIN tables t ON o.table_id = t.id
          WHERE p.outlet_id = ? AND p.created_at >= ? AND p.created_at <= ? 
-           AND p.status = 'completed' AND p.payment_mode = 'split'
-           AND COALESCE(p.is_due_collection, 0) = 0${paymentFloorCondition}
+           AND p.status = 'completed' AND p.payment_mode = 'split'${paymentFloorCondition}
          GROUP BY sp.payment_mode`,
         [outletId, shiftStartTime, shiftEndTime, ...floorPayParam]
       ),
@@ -1932,7 +1930,7 @@ const paymentService = {
     const totalSales = totalSalesFromOrders;
     const dueCollected = parseFloat(dueCollData[0]?.due_collected) || 0;
     
-    // Expected amount = Opening Cash + payment collections (excl due) + cash_in - cash_out - refunds - expenses
+    // Expected amount = Opening Cash + ALL payment collections (incl due collections) + cash_in - cash_out - refunds - expenses
     const expectedAmount = 
       openingCashFromSession +
       paymentSummary.total +
@@ -1941,7 +1939,7 @@ const paymentService = {
       (parseFloat(cashSummary.refunds) || 0) -
       (parseFloat(cashSummary.expenses) || 0);
     
-    // Expected cash in drawer (only cash) = opening + cash payments + cash_in - cash_out - refunds - expenses
+    // Expected cash in drawer (only cash) = opening + ALL cash payments (incl due collections) + cash_in - cash_out - refunds - expenses
     const expectedCashInDrawer = 
       openingCashFromSession +
       cashSalesFromPayments +
@@ -1951,7 +1949,7 @@ const paymentService = {
       (parseFloat(cashSummary.expenses) || 0);
     
     // Debug logging
-    logger.info(`Cash drawer calculation - Opening: ${openingCashFromSession}, Cash Sales: ${cashSalesFromPayments}, Total Sales: ${totalSales}, Expected Amount: ${expectedAmount}, Expected Cash: ${expectedCashInDrawer}`);
+    logger.info(`Cash drawer calculation - Opening: ${openingCashFromSession}, Cash Sales: ${cashSalesFromPayments}, Due Collected: ${dueCollected}, Total Sales: ${totalSales}, Expected Amount: ${expectedAmount}, Expected Cash: ${expectedCashInDrawer}`);
 
     // Get running tables for this floor (occupied tables with active orders created during this shift)
     let runningTablesQuery = `
@@ -2028,9 +2026,9 @@ const paymentService = {
       userId,
       // Key summary values for UI
       openingAmount: openingCashFromSession,
-      expectedAmount: expectedAmount,         // Opening + payment collections + Cash In - Cash Out - Refunds - Expenses
+      expectedAmount: expectedAmount,         // Opening + ALL payment collections (incl due) + Cash In - Cash Out - Refunds - Expenses
       totalSales: totalSales,                 // SUM(total_amount) of completed orders
-      totalCollection: totalSales,            // = totalSales (what was billed)
+      totalCollection: paymentSummary.total,   // Actual money collected (incl due collections)
       currentBalance: expectedCashInDrawer,   // Expected cash in drawer only
       expectedCash: expectedCashInDrawer,     // Expected cash in drawer only
       // Real-time sales data
@@ -2040,24 +2038,25 @@ const paymentService = {
         activeOrders: parseInt(orderData[0]?.active_orders) || 0,
         totalGuests: parseInt(orderData[0]?.total_guests) || 0,
         totalSale: totalSales,
-        totalCollection: totalSales,
+        totalCollection: paymentSummary.total,
         pendingAmount: parseFloat(orderData[0]?.pending_amount) || 0,
         discountAmount: parseFloat(completedStats[0]?.discount_amount) || 0,
         ncOrderCount: parseInt(completedStats[0]?.nc_order_count) || 0,
         ncAmount: parseFloat(completedStats[0]?.nc_amount) || 0,
         adjustmentCount: parseInt(completedStats[0]?.adjustment_count) || 0,
         adjustmentAmount: parseFloat(completedStats[0]?.adjustment_amount) || 0,
-        dueAmount: parseFloat(completedStats[0]?.due_amount) || 0
+        dueAmount: parseFloat(completedStats[0]?.due_amount) || 0,
+        dueCollected: dueCollected
       },
-      // Collection breakdown (due collection excluded from totalCollection, tracked separately)
+      // Collection breakdown — includes due collections (real money received during shift)
       collection: {
-        totalCollection: totalSales,
+        totalCollection: paymentSummary.total,
         dueCollection: dueCollected,
         cash: paymentSummary.cash,
         card: paymentSummary.card,
         upi: paymentSummary.upi,
         wallet: paymentSummary.wallet,
-        note: 'totalCollection = totalSales from completed orders. dueCollection tracked separately (NOT in totalSales).'
+        note: 'totalCollection = SUM of all payments during shift (incl due collections). dueCollection shown separately for reference.'
       },
       // Payment breakdown by mode
       paymentBreakdown: paymentSummary,

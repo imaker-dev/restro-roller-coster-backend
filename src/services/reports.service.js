@@ -6931,14 +6931,14 @@ const reportsService = {
       [outletId, startDt, endDt, ...ff.params]
     );
 
-    // 3. Payment breakdown from completed orders (EXCLUDE due collections — already counted in total_amount)
+    // 3. Payment breakdown — ALL payments for today's completed orders (filter by o.created_at to match summary scope)
+    //    Includes due collections so payment mode totals = total_paid_amount
     const regularPayQuery = pool.query(
       `SELECT p.payment_mode, COALESCE(SUM(p.total_amount), 0) as amount
        FROM payments p
        JOIN orders o ON p.order_id = o.id
-       WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed'
-         AND p.payment_mode != 'split' AND o.status = 'completed'
-         AND COALESCE(p.is_due_collection, 0) = 0${ff.sql}
+       WHERE p.outlet_id = ? AND ${bdWhere('o.created_at')} AND p.status = 'completed'
+         AND p.payment_mode != 'split' AND o.status = 'completed'${ff.sql}
        GROUP BY p.payment_mode`,
       [outletId, startDt, endDt, ...ff.params]
     );
@@ -6948,10 +6948,19 @@ const reportsService = {
        FROM split_payments sp
        JOIN payments p ON sp.payment_id = p.id
        JOIN orders o ON p.order_id = o.id
-       WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed'
-         AND p.payment_mode = 'split' AND o.status = 'completed'
-         AND COALESCE(p.is_due_collection, 0) = 0${ff.sql}
+       WHERE p.outlet_id = ? AND ${bdWhere('o.created_at')} AND p.status = 'completed'
+         AND p.payment_mode = 'split' AND o.status = 'completed'${ff.sql}
        GROUP BY sp.payment_mode`,
+      [outletId, startDt, endDt, ...ff.params]
+    );
+
+    // 3b. Due collection total (for separate display — how much of the paid amount came from due collections)
+    const dueCollQuery = pool.query(
+      `SELECT COALESCE(SUM(p.total_amount), 0) as due_collected
+       FROM payments p
+       JOIN orders o ON p.order_id = o.id
+       WHERE p.outlet_id = ? AND ${bdWhere('o.created_at')} AND p.status = 'completed'
+         AND o.status = 'completed' AND COALESCE(p.is_due_collection, 0) = 1${ff.sql}`,
       [outletId, startDt, endDt, ...ff.params]
     );
 
@@ -6984,8 +6993,8 @@ const reportsService = {
     }
 
     const [
-      [summaryRows], [cancelledRows], [regularPayRows], [splitPayRows], [salesRows]
-    ] = await Promise.all([summaryQuery, cancelledQuery, regularPayQuery, splitPayQuery, salesQuery]);
+      [summaryRows], [cancelledRows], [regularPayRows], [splitPayRows], [dueCollRows], [salesRows]
+    ] = await Promise.all([summaryQuery, cancelledQuery, regularPayQuery, splitPayQuery, dueCollQuery, salesQuery]);
 
     const s = summaryRows[0];
     const totalSale = r2(s.total_sale);
@@ -7004,6 +7013,7 @@ const reportsService = {
       adjustment_amount: r2(s.adjustment_amount),
       total_paid_amount: r2(s.paid_amount),
       total_due_amount: r2(s.due_amount),
+      due_collection_amount: r2(dueCollRows[0]?.due_collected),
       total_guests: parseInt(s.total_guests) || 0,
       channels: [
         { type: 'dine_in', amount: r2(s.dine_in_sale), count: parseInt(s.dine_in_count) || 0 },
@@ -7037,6 +7047,10 @@ const reportsService = {
     const dueAmt = r2(s.due_amount);
     if (dueAmt > 0) {
       payments.push({ name: 'Due', amount: dueAmt, percentage: r2((dueAmt / totalForPct) * 100) });
+    }
+    const adjAmt = r2(s.adjustment_amount);
+    if (adjAmt > 0) {
+      payments.push({ name: 'Adjustment', amount: adjAmt, percentage: r2((adjAmt / totalForPct) * 100) });
     }
 
     // Sales timeline
@@ -7090,9 +7104,11 @@ const reportsService = {
       crossVerification: {
         total_sale: totalSale,
         channel_sum: channelSum,
-        paid_plus_due: r2(r2(s.paid_amount) + dueAmt + r2(s.adjustment_amount)),
+        paid_plus_due_plus_adj: r2(r2(s.paid_amount) + dueAmt + r2(s.adjustment_amount)),
+        payment_mode_total: r2(totalPaid),
+        paid_matches_payments: Math.abs(r2(s.paid_amount) - r2(totalPaid)) < 0.01,
         match: Math.abs(totalSale - channelSum) < 0.01,
-        note: 'Only completed orders. total_sale = SUM(total_amount). No gross/net split.'
+        note: 'Only completed orders. total_sale = SUM(total_amount). payment_mode_total should match total_paid_amount.'
       }
     };
   },
@@ -7145,38 +7161,36 @@ const reportsService = {
           SUM(COALESCE(o.paid_amount, 0)) as paid_amount,
           SUM(COALESCE(o.due_amount, 0)) as due_amount,
           COUNT(CASE WHEN o.is_adjustment = 1 THEN 1 END) as adjustment_count,
-          SUM(COALESCE(o.adjustment_amount, 0)) as adjustment_amount
+          SUM(CASE WHEN o.is_adjustment = 1 THEN COALESCE(o.adjustment_amount, 0) ELSE 0 END) as adjustment_amount
          FROM orders o
          ${whereClause}
          GROUP BY ${toISTDate('o.created_at')}
          ORDER BY report_date DESC`,
         params
       ),
-      // 2. Payment breakdown by date (EXCLUDE due collections — already counted in total_amount)
+      // 2. Payment breakdown by date — ALL payments for completed orders (filter by o.created_at to match order scope)
       pool.query(
         `SELECT
-          ${toISTDate('p.created_at')} as report_date,
+          ${toISTDate('o.created_at')} as report_date,
           p.payment_mode,
           SUM(p.total_amount) as amount
          FROM payments p
          JOIN orders o ON p.order_id = o.id
          ${whereClause} AND p.status = 'completed'
-           AND COALESCE(p.is_due_collection, 0) = 0
-         GROUP BY ${toISTDate('p.created_at')}, p.payment_mode`,
+         GROUP BY ${toISTDate('o.created_at')}, p.payment_mode`,
         params
       ),
-      // 3. Split payments (EXCLUDE due collections)
+      // 3. Split payments — ALL for completed orders (filter by o.created_at)
       pool.query(
         `SELECT
-          ${toISTDate('p.created_at')} as report_date,
+          ${toISTDate('o.created_at')} as report_date,
           sp.payment_mode,
           SUM(sp.amount) as amount
          FROM split_payments sp
          JOIN payments p ON sp.payment_id = p.id
          JOIN orders o ON p.order_id = o.id
          ${whereClause} AND p.status = 'completed' AND p.payment_mode = 'split'
-           AND COALESCE(p.is_due_collection, 0) = 0
-         GROUP BY ${toISTDate('p.created_at')}, sp.payment_mode`,
+         GROUP BY ${toISTDate('o.created_at')}, sp.payment_mode`,
         params
       ),
       // 4. Costs
@@ -7207,7 +7221,7 @@ const reportsService = {
     const costByDate = costByDateRes[0];
     const wastageByDate = wastageByDateRes[0];
 
-    // Build payment maps (due collections already excluded from query)
+    // Build payment maps (all payments for completed orders, grouped by order date)
     const paymentByDate = {};
     for (const pr of payRows) {
       const dk = pr.report_date instanceof Date ? pr.report_date.toISOString().slice(0, 10) : pr.report_date;
