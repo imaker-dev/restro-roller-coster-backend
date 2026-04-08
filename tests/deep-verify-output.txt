@@ -1,0 +1,341 @@
+﻿============================================================================================================================================
+DEEP ANALYSIS: OUTLET 46 ΓÇö PROVIDED COLLECTION vs POS DATA (Apr 1-7, 2026)
+Floor 38 (First Floor) = BAR  |  Floor 39 (Third Floor) = RESTAURANT
+============================================================================================================================================
+
+[1] SHIFT TIMELINE
+--------------------------------------------------------------------------------------------------------------------------------------------
+  Shift 140 | sess_date=2026-04-01 | REST | Shiv | OPEN: 2026-04-01 13:19:59 | CLOSE: 2026-04-02 01:38:04 | stored_sales=76280 | orders=43 ** CROSSES MIDNIGHT **
+  Shift 141 | sess_date=2026-04-01 | BAR  | Aditya | OPEN: 2026-04-01 13:25:53 | CLOSE: 2026-04-02 01:22:07 | stored_sales=75609 | orders=39 ** CROSSES MIDNIGHT **
+  Shift 143 | sess_date=2026-04-02 | BAR  | Aditya | OPEN: 2026-04-02 12:09:18 | CLOSE: 2026-04-03 00:49:40 | stored_sales=24136 | orders=19 ** CROSSES MIDNIGHT **
+  Shift 144 | sess_date=2026-04-02 | REST | Shiv | OPEN: 2026-04-02 12:56:45 | CLOSE: 2026-04-03 00:36:28 | stored_sales=35312 | orders=21 ** CROSSES MIDNIGHT **
+  Shift 145 | sess_date=2026-04-03 | REST | Shiv | OPEN: 2026-04-03 12:21:53 | CLOSE: 2026-04-04 01:50:15 | stored_sales=34410 | orders=34 ** CROSSES MIDNIGHT **
+  Shift 146 | sess_date=2026-04-03 | BAR  | Aditya | OPEN: 2026-04-03 13:09:35 | CLOSE: 2026-04-03 23:55:33 | stored_sales=35369 | orders=21
+  Shift 149 | sess_date=2026-04-04 | REST | Shiv | OPEN: 2026-04-04 12:51:31 | CLOSE: 2026-04-05 00:25:28 | stored_sales=36640 | orders=37 ** CROSSES MIDNIGHT **
+  Shift 150 | sess_date=2026-04-04 | BAR  | Aditya | OPEN: 2026-04-04 13:38:03 | CLOSE: 2026-04-05 12:52:26 | stored_sales=32706 | orders=17 ** CROSSES MIDNIGHT **
+  Shift 151 | sess_date=2026-04-05 | REST | Shiv | OPEN: 2026-04-05 11:46:33 | CLOSE: 2026-04-06 01:01:41 | stored_sales=41468 | orders=38 ** CROSSES MIDNIGHT **
+  Shift 152 | sess_date=2026-04-05 | BAR  | Aditya | OPEN: 2026-04-05 12:53:32 | CLOSE: 2026-04-06 01:07:25 | stored_sales=53517 | orders=31 ** CROSSES MIDNIGHT **
+  Shift 153 | sess_date=2026-04-06 | REST | Shiv | OPEN: 2026-04-06 12:03:24 | CLOSE: 2026-04-07 00:56:20 | stored_sales=35128 | orders=30 ** CROSSES MIDNIGHT **
+  Shift 155 | sess_date=2026-04-06 | BAR  | Aditya | OPEN: 2026-04-06 12:24:33 | CLOSE: 2026-04-07 01:02:56 | stored_sales=47499 | orders=27 ** CROSSES MIDNIGHT **
+  Shift 156 | sess_date=2026-04-07 | BAR  | Aditya | OPEN: 2026-04-07 12:34:52 | CLOSE: 2026-04-08 10:18:18 | stored_sales=17120 | orders=13 ** CROSSES MIDNIGHT **
+  Shift 157 | sess_date=2026-04-07 | REST | Shiv | OPEN: 2026-04-07 14:42:50 | CLOSE: 2026-04-08 10:17:51 | stored_sales=36596 | orders=21 ** CROSSES MIDNIGHT **
+
+============================================================================================================================================
+[2026-04-01]  PROVIDED: Bar=75509  Rest=99751  Total=175260
+============================================================================================================================================
+
+  [A] POS STORED (day_sessions.total_sales):
+      Bar=75609  Rest=76280  Total=151889
+      GAP from provided: Bar=-100  Rest=23471  Total=23371
+
+  [B] SHIFT WINDOW (orders within open-close time):
+      Bar=75609(39 orders)  Rest=76280(43 orders)  Total=151889
+      Matches stored? Bar: YES  Rest: YES
+
+  [C] CALENDAR DAY (midnight-midnight, completed):
+      Bar=73539(37)  Rest=76220(41)  Total=149759
+      GAP from provided: 25501
+
+  [D] CANCELLED ORDERS (calendar day):
+      Bar=0(1)  Rest=9413(11)  Combined=9413
+
+  [E] DUE COLLECTIONS received today: 0 (0 payments)
+
+  [F] MIDNIGHT SPILLOVER (prev day shift orders landing in today):
+      0 orders, total=0
+
+  [G] MIDNIGHT SPILLOUT (today shift orders landing in next day):
+      4 orders, total=2130
+
+  [H] ORPHAN ORDERS (in calendar day, not in any shift window):
+      None
+
+  [ANALYSIS] Trying to explain the gap:
+      Provided total:                 175260
+      POS stored total:               151889
+      GAP:                            23371
+      + Cancelled orders:             9413
+      + Due collections today:        0
+      + Spillover from prev day:      0
+      - Spillout to next day:         2130
+      = Explained total:              159172
+      REMAINING UNEXPLAINED GAP:      16088
+
+============================================================================================================================================
+[2026-04-02]  PROVIDED: Bar=23430  Rest=36115  Total=59545
+============================================================================================================================================
+
+  [A] POS STORED (day_sessions.total_sales):
+      Bar=24136  Rest=35312  Total=59448
+      GAP from provided: Bar=-706  Rest=803  Total=97
+
+  [B] SHIFT WINDOW (orders within open-close time):
+      Bar=24136(19 orders)  Rest=35312(21 orders)  Total=59448
+      Matches stored? Bar: YES  Rest: YES
+
+  [C] CALENDAR DAY (midnight-midnight, completed):
+      Bar=26206(21)  Rest=35372(23)  Total=61578
+      GAP from provided: -2033
+
+  [D] CANCELLED ORDERS (calendar day):
+      Bar=0(2)  Rest=167(4)  Combined=167
+
+  [E] DUE COLLECTIONS received today: 0 (0 payments)
+
+  [F] MIDNIGHT SPILLOVER (prev day shift orders landing in today):
+      4 orders, total=2130
+
+  [G] MIDNIGHT SPILLOUT (today shift orders landing in next day):
+      0 orders, total=0
+
+  [H] ORPHAN ORDERS (in calendar day, not in any shift window):
+      #ORD2604010091 | completed | dine_in | BAR | 960 | 2026-04-02 00:10:23
+      #ORD2604010092 | completed | dine_in | REST | 30 | 2026-04-02 00:12:28
+      #ORD2604010093 | completed | dine_in | REST | 30 | 2026-04-02 00:13:42
+      #ORD2604010094 | completed | dine_in | BAR | 1110 | 2026-04-02 00:34:41
+
+  [ANALYSIS] Trying to explain the gap:
+      Provided total:                 59545
+      POS stored total:               59448
+      GAP:                            97
+      + Cancelled orders:             167
+      + Due collections today:        0
+      + Spillover from prev day:      2130
+      - Spillout to next day:         0
+      = Explained total:              61745
+      REMAINING UNEXPLAINED GAP:      -2200
+
+============================================================================================================================================
+[2026-04-03]  PROVIDED: Bar=35370  Rest=39101  Total=74471
+============================================================================================================================================
+
+  [A] POS STORED (day_sessions.total_sales):
+      Bar=35369  Rest=34410  Total=69779
+      GAP from provided: Bar=1  Rest=4691  Total=4692
+
+  [B] SHIFT WINDOW (orders within open-close time):
+      Bar=35369(21 orders)  Rest=34410(34 orders)  Total=69779
+      Matches stored? Bar: YES  Rest: YES
+
+  [C] CALENDAR DAY (midnight-midnight, completed):
+      Bar=35369(21)  Rest=34410(34)  Total=69779
+      GAP from provided: 4692
+
+  [D] CANCELLED ORDERS (calendar day):
+      Bar=0(0)  Rest=0(2)  Combined=0
+
+  [E] DUE COLLECTIONS received today: 0 (0 payments)
+
+  [F] MIDNIGHT SPILLOVER (prev day shift orders landing in today):
+      0 orders, total=0
+
+  [G] MIDNIGHT SPILLOUT (today shift orders landing in next day):
+      0 orders, total=0
+
+  [H] ORPHAN ORDERS (in calendar day, not in any shift window):
+      None
+
+  [ANALYSIS] Trying to explain the gap:
+      Provided total:                 74471
+      POS stored total:               69779
+      GAP:                            4692
+      + Cancelled orders:             0
+      + Due collections today:        0
+      + Spillover from prev day:      0
+      - Spillout to next day:         0
+      = Explained total:              69779
+      REMAINING UNEXPLAINED GAP:      4692
+
+============================================================================================================================================
+[2026-04-04]  PROVIDED: Bar=32702  Rest=70173  Total=102875
+============================================================================================================================================
+
+  [A] POS STORED (day_sessions.total_sales):
+      Bar=32706  Rest=36640  Total=69346
+      GAP from provided: Bar=-4  Rest=33533  Total=33529
+
+  [B] SHIFT WINDOW (orders within open-close time):
+      Bar=32706(17 orders)  Rest=36640(37 orders)  Total=69346
+      Matches stored? Bar: YES  Rest: YES
+
+  [C] CALENDAR DAY (midnight-midnight, completed):
+      Bar=32706(17)  Rest=36640(37)  Total=69346
+      GAP from provided: 33529
+
+  [D] CANCELLED ORDERS (calendar day):
+      Bar=0(1)  Rest=981(3)  Combined=981
+
+  [E] DUE COLLECTIONS received today: 2616 (2 payments)
+
+  [F] MIDNIGHT SPILLOVER (prev day shift orders landing in today):
+      0 orders, total=0
+
+  [G] MIDNIGHT SPILLOUT (today shift orders landing in next day):
+      0 orders, total=0
+
+  [H] ORPHAN ORDERS (in calendar day, not in any shift window):
+      None
+
+  [ANALYSIS] Trying to explain the gap:
+      Provided total:                 102875
+      POS stored total:               69346
+      GAP:                            33529
+      + Cancelled orders:             981
+      + Due collections today:        2616
+      + Spillover from prev day:      0
+      - Spillout to next day:         0
+      = Explained total:              72943
+      REMAINING UNEXPLAINED GAP:      29932
+
+============================================================================================================================================
+[2026-04-05]  PROVIDED: Bar=53522  Rest=51422  Total=104944
+============================================================================================================================================
+
+  [A] POS STORED (day_sessions.total_sales):
+      Bar=53517  Rest=41468  Total=94985
+      GAP from provided: Bar=5  Rest=9954  Total=9959
+
+  [B] SHIFT WINDOW (orders within open-close time):
+      Bar=53517(31 orders)  Rest=41468(38 orders)  Total=94985
+      Matches stored? Bar: YES  Rest: YES
+
+  [C] CALENDAR DAY (midnight-midnight, completed):
+      Bar=53216(30)  Rest=41468(38)  Total=94684
+      GAP from provided: 10260
+
+  [D] CANCELLED ORDERS (calendar day):
+      Bar=0(4)  Rest=0(3)  Combined=0
+
+  [E] DUE COLLECTIONS received today: 10765 (1 payments)
+
+  [F] MIDNIGHT SPILLOVER (prev day shift orders landing in today):
+      0 orders, total=0
+
+  [G] MIDNIGHT SPILLOUT (today shift orders landing in next day):
+      1 orders, total=301
+
+  [H] ORPHAN ORDERS (in calendar day, not in any shift window):
+      None
+
+  [ANALYSIS] Trying to explain the gap:
+      Provided total:                 104944
+      POS stored total:               94985
+      GAP:                            9959
+      + Cancelled orders:             0
+      + Due collections today:        10765
+      + Spillover from prev day:      0
+      - Spillout to next day:         301
+      = Explained total:              105449
+      REMAINING UNEXPLAINED GAP:      -505
+
+============================================================================================================================================
+[2026-04-06]  PROVIDED: Bar=47498  Rest=35124  Total=82622
+============================================================================================================================================
+
+  [A] POS STORED (day_sessions.total_sales):
+      Bar=47499  Rest=35128  Total=82627
+      GAP from provided: Bar=-1  Rest=-4  Total=-5
+
+  [B] SHIFT WINDOW (orders within open-close time):
+      Bar=47499(27 orders)  Rest=35128(30 orders)  Total=82627
+      Matches stored? Bar: YES  Rest: YES
+
+  [C] CALENDAR DAY (midnight-midnight, completed):
+      Bar=47800(28)  Rest=33019(28)  Total=80819
+      GAP from provided: 1803
+
+  [D] CANCELLED ORDERS (calendar day):
+      Bar=0(4)  Rest=1055(5)  Combined=1055
+
+  [E] DUE COLLECTIONS received today: 1713 (1 payments)
+
+  [F] MIDNIGHT SPILLOVER (prev day shift orders landing in today):
+      1 orders, total=301
+
+  [G] MIDNIGHT SPILLOUT (today shift orders landing in next day):
+      2 orders, total=2109
+
+  [H] ORPHAN ORDERS (in calendar day, not in any shift window):
+      #ORD2604050076 | completed | dine_in | BAR | 301 | 2026-04-06 00:19:48
+      #ORD2604050077 | cancelled | dine_in | BAR | 0 | 2026-04-06 00:36:35
+
+  [ANALYSIS] Trying to explain the gap:
+      Provided total:                 82622
+      POS stored total:               82627
+      GAP:                            -5
+      + Cancelled orders:             1055
+      + Due collections today:        1713
+      + Spillover from prev day:      301
+      - Spillout to next day:         2109
+      = Explained total:              83587
+      REMAINING UNEXPLAINED GAP:      -965
+
+============================================================================================================================================
+[2026-04-07]  PROVIDED: Bar=17120  Rest=37413  Total=54533
+============================================================================================================================================
+
+  [A] POS STORED (day_sessions.total_sales):
+      Bar=17120  Rest=36596  Total=53716
+      GAP from provided: Bar=0  Rest=817  Total=817
+
+  [B] SHIFT WINDOW (orders within open-close time):
+      Bar=17120(13 orders)  Rest=36596(21 orders)  Total=53716
+      Matches stored? Bar: YES  Rest: YES
+
+  [C] CALENDAR DAY (midnight-midnight, completed):
+      Bar=17073(12)  Rest=38705(23)  Total=55778
+      GAP from provided: -1245
+
+  [D] CANCELLED ORDERS (calendar day):
+      Bar=0(0)  Rest=1297(2)  Combined=1297
+
+  [E] DUE COLLECTIONS received today: 0 (0 payments)
+
+  [F] MIDNIGHT SPILLOVER (prev day shift orders landing in today):
+      2 orders, total=2109
+
+  [G] MIDNIGHT SPILLOUT (today shift orders landing in next day):
+      1 orders, total=47
+
+  [H] ORPHAN ORDERS (in calendar day, not in any shift window):
+      #ORD2604060064 | completed | dine_in | REST | 1095 | 2026-04-07 00:17:19
+      #ORD2604060065 | completed | dine_in | REST | 1014 | 2026-04-07 00:24:25
+
+  [ANALYSIS] Trying to explain the gap:
+      Provided total:                 54533
+      POS stored total:               53716
+      GAP:                            817
+      + Cancelled orders:             1297
+      + Due collections today:        0
+      + Spillover from prev day:      2109
+      - Spillout to next day:         47
+      = Explained total:              57075
+      REMAINING UNEXPLAINED GAP:      -2542
+
+============================================================================================================================================
+GRAND SUMMARY (7 DAYS)
+============================================================================================================================================
+  PROVIDED grand total:      654250
+  POS stored grand total:    581790
+  Calendar day grand total:  581743
+  Shift window grand total:  581790
+  GAP (Provided - Stored):   72460
+  GAP (Provided - Calendar): 72507
+
+============================================================================================================================================
+VERIFICATION: Does closeCashDrawer stored value match actual orders?
+============================================================================================================================================
+  Shift 140 2026-04-01 REST: stored=76280 actual=76280 OK
+  Shift 141 2026-04-01 BAR : stored=75609 actual=75609 OK
+  Shift 143 2026-04-02 BAR : stored=24136 actual=24136 OK
+  Shift 144 2026-04-02 REST: stored=35312 actual=35312 OK
+  Shift 145 2026-04-03 REST: stored=34410 actual=34410 OK
+  Shift 146 2026-04-03 BAR : stored=35369 actual=35369 OK
+  Shift 149 2026-04-04 REST: stored=36640 actual=36640 OK
+  Shift 150 2026-04-04 BAR : stored=32706 actual=32706 OK
+  Shift 151 2026-04-05 REST: stored=41468 actual=41468 OK
+  Shift 152 2026-04-05 BAR : stored=53517 actual=53517 OK
+  Shift 153 2026-04-06 REST: stored=35128 actual=35128 OK
+  Shift 155 2026-04-06 BAR : stored=47499 actual=47499 OK
+  Shift 156 2026-04-07 BAR : stored=17120 actual=17120 OK
+  Shift 157 2026-04-07 REST: stored=36596 actual=36596 OK

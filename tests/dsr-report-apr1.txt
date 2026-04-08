@@ -1,0 +1,624 @@
+﻿ΓòöΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòù
+Γòæ  DSR CROSS-VERIFICATION ΓÇö Outlet 46, April 1 2026                          Γòæ
+Γòæ  Business Day: 4:00 AM Apr 1 ΓåÆ 3:59:59 AM Apr 2                            Γòæ
+Γòæ  Shifts: #140, #141                                                        Γòæ
+ΓòÜΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓò¥
+
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+  1. ALL ORDERS IN BUSINESS DAY (4am Apr 1 ΓåÆ 4am Apr 2)
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+  Total orders: 94
+  Completed: 82 | Cancelled: 12 | Other (running/billed/etc): 0
+
+  ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  1a. COMPLETE ORDER LIST
+  ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  Order#            Type      Status      PayStatus        Total      Paid       Due      Disc   Table  Created
+  ------------------------------------------------------------------------------------------------------------------------
+  ORD2604010001     dine_in   completed   completed        10765     10765         0   1804.35      A9  13:32:51
+  ORD2604010002     dine_in   completed   completed         1973      1973         0         0   BAR15  13:34:36
+  ORD2604010003     dine_in   completed   completed         6998      6998         0     734.8   BAR11  13:54:18
+  ORD2604010004     dine_in   completed   completed         2407      2407         0       360   BAR20  14:12:52
+  ORD2604010005     dine_in   completed   completed          366       366         0        60    BAR1  14:14:41
+  ORD2604010006     dine_in   completed   completed         2930      2930         0         0    BAR9  14:18:15
+  ORD2604010007     dine_in   completed   completed         7579      7579         0         0    BAR8  14:42:35
+  ORD2604010008     dine_in   completed   completed         1323      1323         0         0    BAR2  14:50:09
+  ORD2604010009     dine_in   completed   completed            0         0         0         0      A1  15:28:37
+  ORD2604010010     dine_in   completed   completed          535       535         0         0    BAR6  15:40:35
+  ORD2604010011     dine_in   completed   completed          752       752         0         0    BAR5  16:00:13
+  ORD2604010012     dine_in   completed   completed          630       630         0         3      A9  16:54:09
+  ORD2604010013     dine_in   completed   completed         2818      2818         0         0      A7  16:56:15
+  ORD2604010014     dine_in   completed   completed          676       676         0         0     A11  17:01:22
+  ORD2604010015     dine_in   completed   completed         3720      3720         0     393.7     B14  17:12:53
+  ORD2604010016     dine_in   completed   completed         1973      1973         0         0    BAR8  17:22:24
+  ORD2604010017     dine_in   completed   completed          939       939         0         0     B19  17:34:33
+  ORD2604010018     dine_in   completed   completed          773       773         0         0     B22  17:43:50
+  ORD2604010019     dine_in   completed   completed         2994      2994         0         0    BAR2  17:46:33
+  ORD2604010020     dine_in   completed   completed          292       292         0         0      A4  17:48:57
+  ORD2604010021     dine_in   completed   completed          711       711         0         0     B16  18:41:04
+  ORD2604010022     dine_in   completed   completed          334       334         0         0     B15  18:43:32
+  ORD2604010023     takeaway  completed   completed          230       230         0         0       -  18:49:37
+  ORD2604010024     dine_in   completed   completed         1419      1419         0         0    BAR9  18:51:43
+  ORD2604010025     takeaway  completed   completed          300       300         0         3       -  18:56:03
+  ORD2604010026     dine_in   completed   completed         1691      1691         0         0      A5  19:04:22
+  ORD2604010027     dine_in   completed   completed          990       990         0        30    BAR8  19:08:39
+  ORD2604010028     dine_in   completed   completed         2130      2130         0         0   BAR20  19:17:55
+  ORD2604010029     dine_in   completed   completed          103       103         0         0     B20  19:21:56
+  ORD2604010030     dine_in   cancelled   pending              0         0         0         0    BAR4  19:25:15
+  ORD2604010031     dine_in   completed   completed          543       543         0         0      A9  19:27:57
+  ORD2604010032     dine_in   completed   completed         3553      3553         0         0   BAR15  20:03:18
+  ORD2604010033     dine_in   completed   completed          230       230         0         0      A4  20:06:02
+  ORD2604010034     dine_in   completed   completed         1235      1235         0         0    BAR5  20:10:18
+  ORD2604010035     dine_in   completed   completed         2694      2694         0         0      A6  20:11:55
+  ORD2604010036     dine_in   completed   completed          773       773         0         0    BAR1  20:13:07
+  ORD2604010037     dine_in   completed   completed          480       480         0         0   BAR19  20:15:00
+  ORD2604010038     dine_in   completed   completed         2570      2570         0         0     A10  20:15:27
+  ORD2604010039     dine_in   completed   completed           45        45         0         0   BAR18  20:19:54
+  ORD2604010040     dine_in   completed   completed          869       869         0         0   BAR12  20:24:21
+  ORD2604010041     dine_in   completed   completed         1113      1113         0         0    BAR6  20:24:40
+  ORD2604010042     dine_in   completed   completed          950       950         0         0     B20  20:26:54
+  ORD2604010043     dine_in   completed   completed          549       549         0         0    BAR3  20:28:45
+  ORD2604010044     dine_in   completed   completed         5840      5840         0         6      A2  20:32:23
+  ORD2604010045     dine_in   completed   completed          860       860         0         0    BAR4  20:37:13
+  ORD2604010046     dine_in   completed   completed         3188      3188         0         0   BAR18  20:39:28
+  ORD2604010047     dine_in   completed   completed          867       867         0         0      A5  20:48:33
+  ORD2604010048     dine_in   completed   completed         1745      1745         0         0     B14  20:51:47
+  ORD2604010049     dine_in   completed   completed          480       480         0         0   BAR20  20:57:09
+  ORD2604010050     dine_in   completed   completed         3500      3500         0        13     B21  21:00:26
+  ORD2604010051     dine_in   completed   completed         3356      3356         0         0   BAR17  21:04:16
+  ORD2604010052     dine_in   completed   completed         1450      1450         0         2     B20  21:06:45
+  ORD2604010053     dine_in   completed   completed         1889      1889         0         0     A11  21:07:25
+  ORD2604010054     dine_in   cancelled   pending              0         0         0         0     B16  21:12:09
+  ORD2604010055     dine_in   completed   completed         2151      2151         0         0      A9  21:17:53
+  ORD2604010056     dine_in   completed   completed         1978      1978         0         0    BAR9  21:23:02
+  ORD2604010057     dine_in   completed   completed         2124      2124         0         0   BAR11  21:26:15
+  ORD2604010058     dine_in   completed   completed         1107      1107         0         0      A8  21:27:41
+  ORD2604010059     dine_in   cancelled   pending              0         0         0         0     B15  21:30:08
+  ORD2604010060     dine_in   completed   completed          853       853         0         0     B15  21:32:08
+  ORD2604010061     dine_in   completed   completed         1798      1830         0        30    BAR8  21:36:13
+  ORD2604010062     dine_in   completed   completed          480       480         0         0    BAR1  21:38:07
+  ORD2604010063     dine_in   completed   completed          530       530         0         3     B16  21:45:18
+  ORD2604010064     dine_in   completed   completed         1255      1255         0         0    BAR4  21:50:42
+  ORD2604010065     dine_in   completed   completed         2843      2843         0     142.5     B22  21:54:29
+  ORD2604010066     dine_in   completed   completed          864       864         0        96   BAR12  21:55:25
+  ORD2604010067     dine_in   completed   completed          960       960         0         0   BAR20  22:04:01
+  ORD2604010068     dine_in   completed   completed          250       250         0         0      A5  22:06:33
+  ORD2604010069     dine_in   completed   completed          230       230         0         0     B14  22:06:54
+  ORD2604010070     dine_in   completed   completed         9028      9028         0       550   BAR19  22:20:13
+  ORD2604010071     dine_in   cancelled   pending              0         0         0         0     A10  22:22:29
+  ORD2604010072     dine_in   completed   completed         3229      3229         0         0     A10  22:22:39
+  ORD2604010073     dine_in   cancelled   pending              0         0         0         0     A12  22:22:51
+  ORD2604010074     dine_in   cancelled   pending              0         0         0         0     A12  22:26:04
+  ORD2604010075     dine_in   completed   completed         2089      2089         0     104.7     B20  22:30:32
+  ORD2604010076     dine_in   completed   completed         2652      2652         0       375   BAR18  22:35:30
+  ORD2604010077     dine_in   cancelled   pending              0         0         0         0      A6  22:40:48
+  ORD2604010078     dine_in   cancelled   pending              0         0         0         0      A7  22:45:09
+  ORD2604010079     dine_in   cancelled   pending           9413         0         0         0      A1  22:45:40
+  ORD2604010080     dine_in   cancelled   pending              0         0         0         0      A5  22:47:36
+  ORD2604010081     dine_in   cancelled   pending              0         0         0         0      A6  22:48:00
+  ORD2604010082     dine_in   completed   completed        11187     11187         0   2182.29      A1  22:52:00
+  ORD2604010083     dine_in   completed   completed          313       313         0         0     B23  22:55:18
+  ORD2604010084     dine_in   completed   completed         2700      2700         0        12      A6  22:58:56
+  ORD2604010085     dine_in   completed   completed          566       566         0         0   BAR17  23:12:27
+  ORD2604010086     dine_in   completed   completed          679       679         0         8     B15  23:13:06
+  ORD2604010087     dine_in   completed   completed          964       964         0         0   BAR12  23:13:52
+  ORD2604010088     dine_in   completed   completed         1234      1234         0         0      A4  23:30:08
+  ORD2604010089     dine_in   cancelled   pending              0         0         0         0      A7  23:44:51
+  ORD2604010090     dine_in   completed   completed          565       565         0         0      A5  23:58:37
+  ORD2604010091     dine_in   completed   partial            960         0       960         0   BAR15  00:10:23
+  ORD2604010092     dine_in   completed   completed           30        30         0         0      A2  00:12:28
+  ORD2604010093     dine_in   completed   partial             30         0        30         0      A2  00:13:42
+  ORD2604010094     dine_in   completed   completed         1110      1110         0         0    BAR1  00:34:41
+
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+  2. COMPLETED ORDERS SUMMARY (DSR = only completed)
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+  total_sale (SUM total_amount)     = 151889
+  total_paid_amount                 = 150931
+  total_due_amount                  = 990
+  total_discount                    = 6913.34
+  total_tax                         = 8840.69
+  subtotal                          = 149965
+  service_charge                    = 0
+  packaging_charge                  = 0
+  round_off                         = -3.35
+  NC orders: 0, NC amount: 0
+  Adjustment orders: 0, Adj amount: 0
+
+  By type: dine_in=80 (151359) | takeaway=2 (530) | delivery=0 (0)
+  By pay status: fully_paid=80 | partial=2 | unpaid=0
+
+  FORMULA CHECK: paid + due + adj = total_sale?
+    150931 + 990 + 0 = 151921  vs  151889  ΓåÆ  Γ¥î MISMATCH
+
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+  3. PAYMENTS BREAKDOWN (payments table, for completed orders by o.created_at)
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+
+  ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  3a. ALL REGULAR PAYMENTS
+  ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  PayID   Order#            Mode          Amount  DueColl  Created
+  763     ORD2604010005     upi              366  no       14:25:14
+  764     ORD2604010003     upi             6998  no       15:22:08
+  765     ORD2604010001     cash               0  no       15:27:15
+  766     ORD2604010002     upi             1973  no       15:28:36
+  767     ORD2604010009     cash               0  no       15:35:53
+  768     ORD2604010001     cash               0  no       15:36:27
+  771     ORD2604010008     upi             1323  no       16:07:35
+  772     ORD2604010001     cash               0  no       16:23:43
+  773     ORD2604010004     cash               0  no       16:31:46
+  774     ORD2604010010     upi              535  no       16:37:46
+  775     ORD2604010006     cash            2930  no       17:04:48
+  776     ORD2604010007     cash            7579  no       17:15:30
+  778     ORD2604010011     card             752  no       17:57:35
+  780     ORD2604010013     upi             2818  no       18:06:25
+  782     ORD2604010017     upi              939  no       18:21:05
+  783     ORD2604010012     cash             630  no       18:32:00
+  784     ORD2604010018     cash             773  no       18:42:28
+  785     ORD2604010020     cash             292  no       18:57:22
+  786     ORD2604010016     cash            1973  no       19:07:24
+  787     ORD2604010015     cash            3720  no       19:14:04
+  788     ORD2604010023     cash             230  no       19:14:36
+  789     ORD2604010025     cash             300  no       19:17:09
+  790     ORD2604010021     upi              711  no       19:32:53
+  791     ORD2604010031     upi              543  no       19:58:10
+  792     ORD2604010026     upi             1691  no       20:14:21
+  793     ORD2604010029     upi              103  no       20:26:46
+  794     ORD2604010024     upi             1419  no       20:30:48
+  795     ORD2604010039     upi               45  no       20:32:14
+  796     ORD2604010027     upi              990  no       20:41:23
+  797     ORD2604010028     upi             2130  no       20:44:37
+  798     ORD2604010022     upi              334  no       20:49:47
+  799     ORD2604010033     cash             230  no       20:52:38
+  800     ORD2604010043     cash             549  no       20:54:42
+  801     ORD2604010036     upi              773  no       20:58:05
+  802     ORD2604010019     cash            2994  no       21:02:47
+  803     ORD2604010037     cash             480  no       21:05:43
+  804     ORD2604010034     upi             1235  no       21:06:48
+  805     ORD2604010040     upi              869  no       21:07:21
+  806     ORD2604010042     cash             950  no       21:09:48
+  807     ORD2604010045     cash             860  no       21:27:40
+  808     ORD2604010038     upi             2570  no       21:33:20
+  809     ORD2604010041     cash            1113  no       21:35:48
+  810     ORD2604010047     card             867  no       21:36:47
+  811     ORD2604010056     upi             1978  no       21:58:20
+  812     ORD2604010049     upi              480  no       22:03:51
+  813     ORD2604010052     cash            1450  no       22:05:53
+  814     ORD2604010048     upi             1745  no       22:06:38
+  815     ORD2604010055     upi             2151  no       22:09:06
+  816     ORD2604010062     cash             480  no       22:10:11
+  817     ORD2604010061     cash            1830  no       22:10:41
+  818     ORD2604010057     upi             2124  no       22:16:29
+  824     ORD2604010060     card             853  no       22:25:11
+  825     ORD2604010035     card            2694  no       22:27:46
+  826     ORD2604010032     cash            3553  no       22:28:02
+  827     ORD2604010046     upi             3188  no       22:32:42
+  828     ORD2604010068     cash             250  no       22:34:54
+  829     ORD2604010044     cash            5840  no       22:38:27
+  830     ORD2604010053     upi             1889  no       22:38:43
+  831     ORD2604010051     cash            3356  no       22:41:59
+  832     ORD2604010063     cash             530  no       22:43:06
+  833     ORD2604010050     cash            3500  no       22:43:52
+  834     ORD2604010058     upi             1107  no       22:50:13
+  835     ORD2604010066     cash             864  no       23:00:15
+  836     ORD2604010064     cash            1255  no       23:01:12
+  837     ORD2604010083     card             313  no       23:02:28
+  838     ORD2604010069     cash             230  no       23:20:48
+  839     ORD2604010067     upi              960  no       23:24:54
+  840     ORD2604010075     cash            2089  no       23:37:20
+  841     ORD2604010084     cash            2700  no       23:37:33
+  842     ORD2604010072     upi             3229  no       23:38:24
+  843     ORD2604010087     cash             964  no       23:52:15
+  844     ORD2604010092     cash              30  no       00:12:45
+  845     ORD2604010093     cash               0  no       00:15:00
+  846     ORD2604010088     cash            1234  no       00:25:14
+  847     ORD2604010094     upi             1110  no       00:37:14
+  848     ORD2604010086     cash             679  no       00:38:51
+  849     ORD2604010090     cash             565  no       00:41:11
+  850     ORD2604010065     cash            2843  no       00:42:26
+  851     ORD2604010085     cash             566  no       00:44:27
+  852     ORD2604010076     cash            2652  no       00:47:51
+  853     ORD2604010082     cash           11187  no       01:11:04
+  854     ORD2604010070     cash            9028  no       01:15:25
+  855     ORD2604010091     cash               0  no       01:21:39
+  981     ORD2604010004     upi             2407  YES      18:36:55
+  1024    ORD2604010001     upi            10765  YES      14:51:55
+
+  ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  3b. ALL SPLIT PAYMENTS
+  ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  SplitID Order#            Mode          Amount  DueColl
+  122     ORD2604010014     cash             500  no 
+  123     ORD2604010014     upi              176  no 
+
+  ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  3c. PAYMENT MODE SUMMARY
+  ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+    card            = 5479
+    cash            = 83778
+    upi             = 61674
+    TOTAL           = 150931
+    Due collections  = 13172
+
+  MATCH CHECK: payment_mode_total (150931) = total_paid_amount (150931)?  ΓåÆ  Γ£à MATCH
+
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+  4. SHIFT ANALYSIS
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+
+  ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  Shift #140
+  ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  Floor: Third Floor (id=39) | Cashier: Shiv
+  Status: closed | Opening: 100.00
+  Open: Wed Apr 01 2026 13:19:59 GMT+0530 (India Standard Time) | Close: Thu Apr 02 2026 01:38:04 GMT+0530 (India Standard Time)
+  Stored: total_sales=76280.00, total_orders=43
+  Stored: cash=0.00, card=0.00, upi=0.00
+  Stored: expected_cash=40852.00, closing_cash=65485.00, variance=24633.00
+
+  Orders during shift (all floors): 94
+  Orders on shift floor (Third Floor): 54
+  Completed on shift floor: 43
+  SUM total_amount (completed, floor): 76280
+  SUM paid_amount (completed, floor): 76250
+
+  Payment breakdown (during shift, on floor):
+    cash            = 40252 (27 txns, due_coll=0)
+    card            = 4727 (4 txns, due_coll=0)
+    upi             = 19830 (13 txns, due_coll=0)
+    cash            = 500 (1 txns, due_coll=0)
+    upi             = 176 (1 txns, due_coll=0)
+    TOTAL              = 65485
+
+  Cash drawer movements:
+    opening   = 100
+    cash_in   = 0
+    cash_out  = 0
+    refund    = 0
+    expense   = 0
+
+  Expected cash = opening(100.00) + cashPayments(40752) + cashIn(0) - cashOut(0) - refund(0) - expense(0)
+               = 40852
+  Stored expected_cash = 40852.00  ΓåÆ  Γ£à MATCH
+
+  ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  Shift #141
+  ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  Floor: First Floor (id=38) | Cashier: Aditya
+  Status: closed | Opening: 100.00
+  Open: Wed Apr 01 2026 13:25:53 GMT+0530 (India Standard Time) | Close: Thu Apr 02 2026 01:22:07 GMT+0530 (India Standard Time)
+  Stored: total_sales=76139.00, total_orders=41
+  Stored: cash=0.00, card=0.00, upi=0.00
+  Stored: expected_cash=43656.00, closing_cash=100.00, variance=-43556.00
+
+  Orders during shift (all floors): 94
+  Orders on shift floor (First Floor): 42
+  Completed on shift floor: 41
+  SUM total_amount (completed, floor): 76139
+  SUM paid_amount (completed, floor): 75211
+
+  Payment breakdown (during shift, on floor):
+    cash            = 43556 (22 txns, due_coll=0)
+    card            = 752 (1 txns, due_coll=0)
+    upi             = 28496 (18 txns, due_coll=0)
+    TOTAL              = 72804
+
+  Cash drawer movements:
+    opening   = 100
+    cash_in   = 0
+    cash_out  = 0
+    refund    = 0
+    expense   = 0
+
+  Expected cash = opening(100.00) + cashPayments(43556) + cashIn(0) - cashOut(0) - refund(0) - expense(0)
+               = 43656
+  Stored expected_cash = 43656.00  ΓåÆ  Γ£à MATCH
+
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+  5. INVESTIGATING KEY NUMBERS: 75609, 76280, 151889
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+
+  Shift #140: total_sales=76280.00, total_cash_sales=0.00, total_card_sales=0.00, total_upi_sales=0.00
+    cash+card+upi = 0
+
+  Shift #141: total_sales=76139.00, total_cash_sales=0.00, total_card_sales=0.00, total_upi_sales=0.00
+    cash+card+upi = 0
+
+  Possible interpretations:
+    SUM(total_amount) of ALL completed orders  = 151889
+    SUM(paid_amount) of ALL completed orders   = 150931
+    Shift #140 total_sales + Shift #141 total_sales = 76280 + 76139 = 152419
+
+  Floor-wise completed order totals:
+    First Floor          (id=38): orders=39, total_sale=75609, paid=74681
+    Third Floor          (id=39): orders=41, total_sale=75750, paid=75720
+    (no floor/takeaway): orders=2, total_sale=530, paid=530
+
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+  6. PER-ORDER DETAIL (every completed order)
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+  #   Order#            Type      Table   Floor            Subtotal    Disc     Tax  SvcChg  RndOff     Total      Paid     Due PaySt
+  -------------------------------------------------------------------------------------------------------------------------------------------------
+  1   ORD2604010001     dine_in   A9      Third Floor         12029 1804.35  540.46       0   -0.11     10765     10765       0 completed
+  2   ORD2604010002     dine_in   BAR15   First Floor          1759       0  213.94       0    0.06      1973      1973       0 completed
+  3   ORD2604010003     dine_in   BAR11   First Floor          7348   734.8   384.5       0     0.3      6998      6998       0 completed
+  4   ORD2604010004     dine_in   BAR20   First Floor          2400     360   367.2       0    -0.2      2407      2407       0 completed
+  5   ORD2604010005     dine_in   BAR1    First Floor           370      60    55.8       0     0.2       366       366       0 completed
+  6   ORD2604010006     dine_in   BAR9    First Floor          2757       0  173.38       0   -0.38      2930      2930       0 completed
+  7   ORD2604010007     dine_in   BAR8    First Floor          6621       0  958.06       0   -0.06      7579      7579       0 completed
+  8   ORD2604010008     dine_in   BAR2    First Floor          1309       0   14.44       0   -0.44      1323      1323       0 completed
+  9   ORD2604010009     dine_in   A1      Third Floor             0       0       0       0       0         0         0       0 completed
+  10  ORD2604010010     dine_in   BAR6    First Floor           523       0    12.4       0    -0.4       535       535       0 completed
+  11  ORD2604010011     dine_in   BAR5    First Floor           749       0    3.46       0   -0.46       752       752       0 completed
+  12  ORD2604010012     dine_in   A9      Third Floor           603       3   29.99       0    0.01       630       630       0 completed
+  13  ORD2604010013     dine_in   A7      Third Floor          2684       0  134.16       0   -0.16      2818      2818       0 completed
+  14  ORD2604010014     dine_in   A11     Third Floor           644       0    32.2       0    -0.2       676       676       0 completed
+  15  ORD2604010015     dine_in   B14     Third Floor          3937   393.7  177.16       0   -0.46      3720      3720       0 completed
+  16  ORD2604010016     dine_in   BAR8    First Floor          1949       0   24.36       0   -0.36      1973      1973       0 completed
+  17  ORD2604010017     dine_in   B19     Third Floor           894       0   44.68       0    0.32       939       939       0 completed
+  18  ORD2604010018     dine_in   B22     Third Floor           736       0   36.76       0    0.24       773       773       0 completed
+  19  ORD2604010019     dine_in   BAR2    First Floor          2981       0   13.06       0   -0.06      2994      2994       0 completed
+  20  ORD2604010020     dine_in   A4      Third Floor           278       0    13.9       0     0.1       292       292       0 completed
+  21  ORD2604010021     dine_in   B16     Third Floor           677       0   33.86       0    0.14       711       711       0 completed
+  22  ORD2604010022     dine_in   B15     Third Floor           318       0    15.9       0     0.1       334       334       0 completed
+  23  ORD2604010023     takeaway  -       -                     219       0   10.94       0    0.06       230       230       0 completed
+  24  ORD2604010024     dine_in   BAR9    First Floor          1215       0  203.76       0    0.24      1419      1419       0 completed
+  25  ORD2604010025     takeaway  -       -                     289       3    14.3       0    -0.3       300       300       0 completed
+  26  ORD2604010026     dine_in   A5      Third Floor          1610       0    80.5       0     0.5      1691      1691       0 completed
+  27  ORD2604010027     dine_in   BAR8    First Floor          1020      30       0       0       0       990       990       0 completed
+  28  ORD2604010028     dine_in   BAR20   First Floor          2126       0     4.3       0    -0.3      2130      2130       0 completed
+  29  ORD2604010029     dine_in   B20     Third Floor            98       0     4.9       0     0.1       103       103       0 completed
+  30  ORD2604010031     dine_in   A9      Third Floor           517       0   25.84       0    0.16       543       543       0 completed
+  31  ORD2604010032     dine_in   BAR15   First Floor          3508       0    44.9       0     0.1      3553      3553       0 completed
+  32  ORD2604010033     dine_in   A4      Third Floor           219       0   10.94       0    0.06       230       230       0 completed
+  33  ORD2604010034     dine_in   BAR5    First Floor          1222       0    13.1       0    -0.1      1235      1235       0 completed
+  34  ORD2604010035     dine_in   A6      Third Floor          2566       0   128.3       0    -0.3      2694      2694       0 completed
+  35  ORD2604010036     dine_in   BAR1    First Floor           660       0   113.4       0    -0.4       773       773       0 completed
+  36  ORD2604010037     dine_in   BAR19   First Floor           480       0       0       0       0       480       480       0 completed
+  37  ORD2604010038     dine_in   A10     Third Floor          2448       0   122.4       0    -0.4      2570      2570       0 completed
+  38  ORD2604010039     dine_in   BAR18   First Floor            43       0    2.14       0   -0.14        45        45       0 completed
+  39  ORD2604010040     dine_in   BAR12   First Floor           825       0   44.36       0   -0.36       869       869       0 completed
+  40  ORD2604010041     dine_in   BAR6    First Floor           957       0  155.55       0    0.45      1113      1113       0 completed
+  41  ORD2604010042     dine_in   B20     Third Floor           905       0   45.26       0   -0.26       950       950       0 completed
+  42  ORD2604010043     dine_in   BAR3    First Floor           470       0    79.2       0    -0.2       549       549       0 completed
+  43  ORD2604010044     dine_in   A2      Third Floor          5568       6   278.1       0    -0.1      5840      5840       0 completed
+  44  ORD2604010045     dine_in   BAR4    First Floor           860       0       0       0       0       860       860       0 completed
+  45  ORD2604010046     dine_in   BAR18   First Floor          2720       0     468       0       0      3188      3188       0 completed
+  46  ORD2604010047     dine_in   A5      Third Floor           826       0    41.3       0    -0.3       867       867       0 completed
+  47  ORD2604010048     dine_in   B14     Third Floor          1662       0    83.1       0    -0.1      1745      1745       0 completed
+  48  ORD2604010049     dine_in   BAR20   First Floor           480       0       0       0       0       480       480       0 completed
+  49  ORD2604010050     dine_in   B21     Third Floor          3346      13  166.65       0    0.35      3500      3500       0 completed
+  50  ORD2604010051     dine_in   BAR17   First Floor          3196       0   159.8       0     0.2      3356      3356       0 completed
+  51  ORD2604010052     dine_in   B20     Third Floor          1383       2   69.05       0   -0.05      1450      1450       0 completed
+  52  ORD2604010053     dine_in   A11     Third Floor          1799       0   89.96       0    0.04      1889      1889       0 completed
+  53  ORD2604010055     dine_in   A9      Third Floor          2049       0  102.46       0   -0.46      2151      2151       0 completed
+  54  ORD2604010056     dine_in   BAR9    First Floor          1806       0   172.2       0    -0.2      1978      1978       0 completed
+  55  ORD2604010057     dine_in   BAR11   First Floor          1960       0   163.8       0     0.2      2124      2124       0 completed
+  56  ORD2604010058     dine_in   A8      Third Floor          1054       0    52.7       0     0.3      1107      1107       0 completed
+  57  ORD2604010060     dine_in   B15     Third Floor           812       0    40.6       0     0.4       853       853       0 completed
+  58  ORD2604010061     dine_in   BAR8    First Floor          1708      30  119.56       0    0.44      1798      1830       0 completed
+  59  ORD2604010062     dine_in   BAR1    First Floor           480       0       0       0       0       480       480       0 completed
+  60  ORD2604010063     dine_in   B16     Third Floor           508       3   25.25       0   -0.25       530       530       0 completed
+  61  ORD2604010064     dine_in   BAR4    First Floor          1073       0  182.14       0   -0.14      1255      1255       0 completed
+  62  ORD2604010065     dine_in   B22     Third Floor          2850   142.5  135.38       0    0.12      2843      2843       0 completed
+  63  ORD2604010066     dine_in   BAR12   First Floor           960      96       0       0       0       864       864       0 completed
+  64  ORD2604010067     dine_in   BAR20   First Floor           960       0       0       0       0       960       960       0 completed
+  65  ORD2604010068     dine_in   A5      Third Floor           238       0    11.9       0     0.1       250       250       0 completed
+  66  ORD2604010069     dine_in   B14     Third Floor           219       0   10.94       0    0.06       230       230       0 completed
+  67  ORD2604010070     dine_in   BAR19   First Floor          8961     550  617.05       0   -0.05      9028      9028       0 completed
+  68  ORD2604010072     dine_in   A10     Third Floor          3075       0  153.74       0    0.26      3229      3229       0 completed
+  69  ORD2604010075     dine_in   B20     Third Floor          2094   104.7   99.47       0    0.23      2089      2089       0 completed
+  70  ORD2604010076     dine_in   BAR18   First Floor          2720     375  307.26       0   -0.26      2652      2652       0 completed
+  71  ORD2604010082     dine_in   A1      Third Floor         12837 2182.29  532.74       0   -0.45     11187     11187       0 completed
+  72  ORD2604010083     dine_in   B23     Third Floor           298       0    14.9       0     0.1       313       313       0 completed
+  73  ORD2604010084     dine_in   A6      Third Floor          2583      12  128.55       0    0.45      2700      2700       0 completed
+  74  ORD2604010085     dine_in   BAR17   First Floor           480       0    86.4       0    -0.4       566       566       0 completed
+  75  ORD2604010086     dine_in   B15     Third Floor           655       8   32.35       0   -0.35       679       679       0 completed
+  76  ORD2604010087     dine_in   BAR12   First Floor           941       0   23.04       0   -0.04       964       964       0 completed
+  77  ORD2604010088     dine_in   A4      Third Floor          1175       0   58.76       0    0.24      1234      1234       0 completed
+  78  ORD2604010090     dine_in   A5      Third Floor           538       0    26.9       0     0.1       565       565       0 completed
+  79  ORD2604010091     dine_in   BAR15   First Floor           960       0       0       0       0       960         0     960 partial
+  80  ORD2604010092     dine_in   A2      Third Floor            29       0    1.44       0   -0.44        30        30       0 completed
+  81  ORD2604010093     dine_in   A2      Third Floor            29       0    1.44       0   -0.44        30         0      30 partial
+  82  ORD2604010094     dine_in   BAR1    First Floor          1110       0       0       0       0      1110      1110       0 completed
+  -------------------------------------------------------------------------------------------------------------------------------------------------
+  TOTALS                                                     149965 6913.34 8840.69       0   -3.35    151889    150931     990
+
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+  7. PER-ORDER PAYMENT DETAIL (which payment mode for each order)
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+  ORD2604010001      total=   10765  paid=   10765  due=     0  ΓåÆ  cash=0 cash=0 cash=0 upi=10765[DUE_COLL]
+  ORD2604010002      total=    1973  paid=    1973  due=     0  ΓåÆ  upi=1973
+  ORD2604010003      total=    6998  paid=    6998  due=     0  ΓåÆ  upi=6998
+  ORD2604010004      total=    2407  paid=    2407  due=     0  ΓåÆ  cash=0 upi=2407[DUE_COLL]
+  ORD2604010005      total=     366  paid=     366  due=     0  ΓåÆ  upi=366
+  ORD2604010006      total=    2930  paid=    2930  due=     0  ΓåÆ  cash=2930
+  ORD2604010007      total=    7579  paid=    7579  due=     0  ΓåÆ  cash=7579
+  ORD2604010008      total=    1323  paid=    1323  due=     0  ΓåÆ  upi=1323
+  ORD2604010009      total=       0  paid=       0  due=     0  ΓåÆ  cash=0
+  ORD2604010010      total=     535  paid=     535  due=     0  ΓåÆ  upi=535
+  ORD2604010011      total=     752  paid=     752  due=     0  ΓåÆ  card=752
+  ORD2604010012      total=     630  paid=     630  due=     0  ΓåÆ  cash=630
+  ORD2604010013      total=    2818  paid=    2818  due=     0  ΓåÆ  upi=2818
+  ORD2604010014      total=     676  paid=     676  due=     0  ΓåÆ  split(cash=500+upi=176)
+  ORD2604010015      total=    3720  paid=    3720  due=     0  ΓåÆ  cash=3720
+  ORD2604010016      total=    1973  paid=    1973  due=     0  ΓåÆ  cash=1973
+  ORD2604010017      total=     939  paid=     939  due=     0  ΓåÆ  upi=939
+  ORD2604010018      total=     773  paid=     773  due=     0  ΓåÆ  cash=773
+  ORD2604010019      total=    2994  paid=    2994  due=     0  ΓåÆ  cash=2994
+  ORD2604010020      total=     292  paid=     292  due=     0  ΓåÆ  cash=292
+  ORD2604010021      total=     711  paid=     711  due=     0  ΓåÆ  upi=711
+  ORD2604010022      total=     334  paid=     334  due=     0  ΓåÆ  upi=334
+  ORD2604010023      total=     230  paid=     230  due=     0  ΓåÆ  cash=230
+  ORD2604010024      total=    1419  paid=    1419  due=     0  ΓåÆ  upi=1419
+  ORD2604010025      total=     300  paid=     300  due=     0  ΓåÆ  cash=300
+  ORD2604010026      total=    1691  paid=    1691  due=     0  ΓåÆ  upi=1691
+  ORD2604010027      total=     990  paid=     990  due=     0  ΓåÆ  upi=990
+  ORD2604010028      total=    2130  paid=    2130  due=     0  ΓåÆ  upi=2130
+  ORD2604010029      total=     103  paid=     103  due=     0  ΓåÆ  upi=103
+  ORD2604010031      total=     543  paid=     543  due=     0  ΓåÆ  upi=543
+  ORD2604010032      total=    3553  paid=    3553  due=     0  ΓåÆ  cash=3553
+  ORD2604010033      total=     230  paid=     230  due=     0  ΓåÆ  cash=230
+  ORD2604010034      total=    1235  paid=    1235  due=     0  ΓåÆ  upi=1235
+  ORD2604010035      total=    2694  paid=    2694  due=     0  ΓåÆ  card=2694
+  ORD2604010036      total=     773  paid=     773  due=     0  ΓåÆ  upi=773
+  ORD2604010037      total=     480  paid=     480  due=     0  ΓåÆ  cash=480
+  ORD2604010038      total=    2570  paid=    2570  due=     0  ΓåÆ  upi=2570
+  ORD2604010039      total=      45  paid=      45  due=     0  ΓåÆ  upi=45
+  ORD2604010040      total=     869  paid=     869  due=     0  ΓåÆ  upi=869
+  ORD2604010041      total=    1113  paid=    1113  due=     0  ΓåÆ  cash=1113
+  ORD2604010042      total=     950  paid=     950  due=     0  ΓåÆ  cash=950
+  ORD2604010043      total=     549  paid=     549  due=     0  ΓåÆ  cash=549
+  ORD2604010044      total=    5840  paid=    5840  due=     0  ΓåÆ  cash=5840
+  ORD2604010045      total=     860  paid=     860  due=     0  ΓåÆ  cash=860
+  ORD2604010046      total=    3188  paid=    3188  due=     0  ΓåÆ  upi=3188
+  ORD2604010047      total=     867  paid=     867  due=     0  ΓåÆ  card=867
+  ORD2604010048      total=    1745  paid=    1745  due=     0  ΓåÆ  upi=1745
+  ORD2604010049      total=     480  paid=     480  due=     0  ΓåÆ  upi=480
+  ORD2604010050      total=    3500  paid=    3500  due=     0  ΓåÆ  cash=3500
+  ORD2604010051      total=    3356  paid=    3356  due=     0  ΓåÆ  cash=3356
+  ORD2604010052      total=    1450  paid=    1450  due=     0  ΓåÆ  cash=1450
+  ORD2604010053      total=    1889  paid=    1889  due=     0  ΓåÆ  upi=1889
+  ORD2604010055      total=    2151  paid=    2151  due=     0  ΓåÆ  upi=2151
+  ORD2604010056      total=    1978  paid=    1978  due=     0  ΓåÆ  upi=1978
+  ORD2604010057      total=    2124  paid=    2124  due=     0  ΓåÆ  upi=2124
+  ORD2604010058      total=    1107  paid=    1107  due=     0  ΓåÆ  upi=1107
+  ORD2604010060      total=     853  paid=     853  due=     0  ΓåÆ  card=853
+  ORD2604010061      total=    1798  paid=    1830  due=     0  ΓåÆ  cash=1830
+  ORD2604010062      total=     480  paid=     480  due=     0  ΓåÆ  cash=480
+  ORD2604010063      total=     530  paid=     530  due=     0  ΓåÆ  cash=530
+  ORD2604010064      total=    1255  paid=    1255  due=     0  ΓåÆ  cash=1255
+  ORD2604010065      total=    2843  paid=    2843  due=     0  ΓåÆ  cash=2843
+  ORD2604010066      total=     864  paid=     864  due=     0  ΓåÆ  cash=864
+  ORD2604010067      total=     960  paid=     960  due=     0  ΓåÆ  upi=960
+  ORD2604010068      total=     250  paid=     250  due=     0  ΓåÆ  cash=250
+  ORD2604010069      total=     230  paid=     230  due=     0  ΓåÆ  cash=230
+  ORD2604010070      total=    9028  paid=    9028  due=     0  ΓåÆ  cash=9028
+  ORD2604010072      total=    3229  paid=    3229  due=     0  ΓåÆ  upi=3229
+  ORD2604010075      total=    2089  paid=    2089  due=     0  ΓåÆ  cash=2089
+  ORD2604010076      total=    2652  paid=    2652  due=     0  ΓåÆ  cash=2652
+  ORD2604010082      total=   11187  paid=   11187  due=     0  ΓåÆ  cash=11187
+  ORD2604010083      total=     313  paid=     313  due=     0  ΓåÆ  card=313
+  ORD2604010084      total=    2700  paid=    2700  due=     0  ΓåÆ  cash=2700
+  ORD2604010085      total=     566  paid=     566  due=     0  ΓåÆ  cash=566
+  ORD2604010086      total=     679  paid=     679  due=     0  ΓåÆ  cash=679
+  ORD2604010087      total=     964  paid=     964  due=     0  ΓåÆ  cash=964
+  ORD2604010088      total=    1234  paid=    1234  due=     0  ΓåÆ  cash=1234
+  ORD2604010090      total=     565  paid=     565  due=     0  ΓåÆ  cash=565
+  ORD2604010091      total=     960  paid=       0  due=   960  ΓåÆ  cash=0
+  ORD2604010092      total=      30  paid=      30  due=     0  ΓåÆ  cash=30
+  ORD2604010093      total=      30  paid=       0  due=    30  ΓåÆ  cash=0
+  ORD2604010094      total=    1110  paid=    1110  due=     0  ΓåÆ  upi=1110
+
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+  8. API CROSS-VERIFICATION
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+
+  ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  8a. Accurate DSR API Response
+  ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  API total_sale        = 151889
+  API total_paid_amount = 150931
+  API total_due_amount  = 990
+  API discount_amount   = 6913.34
+  API nc_amount         = 0
+  API adjustment_amount = 0
+  API total_orders      = 82
+
+  DB vs API check:
+    total_sale:  DB=151889 API=151889  ΓåÆ  Γ£à
+    paid:        DB=150931 API=150931  ΓåÆ  Γ£à
+    due:         DB=990 API=990  ΓåÆ  Γ£à
+    discount:    DB=6913.34 API=6913.34  ΓåÆ  Γ£à
+    orders:      DB=82 API=82  ΓåÆ  Γ£à
+
+  ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  8b. Accurate Running Dashboard API Response
+  ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  API total_sale        = 151889
+  API total_paid_amount = 150931
+  API total_due_amount  = 990
+  API due_collection    = 13172
+  API adjustment        = 0
+
+  Payment breakdown from API:
+    Cash            = 83778 (55.16%)
+    Card            = 5479 (3.61%)
+    UPI             = 61674 (40.6%)
+    Due             = 990 (0.65%)
+
+  Cross-verification:
+    {
+        "total_sale": 151889,
+        "channel_sum": 151889,
+        "paid_plus_due_plus_adj": 151921,
+        "payment_mode_total": 150931,
+        "paid_matches_payments": true,
+        "match": true,
+        "note": "Only completed orders. total_sale = SUM(total_amount). payment_mode_total should match total_paid_amount."
+    }
+
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+  9. CANCELLED ORDERS
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+  ORD2604010030      type=dine_in total=0 table=BAR4 created=19:25:15
+  ORD2604010054      type=dine_in total=0 table=B16 created=21:12:09
+  ORD2604010059      type=dine_in total=0 table=B15 created=21:30:08
+  ORD2604010071      type=dine_in total=0 table=A10 created=22:22:29
+  ORD2604010073      type=dine_in total=0 table=A12 created=22:22:51
+  ORD2604010074      type=dine_in total=0 table=A12 created=22:26:04
+  ORD2604010077      type=dine_in total=0 table=A6 created=22:40:48
+  ORD2604010078      type=dine_in total=0 table=A7 created=22:45:09
+  ORD2604010079      type=dine_in total=9413 table=A1 created=22:45:40
+  ORD2604010080      type=dine_in total=0 table=A5 created=22:47:36
+  ORD2604010081      type=dine_in total=0 table=A6 created=22:48:00
+  ORD2604010089      type=dine_in total=0 table=A7 created=23:44:51
+
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+  10. GRAND SUMMARY ΓÇö HOW THE NUMBERS ADD UP
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+
+  Business Day: Apr 1 2026 (4:00 AM ΓåÆ 3:59:59 AM next day)
+  Outlet: 46
+
+  ΓöîΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÉ
+  Γöé  TOTAL ORDERS (completed)    =     82               Γöé
+  Γöé  TOTAL SALE (SUM total_amt)  =     151889           Γöé
+  Γöé                                                     Γöé
+  Γöé  Subtotal                    =     149965           Γöé
+  Γöé  (-) Discount                =    6913.34           Γöé
+  Γöé  (+) Tax                     =    8840.69           Γöé
+  Γöé  (+) Service Charge          =          0           Γöé
+  Γöé  (+) Packaging Charge        =          0           Γöé
+  Γöé  (+) Round Off               =      -3.35           Γöé
+  Γöé                                                     Γöé
+  Γöé  PAID amount                 =     150931           Γöé
+  Γöé  DUE amount (remaining)      =        990           Γöé
+  Γöé  ADJUSTMENT amount           =          0           Γöé
+  Γöé  NC amount                   =          0           Γöé
+  Γöé                                                     Γöé
+  Γöé  paid + due + adj            =     151921           Γöé
+  Γöé  total_sale                  =     151889           Γöé
+  Γöé  MATCH?                      =       Γ¥î NO           Γöé
+  Γöé                                                     Γöé
+  Γöé  Payment mode total          =     150931           Γöé
+  Γöé  = total_paid_amount?        =      Γ£à YES           Γöé
+  Γöé                                                     Γöé
+  Γöé  Due collections (in paid)   =      13172           Γöé
+  ΓööΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÿ
+
+  Numbers to investigate:
+    75609  ΓåÆ  ?
+    76280  ΓåÆ  ?
+    151889 ΓåÆ  ?
+
+  Possible mappings:
+    Shift #140 total_sales = 76280
+    Shift #141 total_sales = 76139
+    Shift #140 + #141      = 152419
+    BD total_sale          = 151889
+    BD total_paid          = 150931
+  
+
+  Script complete.
