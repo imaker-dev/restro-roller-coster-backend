@@ -66,11 +66,16 @@ const dashboardService = {
 
     // ── 3 parallel queries ──
     const [ordersResult, tablesResult, itemsResult] = await Promise.all([
-      // Query 1: Active orders with KOT counts
+      // Query 1: Active orders with KOT counts + payment/DSR fields
       pool.query(
         `SELECT o.id, o.order_number, o.order_type, o.status, o.table_id, o.floor_id,
                 o.table_session_id, o.subtotal, o.discount_amount, o.tax_amount,
                 o.total_amount, o.guest_count, o.customer_name, o.created_at,
+                o.paid_amount, o.due_amount, o.payment_status,
+                o.service_charge, o.packaging_charge, o.delivery_charge, o.round_off,
+                o.is_nc, o.nc_amount,
+                o.is_adjustment, o.adjustment_amount,
+                o.customer_id, o.customer_phone,
                 t.table_number, t.name as table_name,
                 f.name as floor_name,
                 COUNT(DISTINCT kt.id) as kot_count,
@@ -170,7 +175,25 @@ const dashboardService = {
     // Orders breakdown — only dine_in and takeaway (app does not support delivery)
     let totalOrderCount = 0;
     let totalOrderAmount = 0;
+    let totalSubtotal = 0;
+    let totalDiscountAmount = 0;
+    let totalTaxAmount = 0;
+    let totalServiceCharge = 0;
+    let totalPackagingCharge = 0;
+    let totalDeliveryCharge = 0;
+    let totalRoundOff = 0;
+    let totalPaidAmount = 0;
+    let totalDueAmount = 0;
+    let totalNCAmount = 0;
+    let totalAdjustmentAmount = 0;
     let pendingCount = 0;
+
+    // Payment status counters
+    let fullyPaidCount = 0;
+    let partialPaidCount = 0;
+    let unpaidCount = 0;
+    let ncOrderCount = 0;
+    let adjustmentOrderCount = 0;
 
     let dineInCount = 0, dineInKots = 0, dineInAmount = 0;
     let takeawayCount = 0, takeawayAmount = 0;
@@ -183,14 +206,44 @@ const dashboardService = {
 
     for (const o of orders) {
       const amount = parseFloat(o.total_amount) || 0;
+      const subtotal = parseFloat(o.subtotal) || 0;
+      const discountAmt = parseFloat(o.discount_amount) || 0;
+      const taxAmt = parseFloat(o.tax_amount) || 0;
+      const serviceCharge = parseFloat(o.service_charge) || 0;
+      const packagingCharge = parseFloat(o.packaging_charge) || 0;
+      const deliveryCharge = parseFloat(o.delivery_charge) || 0;
+      const roundOff = parseFloat(o.round_off) || 0;
+      const paidAmt = parseFloat(o.paid_amount) || 0;
+      const dueAmt = parseFloat(o.due_amount) || 0;
+      const ncAmt = parseFloat(o.nc_amount) || 0;
+      const adjustmentAmt = parseFloat(o.adjustment_amount) || 0;
       const kots = parseInt(o.kot_count) || 0;
       const pendingKots = parseInt(o.pending_kot_count) || 0;
       const orderItems = itemsByOrderId[o.id] || [];
 
       totalOrderCount++;
       totalOrderAmount += amount;
+      totalSubtotal += subtotal;
+      totalDiscountAmount += discountAmt;
+      totalTaxAmount += taxAmt;
+      totalServiceCharge += serviceCharge;
+      totalPackagingCharge += packagingCharge;
+      totalDeliveryCharge += deliveryCharge;
+      totalRoundOff += roundOff;
+      totalPaidAmount += paidAmt;
+      totalDueAmount += dueAmt;
+      totalNCAmount += ncAmt;
+      totalAdjustmentAmount += adjustmentAmt;
 
       if (pendingKots > 0) pendingCount++;
+
+      // Payment status tracking
+      if (o.payment_status === 'completed') fullyPaidCount++;
+      else if (o.payment_status === 'partial') partialPaidCount++;
+      else unpaidCount++; // pending, null, etc.
+
+      if (o.is_nc) ncOrderCount++;
+      if (o.is_adjustment) adjustmentOrderCount++;
 
       if (o.order_type === 'dine_in') {
         dineInCount++;
@@ -210,24 +263,37 @@ const dashboardService = {
         notPickedUpAmount += amount;
       }
 
-      // Build running order entry with items
+      // Build running order entry with items + full payment data
       const duration = o.created_at ? Math.round((Date.now() - new Date(o.created_at).getTime()) / 60000) : 0;
       runningOrders.push({
         id: o.id,
         orderNumber: o.order_number,
         orderType: o.order_type,
         status: o.status,
+        paymentStatus: o.payment_status || 'pending',
         tableId: o.table_id || null,
         tableNumber: o.table_number || null,
         tableName: o.table_name || null,
         floorId: o.floor_id || null,
         floorName: o.floor_name || null,
         customerName: o.customer_name || null,
+        customerId: o.customer_id || null,
+        customerPhone: o.customer_phone || null,
         guestCount: parseInt(o.guest_count) || 0,
-        subtotal: parseFloat(o.subtotal) || 0,
-        discountAmount: parseFloat(o.discount_amount) || 0,
-        taxAmount: parseFloat(o.tax_amount) || 0,
+        subtotal,
+        discountAmount: discountAmt,
+        taxAmount: taxAmt,
+        serviceCharge,
+        packagingCharge,
+        deliveryCharge,
+        roundOff,
         totalAmount: amount,
+        paidAmount: paidAmt,
+        dueAmount: dueAmt,
+        isNC: !!o.is_nc,
+        ncAmount: ncAmt,
+        isAdjustment: !!o.is_adjustment,
+        adjustmentAmount: adjustmentAmt,
         kotCount: kots,
         pendingKotCount: pendingKots,
         createdAt: o.created_at,
@@ -262,6 +328,10 @@ const dashboardService = {
       const guests = parseInt(t.guest_count) || (linkedOrder ? (parseInt(linkedOrder.guest_count) || 0) : 0);
       const orderAmt = linkedOrder ? (parseFloat(linkedOrder.total_amount) || 0) : 0;
       const orderSubtotal = linkedOrder ? (parseFloat(linkedOrder.subtotal) || 0) : 0;
+      const orderPaidAmt = linkedOrder ? (parseFloat(linkedOrder.paid_amount) || 0) : 0;
+      const orderDueAmt = linkedOrder ? (parseFloat(linkedOrder.due_amount) || 0) : 0;
+      const orderDiscountAmt = linkedOrder ? (parseFloat(linkedOrder.discount_amount) || 0) : 0;
+      const orderTaxAmt = linkedOrder ? (parseFloat(linkedOrder.tax_amount) || 0) : 0;
       const tableItems = linkedOrder ? (itemsByOrderId[linkedOrder.id] || []) : [];
 
       totalGuests += guests;
@@ -295,8 +365,17 @@ const dashboardService = {
         orderNumber: linkedOrder ? linkedOrder.order_number : null,
         orderType: linkedOrder ? linkedOrder.order_type : null,
         orderStatus: linkedOrder ? linkedOrder.status : null,
+        paymentStatus: linkedOrder ? (linkedOrder.payment_status || 'pending') : null,
         orderAmount: orderAmt,
         orderSubtotal: orderSubtotal,
+        discountAmount: orderDiscountAmt,
+        taxAmount: orderTaxAmt,
+        paidAmount: orderPaidAmt,
+        dueAmount: orderDueAmt,
+        isNC: linkedOrder ? !!linkedOrder.is_nc : false,
+        ncAmount: linkedOrder ? (parseFloat(linkedOrder.nc_amount) || 0) : 0,
+        isAdjustment: linkedOrder ? !!linkedOrder.is_adjustment : false,
+        adjustmentAmount: linkedOrder ? (parseFloat(linkedOrder.adjustment_amount) || 0) : 0,
         kotCount: linkedOrder ? (parseInt(linkedOrder.kot_count) || 0) : 0,
         pendingKotCount: linkedOrder ? (parseInt(linkedOrder.pending_kot_count) || 0) : 0,
         itemCount: tableItems.length,
@@ -312,6 +391,27 @@ const dashboardService = {
           totalCount: totalOrderCount,
           totalAmount: r2(totalOrderAmount),
           pendingCount
+        },
+        // DSR-accurate payment breakdown
+        payment: {
+          totalAmount: r2(totalOrderAmount),
+          subtotal: r2(totalSubtotal),
+          discountAmount: r2(totalDiscountAmount),
+          taxAmount: r2(totalTaxAmount),
+          serviceCharge: r2(totalServiceCharge),
+          packagingCharge: r2(totalPackagingCharge),
+          deliveryCharge: r2(totalDeliveryCharge),
+          roundOff: r2(totalRoundOff),
+          paidAmount: r2(totalPaidAmount),
+          dueAmount: r2(totalDueAmount),
+          unpaidAmount: r2(totalOrderAmount - totalPaidAmount),
+          ncAmount: r2(totalNCAmount),
+          ncOrderCount,
+          adjustmentAmount: r2(totalAdjustmentAmount),
+          adjustmentOrderCount,
+          fullyPaidCount,
+          partialPaidCount,
+          unpaidCount
         },
         tables: {
           totalTables,
