@@ -1461,8 +1461,8 @@ const paymentService = {
          LEFT JOIN tables t ON o.table_id = t.id
          WHERE p.outlet_id = ? AND p.created_at >= ? AND p.created_at <= ?
            AND p.status = 'completed' AND p.payment_mode = 'cash'
-           AND (t.floor_id = ? OR (t.floor_id IS NULL AND ? IS NULL) OR o.table_id IS NULL)`,
-        [outletId, shiftStartTime, shiftEndTime, floorId, floorId]
+           AND (t.floor_id = ? OR (t.floor_id IS NULL AND ? IS NULL) OR (o.table_id IS NULL AND o.order_type != 'dine_in' AND o.created_by = ?))`,
+        [outletId, shiftStartTime, shiftEndTime, floorId, floorId, session.cashier_id]
       );
       
       // Get cash from split payments for this shift
@@ -1474,8 +1474,8 @@ const paymentService = {
          LEFT JOIN tables t ON o.table_id = t.id
          WHERE p.outlet_id = ? AND p.created_at >= ? AND p.created_at <= ?
            AND p.status = 'completed' AND p.payment_mode = 'split' AND sp.payment_mode = 'cash'
-           AND (t.floor_id = ? OR (t.floor_id IS NULL AND ? IS NULL) OR o.table_id IS NULL)`,
-        [outletId, shiftStartTime, shiftEndTime, floorId, floorId]
+           AND (t.floor_id = ? OR (t.floor_id IS NULL AND ? IS NULL) OR (o.table_id IS NULL AND o.order_type != 'dine_in' AND o.created_by = ?))`,
+        [outletId, shiftStartTime, shiftEndTime, floorId, floorId, session.cashier_id]
       );
       
       const totalCashSales = (parseFloat(cashPayments[0]?.total_cash) || 0) + (parseFloat(splitCashPayments[0]?.total_cash) || 0);
@@ -1494,8 +1494,8 @@ const paymentService = {
          FROM orders o
          LEFT JOIN tables t ON o.table_id = t.id
          WHERE o.outlet_id = ? AND o.created_at >= ? AND o.created_at <= ? AND o.status IN ('completed', 'paid')
-         AND (t.floor_id = ? OR (t.floor_id IS NULL AND ? IS NULL) OR o.table_id IS NULL)`,
-        [outletId, shiftStartTime, shiftEndTime, floorId, floorId]
+         AND (t.floor_id = ? OR (t.floor_id IS NULL AND ? IS NULL) OR (o.table_id IS NULL AND o.order_type != 'dine_in' AND o.created_by = ?))`,
+        [outletId, shiftStartTime, shiftEndTime, floorId, floorId, session.cashier_id]
       );
 
       // Get payment mode breakdown for storing in day_sessions
@@ -1509,8 +1509,8 @@ const paymentService = {
          LEFT JOIN tables t ON o.table_id = t.id
          WHERE p.outlet_id = ? AND p.created_at >= ? AND p.created_at <= ?
            AND p.status = 'completed' AND p.payment_mode != 'split'
-           AND (t.floor_id = ? OR (t.floor_id IS NULL AND ? IS NULL) OR o.table_id IS NULL)`,
-        [outletId, shiftStartTime, shiftEndTime, floorId, floorId]
+           AND (t.floor_id = ? OR (t.floor_id IS NULL AND ? IS NULL) OR (o.table_id IS NULL AND o.order_type != 'dine_in' AND o.created_by = ?))`,
+        [outletId, shiftStartTime, shiftEndTime, floorId, floorId, session.cashier_id]
       );
       const [shiftSplitBreakdown] = await connection.query(
         `SELECT 
@@ -1523,8 +1523,8 @@ const paymentService = {
          LEFT JOIN tables t ON o.table_id = t.id
          WHERE p.outlet_id = ? AND p.created_at >= ? AND p.created_at <= ?
            AND p.status = 'completed' AND p.payment_mode = 'split'
-           AND (t.floor_id = ? OR (t.floor_id IS NULL AND ? IS NULL) OR o.table_id IS NULL)`,
-        [outletId, shiftStartTime, shiftEndTime, floorId, floorId]
+           AND (t.floor_id = ? OR (t.floor_id IS NULL AND ? IS NULL) OR (o.table_id IS NULL AND o.order_type != 'dine_in' AND o.created_by = ?))`,
+        [outletId, shiftStartTime, shiftEndTime, floorId, floorId, session.cashier_id]
       );
       const storedCash = (parseFloat(shiftPayBreakdown[0]?.total_cash) || 0) + (parseFloat(shiftSplitBreakdown[0]?.total_cash) || 0);
       const storedCard = (parseFloat(shiftPayBreakdown[0]?.total_card) || 0) + (parseFloat(shiftSplitBreakdown[0]?.total_card) || 0);
@@ -2704,6 +2704,15 @@ const paymentService = {
           SUM(CASE WHEN order_type = 'dine_in' AND status = 'completed' THEN 1 ELSE 0 END) as dine_in_orders,
           SUM(CASE WHEN order_type = 'takeaway' AND status = 'completed' THEN 1 ELSE 0 END) as takeaway_orders,
           SUM(CASE WHEN order_type = 'delivery' AND status = 'completed' THEN 1 ELSE 0 END) as delivery_orders,
+          SUM(CASE WHEN order_type = 'dine_in' AND status = 'completed' THEN total_amount ELSE 0 END) as dine_in_sales,
+          SUM(CASE WHEN order_type = 'takeaway' AND status = 'completed' THEN total_amount ELSE 0 END) as takeaway_sales,
+          SUM(CASE WHEN order_type = 'delivery' AND status = 'completed' THEN total_amount ELSE 0 END) as delivery_sales,
+          SUM(CASE WHEN order_type = 'dine_in' AND status = 'completed' THEN COALESCE(paid_amount,0) ELSE 0 END) as dine_in_paid,
+          SUM(CASE WHEN order_type = 'takeaway' AND status = 'completed' THEN COALESCE(paid_amount,0) ELSE 0 END) as takeaway_paid,
+          SUM(CASE WHEN order_type = 'delivery' AND status = 'completed' THEN COALESCE(paid_amount,0) ELSE 0 END) as delivery_paid,
+          SUM(CASE WHEN order_type = 'dine_in' AND status = 'completed' THEN COALESCE(due_amount,0) ELSE 0 END) as dine_in_due,
+          SUM(CASE WHEN order_type = 'takeaway' AND status = 'completed' THEN COALESCE(due_amount,0) ELSE 0 END) as takeaway_due,
+          SUM(CASE WHEN order_type = 'delivery' AND status = 'completed' THEN COALESCE(due_amount,0) ELSE 0 END) as delivery_due,
           SUM(CASE WHEN status = 'completed' THEN total_amount ELSE 0 END) as real_total_sales,
           AVG(CASE WHEN status = 'completed' THEN total_amount ELSE NULL END) as avg_order_value,
           MAX(CASE WHEN status = 'completed' THEN total_amount ELSE NULL END) as max_order_value,
@@ -2712,7 +2721,16 @@ const paymentService = {
           SUM(CASE WHEN status = 'completed' THEN COALESCE(nc_amount, 0) ELSE 0 END) as nc_amount,
           COUNT(CASE WHEN is_adjustment = 1 AND status = 'completed' THEN 1 END) as adjustment_count,
           SUM(CASE WHEN status = 'completed' THEN COALESCE(adjustment_amount, 0) ELSE 0 END) as total_adjustment_amount,
-          SUM(CASE WHEN status = 'completed' THEN COALESCE(due_amount, 0) ELSE 0 END) as total_due_amount
+          SUM(CASE WHEN status = 'completed' THEN COALESCE(due_amount, 0) ELSE 0 END) as total_due_amount,
+          SUM(CASE WHEN status = 'completed' THEN COALESCE(paid_amount, 0) ELSE 0 END) as total_paid_amount,
+          SUM(CASE WHEN status = 'completed' THEN COALESCE(subtotal, 0) ELSE 0 END) as total_subtotal,
+          SUM(CASE WHEN status = 'completed' THEN COALESCE(tax_amount, 0) ELSE 0 END) as total_tax,
+          SUM(CASE WHEN status = 'completed' THEN COALESCE(discount_amount, 0) ELSE 0 END) as total_discount,
+          SUM(CASE WHEN status = 'completed' THEN COALESCE(round_off, 0) ELSE 0 END) as total_round_off,
+          SUM(CASE WHEN status = 'completed' THEN COALESCE(service_charge, 0) ELSE 0 END) as total_service_charge,
+          SUM(CASE WHEN status = 'completed' THEN COALESCE(packaging_charge, 0) ELSE 0 END) as total_packaging_charge,
+          SUM(CASE WHEN status = 'cancelled' THEN COALESCE(total_amount, 0) ELSE 0 END) as cancelled_total,
+          SUM(CASE WHEN status = 'cancelled' AND total_amount > 0 THEN 1 ELSE 0 END) as cancelled_with_value_count
         FROM orders
         WHERE outlet_id = ? AND created_at >= ? AND created_at <= ?${orderFloorCond}`,
         orderParams
@@ -2886,8 +2904,10 @@ const paymentService = {
         o.id, o.uuid, o.order_number, o.order_type, o.status, o.payment_status,
         o.customer_name, o.customer_phone,
         o.subtotal, o.tax_amount, o.discount_amount, o.total_amount,
+        o.round_off, o.service_charge, o.packaging_charge,
         o.is_nc, o.nc_amount, o.nc_reason, o.due_amount, o.paid_amount as order_paid_amount,
         o.is_adjustment, o.adjustment_amount,
+        o.cancelled_by, o.cancel_reason, o.cancelled_at,
         o.created_at, o.updated_at,
         u.name as created_by_name,
         t.table_number, t.name as table_name,
@@ -3039,10 +3059,14 @@ const paymentService = {
           customerName: row.customer_name, customerPhone: row.customer_phone,
           subtotal: parseFloat(row.subtotal) || 0, taxAmount: parseFloat(row.tax_amount) || 0,
           discountAmount: parseFloat(row.discount_amount) || 0, totalAmount: parseFloat(row.total_amount) || 0,
+          roundOff: parseFloat(row.round_off) || 0,
+          serviceCharge: parseFloat(row.service_charge) || 0,
+          packagingCharge: parseFloat(row.packaging_charge) || 0,
           isNC: !!row.is_nc, ncAmount: parseFloat(row.nc_amount) || 0, ncReason: row.nc_reason || null,
           paidAmount: parseFloat(row.order_paid_amount) || 0, dueAmount: parseFloat(row.due_amount) || 0,
           isAdjustment: !!row.is_adjustment, adjustmentAmount: parseFloat(row.adjustment_amount) || 0,
           isDueCollection: !!row.is_due_collection, createdByName: row.created_by_name,
+          cancelledBy: row.cancelled_by || null, cancelReason: row.cancel_reason || null, cancelledAt: row.cancelled_at || null,
           createdAt: row.created_at, updatedAt: row.updated_at,
           paymentMode: row.payment_mode, paymentPaid: parseFloat(row.paid_amount) || 0,
           items: orderItemsMap[row.id] || []
@@ -3052,13 +3076,15 @@ const paymentService = {
     const shiftOrders = Array.from(ordersMap.values());
 
     // Process due collections
-    const dueCollections = dueCollRows[0].map(r => ({
-      paymentId: r.payment_id, orderId: r.order_id, orderNumber: r.order_number,
-      customerName: r.customer_name || null, customerPhone: r.customer_phone || null,
-      orderTotal: parseFloat(r.order_total) || 0, collectedAmount: parseFloat(r.collected_amount) || 0,
-      paymentMode: r.payment_mode, collectedById: r.collected_by_id || null,
-      collectedByName: r.collected_by_name || null, createdAt: r.created_at
-    }));
+    const dueCollections = dueCollRows[0]
+      .filter(r => parseFloat(r.collected_amount) > 0)
+      .map(r => ({
+        paymentId: r.payment_id, orderId: r.order_id, orderNumber: r.order_number,
+        customerName: r.customer_name || null, customerPhone: r.customer_phone || null,
+        orderTotal: parseFloat(r.order_total) || 0, collectedAmount: parseFloat(r.collected_amount) || 0,
+        paymentMode: r.payment_mode, collectedById: r.collected_by_id || null,
+        collectedByName: r.collected_by_name || null, createdAt: r.created_at
+      }));
     const totalDueCollected = dueCollections.reduce((s, d) => s + d.collectedAmount, 0);
 
     // Merge regular + split cashier data
@@ -3159,15 +3185,15 @@ const paymentService = {
       cashVariance: cashVariance,           // Calculated: closingCash - expectedCash
       // Real-time calculated totals (totalSales = SUM(total_amount) of completed orders)
       totalSales: r2(totalSalesFromOrders),
-      totalCollection: r2(totalSalesFromOrders),
+      totalCollection: r2(calculatedPaymentTotal),
       totalOrders: realTotalOrders,
       totalCashSales: totalCashSales,
       totalCardSales: totalCardSales,
       totalUpiSales: totalUpiSales,
       totalOtherSales: totalOtherSales,
-      totalDiscounts: parseFloat(shift.total_discounts) || 0,
-      totalRefunds: parseFloat(shift.total_refunds) || 0,
-      totalCancellations: parseFloat(shift.total_cancellations) || 0,
+      totalDiscounts: r2(parseFloat(orderStats[0]?.total_discount) || 0),
+      totalRefunds: 0,
+      totalCancellations: r2(parseFloat(orderStats[0]?.cancelled_total) || 0),
       // Cost & Profit
       makingCost: shiftMakingCost,
       profit: shiftProfit,
@@ -3197,12 +3223,27 @@ const paymentService = {
         ncAmount: parseFloat(orderStats[0]?.nc_amount) || 0,
         adjustmentCount: parseInt(orderStats[0]?.adjustment_count) || 0,
         adjustmentAmount: parseFloat(orderStats[0]?.total_adjustment_amount) || 0,
-        totalDueAmount: parseFloat(orderStats[0]?.total_due_amount) || 0
+        totalDueAmount: parseFloat(orderStats[0]?.total_due_amount) || 0,
+        cancelledTotal: r2(parseFloat(orderStats[0]?.cancelled_total) || 0),
+        cancelledWithValueCount: parseInt(orderStats[0]?.cancelled_with_value_count) || 0
       },
-      note: 'totalSales = SUM(total_amount) of completed orders. Due collection not added to sale/collection.',
+      note: 'totalSales = SUM(total_amount) of completed orders. freshPaymentTotal = payments received during shift (excl due collections).',
+      saleBifurcation: {
+        subtotal: r2(parseFloat(orderStats[0]?.total_subtotal) || 0),
+        discount: r2(parseFloat(orderStats[0]?.total_discount) || 0),
+        tax: r2(parseFloat(orderStats[0]?.total_tax) || 0),
+        serviceCharge: r2(parseFloat(orderStats[0]?.total_service_charge) || 0),
+        packagingCharge: r2(parseFloat(orderStats[0]?.total_packaging_charge) || 0),
+        roundOff: r2(parseFloat(orderStats[0]?.total_round_off) || 0),
+        totalSale: r2(totalSalesFromOrders),
+        totalPaidFromOrders: r2(parseFloat(orderStats[0]?.total_paid_amount) || 0),
+        totalDue: r2(parseFloat(orderStats[0]?.total_due_amount) || 0),
+        note: 'totalSale = subtotal - discount + tax + serviceCharge + packagingCharge + roundOff'
+      },
       collection: {
-        totalCollection: r2(totalSalesFromOrders),
+        freshPaymentTotal: r2(calculatedPaymentTotal),
         dueCollection: r2(totalDueCollected),
+        totalMoneyReceived: r2(calculatedPaymentTotal + totalDueCollected),
         paymentBreakdown: {
           cash: r2(totalCashSales),
           card: r2(totalCardSales),
@@ -3215,6 +3256,27 @@ const paymentService = {
         ncOrderCount: parseInt(orderStats[0]?.nc_orders) || 0,
         totalAdjustment: r2(parseFloat(orderStats[0]?.total_adjustment_amount) || 0),
         adjustmentCount: parseInt(orderStats[0]?.adjustment_count) || 0
+      },
+      orderTypeBifurcation: {
+        dineIn: {
+          orders: parseInt(orderStats[0]?.dine_in_orders) || 0,
+          sales: r2(parseFloat(orderStats[0]?.dine_in_sales) || 0),
+          paid: r2(parseFloat(orderStats[0]?.dine_in_paid) || 0),
+          due: r2(parseFloat(orderStats[0]?.dine_in_due) || 0)
+        },
+        takeaway: {
+          orders: parseInt(orderStats[0]?.takeaway_orders) || 0,
+          sales: r2(parseFloat(orderStats[0]?.takeaway_sales) || 0),
+          paid: r2(parseFloat(orderStats[0]?.takeaway_paid) || 0),
+          due: r2(parseFloat(orderStats[0]?.takeaway_due) || 0)
+        },
+        delivery: {
+          orders: parseInt(orderStats[0]?.delivery_orders) || 0,
+          sales: r2(parseFloat(orderStats[0]?.delivery_sales) || 0),
+          paid: r2(parseFloat(orderStats[0]?.delivery_paid) || 0),
+          due: r2(parseFloat(orderStats[0]?.delivery_due) || 0)
+        },
+        note: 'dineIn.sales + takeaway.sales + delivery.sales = totalSales'
       },
       cashierBreakdown,
       dueCollections: {
