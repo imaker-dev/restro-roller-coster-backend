@@ -800,6 +800,134 @@ const getRunningDashboard = async (req, res, next) => {
   }
 };
 
+/**
+ * GET /api/v1/reports/accurate-dashboard
+ * Accurate Dashboard (v2) — only completed orders
+ */
+const getAccurateDashboard = async (req, res, next) => {
+  try {
+    const { outletId } = req.query;
+    if (!outletId) {
+      return res.status(400).json({ success: false, message: 'outletId is required' });
+    }
+    const scope = await getUserDataScope(req.user, parseInt(outletId));
+    const result = await reportsService.getAccurateDashboard(
+      parseInt(outletId),
+      scope.floorIds
+    );
+    res.status(200).json({
+      success: true,
+      data: result,
+      meta: { role: scope.roleSlug, isFiltered: !scope.isAdmin }
+    });
+  } catch (error) {
+    logger.error('Get Accurate Dashboard failed:', error);
+    next(error);
+  }
+};
+
+/**
+ * GET /api/v1/reports/accurate-running-dashboard
+ * Accurate Running Dashboard (v2) — only completed orders
+ */
+const getAccurateRunningDashboard = async (req, res, next) => {
+  try {
+    const { outletId, startDate, endDate, date } = req.query;
+    if (!outletId) {
+      return res.status(400).json({ success: false, message: 'outletId is required' });
+    }
+    const scope = await getUserDataScope(req.user, parseInt(outletId));
+    const result = await reportsService.getAccurateRunningDashboard(
+      parseInt(outletId),
+      startDate || date,
+      endDate || date || startDate,
+      scope.floorIds
+    );
+    res.status(200).json({
+      success: true,
+      data: result,
+      meta: { role: scope.roleSlug, isFiltered: !scope.isAdmin }
+    });
+  } catch (error) {
+    logger.error('Get Accurate Running Dashboard failed:', error);
+    next(error);
+  }
+};
+
+/**
+ * GET /api/v1/reports/accurate-day-end-summary
+ * Accurate Day End Summary (v2) — only completed orders
+ */
+const getAccurateDayEndSummary = async (req, res, next) => {
+  try {
+    const { outletId, startDate, endDate } = req.query;
+    if (!outletId) {
+      return res.status(400).json({ success: false, message: 'outletId is required' });
+    }
+    const scope = await getUserDataScope(req.user, parseInt(outletId));
+    const result = await reportsService.getAccurateDayEndSummary(
+      parseInt(outletId),
+      startDate,
+      endDate,
+      {
+        floorIds: scope.floorIds,
+        userId: scope.userId,
+        isCashier: scope.isCashier
+      }
+    );
+    res.status(200).json({
+      success: true,
+      data: result,
+      meta: {
+        role: scope.roleSlug,
+        isFiltered: !scope.isAdmin,
+        floorRestricted: scope.floorIds.length > 0
+      }
+    });
+  } catch (error) {
+    logger.error('Get Accurate Day End Summary failed:', error);
+    next(error);
+  }
+};
+
+/**
+ * GET /api/v1/reports/accurate-dsr
+ * Accurate Daily Sales Report (v2)
+ * - Only completed orders
+ * - total_sale = full bill amount (total_amount) of completed orders
+ * - total_collection = total_sale (regardless of payment status)
+ * - NC and discount bifurcated separately
+ * - Nothing excluded (dues, adjustments, NC all included)
+ * - Cross-verification with order-level list
+ */
+const getAccurateDSR = async (req, res, next) => {
+  try {
+    const { outletId, startDate, endDate } = req.query;
+    
+    if (!outletId) {
+      return res.status(400).json({ success: false, message: 'outletId is required' });
+    }
+
+    const scope = await getUserDataScope(req.user, parseInt(outletId));
+    
+    const result = await reportsService.getAccurateDSR(
+      parseInt(outletId),
+      startDate,
+      endDate,
+      scope.floorIds
+    );
+
+    res.status(200).json({
+      success: true,
+      data: result,
+      meta: { role: scope.roleSlug, isFiltered: !scope.isAdmin }
+    });
+  } catch (error) {
+    logger.error('Get Accurate DSR failed:', error);
+    next(error);
+  }
+};
+
 module.exports = {
   getDayEndSummary,
   getDayEndSummaryDetail,
@@ -822,5 +950,9 @@ module.exports = {
   exportRunningTables,
   exportRunningOrders,
   exportDayEndSummary,
-  exportDayEndSummaryDetail
+  exportDayEndSummaryDetail,
+  getAccurateDSR,
+  getAccurateDashboard,
+  getAccurateRunningDashboard,
+  getAccurateDayEndSummary
 };

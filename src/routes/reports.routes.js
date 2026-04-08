@@ -183,6 +183,41 @@ router.get('/hourly', authorize('super_admin', 'admin', 'manager'), reportCache(
  */
 router.get('/counter-sales', authorize('super_admin', 'admin', 'manager'), reportCache('counter-sales', 300), reportsController.getCounterSalesReport);
 
+/**
+ * @route   GET /api/v1/reports/accurate-dashboard
+ * @desc    Accurate Dashboard (v2) — only completed orders, total_sale = SUM(total_amount)
+ * @access  Private (admin, manager, cashier)
+ * @query   outletId - Required
+ */
+router.get('/accurate-dashboard', authorize(...REPORT_ROLES), reportCache('accurate-dashboard', 60), reportsController.getAccurateDashboard);
+
+/**
+ * @route   GET /api/v1/reports/accurate-running-dashboard
+ * @desc    Accurate Running Dashboard (v2) — only completed orders, total_sale = SUM(total_amount)
+ * @access  Private (admin, manager, cashier)
+ * @query   outletId - Required
+ * @query   startDate, endDate, date - Date range (YYYY-MM-DD)
+ */
+router.get('/accurate-running-dashboard', authorize(...REPORT_ROLES), reportCache('accurate-running-dashboard', 30), reportsController.getAccurateRunningDashboard);
+
+/**
+ * @route   GET /api/v1/reports/accurate-day-end-summary
+ * @desc    Accurate Day End Summary (v2) — only completed orders, total_sale = SUM(total_amount)
+ * @access  Private (admin, manager, cashier)
+ * @query   outletId - Required
+ * @query   startDate, endDate - Date range (YYYY-MM-DD)
+ */
+router.get('/accurate-day-end-summary', authorize(...REPORT_ROLES), reportCache('accurate-day-end-summary', 300), reportsController.getAccurateDayEndSummary);
+
+/**
+ * @route   GET /api/v1/reports/accurate-dsr
+ * @desc    Accurate Daily Sales Report (v2) — only completed orders, total_sale = full bill
+ * @access  Private (admin, manager, cashier)
+ * @query   outletId - Required
+ * @query   startDate, endDate - Date range (YYYY-MM-DD)
+ */
+router.get('/accurate-dsr', authorize(...REPORT_ROLES), reportCache('accurate-dsr', 60), reportsController.getAccurateDSR);
+
 // ========================
 // CSV EXPORT ENDPOINTS
 // ========================
