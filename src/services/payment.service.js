@@ -1758,17 +1758,25 @@ const paymentService = {
     }
 
     // Build shared condition parts
+    // Takeaway/delivery with no floor → assign to shift's cashier to avoid double-counting
+    const cashierId = session[0]?.cashier_id;
     let floorCondition = '';
     let paymentFloorCondition = '';
     const floorParam = floorId ? [floorId] : [];
+    const floorPayParam = floorId ? [floorId, cashierId] : [];
     if (floorId) {
-      floorCondition = ` AND (t.floor_id = ? OR (o.table_id IS NULL AND o.order_type != 'dine_in'))`;
+      floorCondition = ` AND (t.floor_id = ? OR (o.table_id IS NULL AND o.order_type != 'dine_in' AND o.created_by = ?))`;
       paymentFloorCondition = floorCondition;
     }
+    // Order floor condition (orders table directly, no join)
+    const orderFloorCond = floorId
+      ? ` AND (floor_id = ? OR (floor_id IS NULL AND order_type IN ('takeaway','delivery') AND created_by = ?))`
+      : '';
+    const orderFloorParams = floorId ? [floorId, cashierId] : [];
     const cdFloorCond = floorId ? ` AND floor_id = ?` : '';
 
-    // Parallel: all 7 queries at once (was sequential — 7 round-trips)
-    const [balanceRes, transRes, orderDataRes, collectedRes, regularRes, splitRes, cashMovRes] = await Promise.all([
+    // Parallel: all 8 queries at once
+    const [balanceRes, transRes, orderDataRes, completedStatsRes, regularRes, splitRes, cashMovRes, dueCollRes] = await Promise.all([
       pool.query(
         `SELECT balance_after FROM cash_drawer 
          WHERE outlet_id = ? AND created_at >= ? AND created_at <= ?${cdFloorCond}
@@ -1782,28 +1790,35 @@ const paymentService = {
          ORDER BY cd.created_at DESC LIMIT 20`,
         [outletId, shiftStartTime, shiftEndTime, ...floorParam]
       ),
+      // Active/pending orders (for running status - NOT for sales)
       pool.query(
         `SELECT 
           COUNT(DISTINCT o.id) as total_orders,
           SUM(o.guest_count) as total_guests,
-          SUM(CASE WHEN o.status NOT IN ('cancelled', 'paid', 'completed') THEN o.total_amount ELSE 0 END) as pending_amount,
-          COUNT(CASE WHEN o.status IN ('paid', 'completed') THEN 1 END) as completed_orders,
-          COUNT(CASE WHEN o.status NOT IN ('cancelled', 'paid', 'completed') THEN 1 END) as active_orders
+          SUM(CASE WHEN o.status NOT IN ('cancelled', 'completed') THEN o.total_amount ELSE 0 END) as pending_amount,
+          COUNT(CASE WHEN o.status = 'completed' THEN 1 END) as completed_orders,
+          COUNT(CASE WHEN o.status NOT IN ('cancelled', 'completed') THEN 1 END) as active_orders
          FROM orders o
          LEFT JOIN tables t ON o.table_id = t.id
          WHERE o.outlet_id = ? AND o.created_at >= ? AND o.created_at <= ? AND o.status != 'cancelled'${floorCondition}`,
-        [outletId, shiftStartTime, shiftEndTime, ...floorParam]
+        [outletId, shiftStartTime, shiftEndTime, ...floorPayParam]
       ),
+      // Completed order stats — THIS is the source of truth for totalSales
       pool.query(
         `SELECT 
-          COALESCE(SUM(p.total_amount), 0) as total_collected,
-          COUNT(DISTINCT p.order_id) as orders_paid_in_shift
-         FROM payments p
-         JOIN orders o ON p.order_id = o.id
-         LEFT JOIN tables t ON o.table_id = t.id
-         WHERE p.outlet_id = ? AND p.created_at >= ? AND p.created_at <= ? AND p.status = 'completed'${paymentFloorCondition}`,
-        [outletId, shiftStartTime, shiftEndTime, ...floorParam]
+          COUNT(*) as completed_orders,
+          SUM(total_amount) as total_sale,
+          SUM(COALESCE(discount_amount, 0)) as discount_amount,
+          COUNT(CASE WHEN is_nc = 1 THEN 1 END) as nc_order_count,
+          SUM(COALESCE(nc_amount, 0)) as nc_amount,
+          COUNT(CASE WHEN is_adjustment = 1 THEN 1 END) as adjustment_count,
+          SUM(COALESCE(adjustment_amount, 0)) as adjustment_amount,
+          SUM(COALESCE(due_amount, 0)) as due_amount
+         FROM orders
+         WHERE outlet_id = ? AND status = 'completed' AND created_at >= ? AND created_at <= ?${orderFloorCond}`,
+        [outletId, shiftStartTime, shiftEndTime, ...orderFloorParams]
       ),
+      // Payments EXCLUDING due collections
       pool.query(
         `SELECT 
           p.payment_mode,
@@ -1813,9 +1828,10 @@ const paymentService = {
          JOIN orders o ON p.order_id = o.id
          LEFT JOIN tables t ON o.table_id = t.id
          WHERE p.outlet_id = ? AND p.created_at >= ? AND p.created_at <= ? 
-           AND p.status = 'completed' AND p.payment_mode != 'split'${paymentFloorCondition}
+           AND p.status = 'completed' AND p.payment_mode != 'split'
+           AND COALESCE(p.is_due_collection, 0) = 0${paymentFloorCondition}
          GROUP BY p.payment_mode`,
-        [outletId, shiftStartTime, shiftEndTime, ...floorParam]
+        [outletId, shiftStartTime, shiftEndTime, ...floorPayParam]
       ),
       pool.query(
         `SELECT 
@@ -1827,9 +1843,10 @@ const paymentService = {
          JOIN orders o ON p.order_id = o.id
          LEFT JOIN tables t ON o.table_id = t.id
          WHERE p.outlet_id = ? AND p.created_at >= ? AND p.created_at <= ? 
-           AND p.status = 'completed' AND p.payment_mode = 'split'${paymentFloorCondition}
+           AND p.status = 'completed' AND p.payment_mode = 'split'
+           AND COALESCE(p.is_due_collection, 0) = 0${paymentFloorCondition}
          GROUP BY sp.payment_mode`,
-        [outletId, shiftStartTime, shiftEndTime, ...floorParam]
+        [outletId, shiftStartTime, shiftEndTime, ...floorPayParam]
       ),
       pool.query(
         `SELECT 
@@ -1841,15 +1858,26 @@ const paymentService = {
          FROM cash_drawer 
          WHERE outlet_id = ? AND created_at >= ? AND created_at <= ?${cdFloorCond}`,
         [outletId, shiftStartTime, shiftEndTime, ...floorParam]
+      ),
+      // Due collection amount (tracked separately, NOT added to sale)
+      pool.query(
+        `SELECT COALESCE(SUM(p.total_amount), 0) as due_collected
+         FROM payments p
+         JOIN orders o ON p.order_id = o.id
+         LEFT JOIN tables t ON o.table_id = t.id
+         WHERE p.outlet_id = ? AND p.created_at >= ? AND p.created_at <= ?
+           AND p.status = 'completed' AND COALESCE(p.is_due_collection, 0) = 1${paymentFloorCondition}`,
+        [outletId, shiftStartTime, shiftEndTime, ...floorPayParam]
       )
     ]);
     const balance = balanceRes[0];
     const transactions = transRes[0];
     const orderData = orderDataRes[0];
-    const collectedData = collectedRes[0];
+    const completedStats = completedStatsRes[0];
     const regularPayments = regularRes[0];
     const splitPayments = splitRes[0];
     const cashMovements = cashMovRes[0];
+    const dueCollData = dueCollRes[0];
 
     // Combine regular and split payments into one breakdown
     const paymentBreakdown = [...regularPayments, ...splitPayments];
@@ -1899,13 +1927,15 @@ const paymentService = {
     // Get opening cash from session record (more reliable than cash_drawer)
     const openingCashFromSession = parseFloat(session[0]?.opening_cash) || 0;
     
-    // Total sales = all payments (cash + card + upi + others)
-    const totalSales = paymentSummary.total;
+    // Total sales = SUM(total_amount) of completed orders (NOT from payments)
+    const totalSalesFromOrders = parseFloat(completedStats[0]?.total_sale) || 0;
+    const totalSales = totalSalesFromOrders;
+    const dueCollected = parseFloat(dueCollData[0]?.due_collected) || 0;
     
-    // Expected amount = Opening Cash + ALL payments (cash + card + UPI etc.) + cash_in - cash_out - refunds - expenses
+    // Expected amount = Opening Cash + payment collections (excl due) + cash_in - cash_out - refunds - expenses
     const expectedAmount = 
       openingCashFromSession +
-      totalSales +
+      paymentSummary.total +
       (parseFloat(cashSummary.cash_in) || 0) -
       (parseFloat(cashSummary.cash_out) || 0) -
       (parseFloat(cashSummary.refunds) || 0) -
@@ -1998,19 +2028,36 @@ const paymentService = {
       userId,
       // Key summary values for UI
       openingAmount: openingCashFromSession,
-      expectedAmount: expectedAmount,         // Opening + ALL Sales (cash + card + UPI) + Cash In - Cash Out - Refunds - Expenses
-      totalSales: totalSales,                 // All payments (cash + card + UPI etc.) without opening
+      expectedAmount: expectedAmount,         // Opening + payment collections + Cash In - Cash Out - Refunds - Expenses
+      totalSales: totalSales,                 // SUM(total_amount) of completed orders
+      totalCollection: totalSales,            // = totalSales (what was billed)
       currentBalance: expectedCashInDrawer,   // Expected cash in drawer only
       expectedCash: expectedCashInDrawer,     // Expected cash in drawer only
       // Real-time sales data
       sales: {
         totalOrders: parseInt(orderData[0]?.total_orders) || 0,
-        completedOrders: parseInt(orderData[0]?.completed_orders) || 0,
+        completedOrders: parseInt(completedStats[0]?.completed_orders) || 0,
         activeOrders: parseInt(orderData[0]?.active_orders) || 0,
         totalGuests: parseInt(orderData[0]?.total_guests) || 0,
-        totalCollected: totalSales,  // Use calculated totalSales
-        ordersPaidInShift: parseInt(collectedData[0]?.orders_paid_in_shift) || 0,
-        pendingAmount: parseFloat(orderData[0]?.pending_amount) || 0
+        totalSale: totalSales,
+        totalCollection: totalSales,
+        pendingAmount: parseFloat(orderData[0]?.pending_amount) || 0,
+        discountAmount: parseFloat(completedStats[0]?.discount_amount) || 0,
+        ncOrderCount: parseInt(completedStats[0]?.nc_order_count) || 0,
+        ncAmount: parseFloat(completedStats[0]?.nc_amount) || 0,
+        adjustmentCount: parseInt(completedStats[0]?.adjustment_count) || 0,
+        adjustmentAmount: parseFloat(completedStats[0]?.adjustment_amount) || 0,
+        dueAmount: parseFloat(completedStats[0]?.due_amount) || 0
+      },
+      // Collection breakdown (due collection excluded from totalCollection, tracked separately)
+      collection: {
+        totalCollection: totalSales,
+        dueCollection: dueCollected,
+        cash: paymentSummary.cash,
+        card: paymentSummary.card,
+        upi: paymentSummary.upi,
+        wallet: paymentSummary.wallet,
+        note: 'totalCollection = totalSales from completed orders. dueCollection tracked separately (NOT in totalSales).'
       },
       // Payment breakdown by mode
       paymentBreakdown: paymentSummary,
@@ -2341,20 +2388,23 @@ const paymentService = {
       }
 
       // Parallel: all 5 per-shift queries at once (was sequential — 5 round-trips per shift)
-      const floorCondition = shift.floor_id ? ' AND (t.floor_id = ? OR (o.table_id IS NULL AND o.order_type != \'dine_in\'))' : '';
-      const floorParams = shift.floor_id ? [shift.floor_id] : [];
-      const ncFloorCond = shift.floor_id ? ' AND (floor_id = ? OR (floor_id IS NULL AND order_type IN (\'takeaway\', \'delivery\')))' : '';
-      const ncFloorParams = shift.floor_id ? [shift.floor_id] : [];
+      // Takeaway/delivery with no floor → assign to shift's cashier via created_by to avoid double-counting across floors
+      const floorCondition = shift.floor_id ? ' AND (t.floor_id = ? OR (o.table_id IS NULL AND o.order_type != \'dine_in\' AND o.created_by = ?))' : '';
+      const floorParams = shift.floor_id ? [shift.floor_id, shift.cashier_id] : [];
+      const ncFloorCond = shift.floor_id ? ' AND (floor_id = ? OR (floor_id IS NULL AND order_type IN (\'takeaway\', \'delivery\') AND created_by = ?))' : '';
+      const ncFloorParams = shift.floor_id ? [shift.floor_id, shift.cashier_id] : [];
       const sessionDateStr2 = formatLocalDate(shift.session_date);
 
       const [regularPaymentsRes, splitPaymentsRes, orderStatsRes, dueCollRes, shiftCostRes, shiftWastageRes] = await Promise.all([
+        // Payments EXCLUDING due collections (due already counted in total_amount at order completion)
         pool.query(
           `SELECT p.payment_mode, SUM(p.total_amount) as total
            FROM payments p
            JOIN orders o ON p.order_id = o.id
            LEFT JOIN tables t ON o.table_id = t.id
            WHERE p.outlet_id = ? AND p.created_at >= ? AND p.created_at <= ? 
-             AND p.status = 'completed' AND p.payment_mode != 'split'${floorCondition}
+             AND p.status = 'completed' AND p.payment_mode != 'split'
+             AND COALESCE(p.is_due_collection, 0) = 0${floorCondition}
            GROUP BY p.payment_mode`,
           [shift.outlet_id, shiftStartTime, shiftEndTime, ...floorParams]
         ),
@@ -2365,29 +2415,31 @@ const paymentService = {
            JOIN orders o ON p.order_id = o.id
            LEFT JOIN tables t ON o.table_id = t.id
            WHERE p.outlet_id = ? AND p.created_at >= ? AND p.created_at <= ? 
-             AND p.status = 'completed' AND p.payment_mode = 'split'${floorCondition}
+             AND p.status = 'completed' AND p.payment_mode = 'split'
+             AND COALESCE(p.is_due_collection, 0) = 0${floorCondition}
            GROUP BY sp.payment_mode`,
           [shift.outlet_id, shiftStartTime, shiftEndTime, ...floorParams]
         ),
-        // Live order stats (replaces stale stored values)
+        // Live order stats — only completed orders
         pool.query(
           `SELECT 
             COUNT(*) as total_orders,
-            SUM(CASE WHEN status IN ('completed','paid') THEN 1 ELSE 0 END) as completed_orders,
+            SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_orders,
             SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_orders,
-            SUM(CASE WHEN order_type = 'dine_in' AND status IN ('completed','paid') THEN 1 ELSE 0 END) as dine_in_orders,
-            SUM(CASE WHEN order_type = 'takeaway' AND status IN ('completed','paid') THEN 1 ELSE 0 END) as takeaway_orders,
-            SUM(CASE WHEN order_type = 'delivery' AND status IN ('completed','paid') THEN 1 ELSE 0 END) as delivery_orders,
-            COUNT(CASE WHEN is_nc = 1 THEN 1 END) as nc_orders,
-            SUM(CASE WHEN status != 'cancelled' THEN COALESCE(nc_amount, 0) ELSE 0 END) as nc_amount,
-            COUNT(CASE WHEN is_adjustment = 1 AND status != 'cancelled' THEN 1 END) as adjustment_count,
-            SUM(CASE WHEN status != 'cancelled' THEN COALESCE(adjustment_amount, 0) ELSE 0 END) as total_adjustment_amount,
-            SUM(CASE WHEN status != 'cancelled' THEN COALESCE(due_amount, 0) ELSE 0 END) as total_due_amount,
-            SUM(CASE WHEN status != 'cancelled' THEN COALESCE(discount_amount, 0) ELSE 0 END) as total_discounts
+            SUM(CASE WHEN order_type = 'dine_in' AND status = 'completed' THEN 1 ELSE 0 END) as dine_in_orders,
+            SUM(CASE WHEN order_type = 'takeaway' AND status = 'completed' THEN 1 ELSE 0 END) as takeaway_orders,
+            SUM(CASE WHEN order_type = 'delivery' AND status = 'completed' THEN 1 ELSE 0 END) as delivery_orders,
+            SUM(CASE WHEN status = 'completed' THEN COALESCE(total_amount, 0) ELSE 0 END) as total_sale,
+            COUNT(CASE WHEN is_nc = 1 AND status = 'completed' THEN 1 END) as nc_orders,
+            SUM(CASE WHEN status = 'completed' THEN COALESCE(nc_amount, 0) ELSE 0 END) as nc_amount,
+            COUNT(CASE WHEN is_adjustment = 1 AND status = 'completed' THEN 1 END) as adjustment_count,
+            SUM(CASE WHEN status = 'completed' THEN COALESCE(adjustment_amount, 0) ELSE 0 END) as total_adjustment_amount,
+            SUM(CASE WHEN status = 'completed' THEN COALESCE(due_amount, 0) ELSE 0 END) as total_due_amount,
+            SUM(CASE WHEN status = 'completed' THEN COALESCE(discount_amount, 0) ELSE 0 END) as total_discounts
            FROM orders WHERE outlet_id = ? AND created_at >= ? AND created_at <= ?${ncFloorCond}`,
           [shift.outlet_id, shiftStartTime, shiftEndTime, ...ncFloorParams]
         ),
-        // Due collection amount
+        // Due collection amount (tracked separately, NOT added to sale)
         pool.query(
           `SELECT COALESCE(SUM(p.total_amount), 0) as due_collected
            FROM payments p
@@ -2420,9 +2472,11 @@ const paymentService = {
       const shiftCostRows = shiftCostRes[0];
       const shiftWastageRows = shiftWastageRes[0];
 
-      // Merge regular + split payments by mode to avoid duplicate entries
+      // Merge regular + split payments (due collections already excluded)
       const mergedPayments = this._mergePaymentsByMode(regularPayments, splitPayments);
-      const { totalCash: totalCashSales, totalCard: totalCardSales, totalUpi: totalUpiSales, totalOther: totalOtherSales, total: totalSales } = this._calcPaymentTotals(mergedPayments);
+      const { totalCash: totalCashSales, totalCard: totalCardSales, totalUpi: totalUpiSales, totalOther: totalOtherSales, total: totalPaymentCollection } = this._calcPaymentTotals(mergedPayments);
+      // totalSales = SUM(total_amount) of completed orders (source of truth)
+      const totalSales = parseFloat(os.total_sale) || 0;
       const shiftMakingCost = parseFloat(shiftCostRows[0]?.making_cost) || 0;
       const shiftProfit = parseFloat(shiftCostRows[0]?.profit) || 0;
       const shiftWastageCount = parseInt(shiftWastageRows[0]?.wastage_count) || 0;
@@ -2430,7 +2484,7 @@ const paymentService = {
 
       const openingCash = parseFloat(shift.opening_cash) || 0;
       const closingCash = parseFloat(shift.closing_cash) || 0;
-      const expectedAmount = openingCash + totalSales;
+      const expectedAmount = openingCash + totalPaymentCollection;
       const expectedCash = openingCash + totalCashSales;
       const cashVariance = shift.status === 'closed' ? (closingCash - expectedCash) : 0;
 
@@ -2451,7 +2505,8 @@ const paymentService = {
         expectedAmount: expectedAmount,
         expectedCash: expectedCash,
         cashVariance: cashVariance,
-        totalSales: totalSales,
+        totalSales: r2(totalSales),
+        totalCollection: r2(totalSales),
         totalOrders: parseInt(os.completed_orders) || 0,
         totalCashSales: totalCashSales,
         totalCardSales: totalCardSales,
@@ -2473,7 +2528,6 @@ const paymentService = {
         },
         collection: {
           totalCollection: r2(totalSales),
-          freshCollection: r2(totalSales - totalDueCollected),
           dueCollection: r2(totalDueCollected),
           paymentBreakdown: {
             cash: r2(totalCashSales),
@@ -2490,6 +2544,7 @@ const paymentService = {
         },
         makingCost: shiftMakingCost,
         profit: shiftProfit,
+        note: 'totalSales = SUM(total_amount) of completed orders. Due collection not added to sale/collection.',
         foodCostPercentage: totalSales > 0 ? parseFloat(((shiftMakingCost / totalSales) * 100).toFixed(2)) : 0,
         wastageCount: shiftWastageCount,
         wastageCost: shiftWastageCost,
@@ -2608,14 +2663,15 @@ const paymentService = {
     const orderParams = [shift.outlet_id, shiftStartTime, shiftEndTime];
     let orderFloorCond = '';
     if (floorId) {
-      paymentFloorCondition = ` AND (t.floor_id = ? OR (o.table_id IS NULL AND o.order_type != 'dine_in'))`;
-      paymentParams.push(floorId);
-      splitParams.push(floorId);
-      orderFloorCond = ` AND (floor_id = ? OR (floor_id IS NULL AND order_type IN ('takeaway', 'delivery')))`;
-      orderParams.push(floorId);
+      // Takeaway/delivery with no floor → assign to shift's cashier via created_by to avoid double-counting
+      paymentFloorCondition = ` AND (t.floor_id = ? OR (o.table_id IS NULL AND o.order_type != 'dine_in' AND o.created_by = ?))`;
+      paymentParams.push(floorId, shift.cashier_id);
+      splitParams.push(floorId, shift.cashier_id);
+      orderFloorCond = ` AND (floor_id = ? OR (floor_id IS NULL AND order_type IN ('takeaway', 'delivery') AND created_by = ?))`;
+      orderParams.push(floorId, shift.cashier_id);
     }
 
-    // Parallel: transactions + regularPayments + splitPayments + orderStats (all independent)
+    // Parallel: transactions + regularPayments(excl due) + splitPayments(excl due) + orderStats(only completed)
     const [transRes, regularRes, splitRes, orderStatsRes] = await Promise.all([
       pool.query(transQuery, transParams),
       pool.query(
@@ -2624,7 +2680,8 @@ const paymentService = {
          JOIN orders o ON p.order_id = o.id
          LEFT JOIN tables t ON o.table_id = t.id
          WHERE p.outlet_id = ? AND p.created_at >= ? AND p.created_at <= ? 
-           AND p.status = 'completed' AND p.payment_mode != 'split'${paymentFloorCondition}
+           AND p.status = 'completed' AND p.payment_mode != 'split'
+           AND COALESCE(p.is_due_collection, 0) = 0${paymentFloorCondition}
          GROUP BY p.payment_mode`,
         paymentParams
       ),
@@ -2635,27 +2692,28 @@ const paymentService = {
          JOIN orders o ON p.order_id = o.id
          LEFT JOIN tables t ON o.table_id = t.id
          WHERE p.outlet_id = ? AND p.created_at >= ? AND p.created_at <= ? 
-           AND p.status = 'completed' AND p.payment_mode = 'split'${paymentFloorCondition}
+           AND p.status = 'completed' AND p.payment_mode = 'split'
+           AND COALESCE(p.is_due_collection, 0) = 0${paymentFloorCondition}
          GROUP BY sp.payment_mode`,
         splitParams
       ),
       pool.query(
         `SELECT 
           COUNT(*) as total_orders,
-          SUM(CASE WHEN status IN ('completed', 'paid') THEN 1 ELSE 0 END) as completed_orders,
+          SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_orders,
           SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_orders,
-          SUM(CASE WHEN order_type = 'dine_in' AND status IN ('completed','paid') THEN 1 ELSE 0 END) as dine_in_orders,
-          SUM(CASE WHEN order_type = 'takeaway' AND status IN ('completed','paid') THEN 1 ELSE 0 END) as takeaway_orders,
-          SUM(CASE WHEN order_type = 'delivery' AND status IN ('completed','paid') THEN 1 ELSE 0 END) as delivery_orders,
-          SUM(CASE WHEN status IN ('completed', 'paid') THEN total_amount ELSE 0 END) as real_total_sales,
-          AVG(CASE WHEN status IN ('completed','paid') THEN total_amount ELSE NULL END) as avg_order_value,
-          MAX(CASE WHEN status IN ('completed','paid') THEN total_amount ELSE NULL END) as max_order_value,
-          MIN(CASE WHEN status IN ('completed','paid') AND total_amount > 0 THEN total_amount ELSE NULL END) as min_order_value,
-          COUNT(CASE WHEN is_nc = 1 THEN 1 END) as nc_orders,
-          SUM(CASE WHEN status != 'cancelled' THEN COALESCE(nc_amount, 0) ELSE 0 END) as nc_amount,
-          COUNT(CASE WHEN is_adjustment = 1 AND status != 'cancelled' THEN 1 END) as adjustment_count,
-          SUM(CASE WHEN status != 'cancelled' THEN COALESCE(adjustment_amount, 0) ELSE 0 END) as total_adjustment_amount,
-          SUM(CASE WHEN status != 'cancelled' THEN COALESCE(due_amount, 0) ELSE 0 END) as total_due_amount
+          SUM(CASE WHEN order_type = 'dine_in' AND status = 'completed' THEN 1 ELSE 0 END) as dine_in_orders,
+          SUM(CASE WHEN order_type = 'takeaway' AND status = 'completed' THEN 1 ELSE 0 END) as takeaway_orders,
+          SUM(CASE WHEN order_type = 'delivery' AND status = 'completed' THEN 1 ELSE 0 END) as delivery_orders,
+          SUM(CASE WHEN status = 'completed' THEN total_amount ELSE 0 END) as real_total_sales,
+          AVG(CASE WHEN status = 'completed' THEN total_amount ELSE NULL END) as avg_order_value,
+          MAX(CASE WHEN status = 'completed' THEN total_amount ELSE NULL END) as max_order_value,
+          MIN(CASE WHEN status = 'completed' AND total_amount > 0 THEN total_amount ELSE NULL END) as min_order_value,
+          COUNT(CASE WHEN is_nc = 1 AND status = 'completed' THEN 1 END) as nc_orders,
+          SUM(CASE WHEN status = 'completed' THEN COALESCE(nc_amount, 0) ELSE 0 END) as nc_amount,
+          COUNT(CASE WHEN is_adjustment = 1 AND status = 'completed' THEN 1 END) as adjustment_count,
+          SUM(CASE WHEN status = 'completed' THEN COALESCE(adjustment_amount, 0) ELSE 0 END) as total_adjustment_amount,
+          SUM(CASE WHEN status = 'completed' THEN COALESCE(due_amount, 0) ELSE 0 END) as total_due_amount
         FROM orders
         WHERE outlet_id = ? AND created_at >= ? AND created_at <= ?${orderFloorCond}`,
         orderParams
@@ -2666,15 +2724,18 @@ const paymentService = {
     const splitPayments = splitRes[0];
     const orderStats = orderStatsRes[0];
 
-    // Merge regular + split payments by mode to avoid duplicate entries (cash+cash, upi+upi)
+    // Merge regular + split payments by mode (due collections already excluded)
     const paymentBreakdown = this._mergePaymentsByMode(regularPayments, splitPayments);
     
     // Calculate payment totals from merged payment breakdown
-    const { totalCash: totalCashSales, totalCard: totalCardSales, totalUpi: totalUpiSales, totalOther: totalOtherSales, total: calculatedTotalSales } = this._calcPaymentTotals(paymentBreakdown);
+    const { totalCash: totalCashSales, totalCard: totalCardSales, totalUpi: totalUpiSales, totalOther: totalOtherSales, total: calculatedPaymentTotal } = this._calcPaymentTotals(paymentBreakdown);
+
+    // totalSales = SUM(total_amount) of completed orders (source of truth, not payments)
+    const totalSalesFromOrders = parseFloat(orderStats[0]?.real_total_sales) || 0;
 
     const openingCash = parseFloat(shift.opening_cash) || 0;
     const closingCash = parseFloat(shift.closing_cash) || 0;
-    const expectedAmount = openingCash + calculatedTotalSales;
+    const expectedAmount = openingCash + calculatedPaymentTotal;
     const expectedCash = openingCash + totalCashSales;
     // Calculate cash variance: actual closing cash vs expected cash (positive = over, negative = short)
     const cashVariance = shift.status === 'closed' ? (closingCash - expectedCash) : 0;
@@ -2682,16 +2743,16 @@ const paymentService = {
     // Use calculated values for accuracy
     const realTotalOrders = parseInt(orderStats[0]?.completed_orders) || 0;
 
-    logger.info(`Shift ${shiftId} detail calc - Time: ${shiftStartTime} to ${shiftEndTime}, Opening: ${openingCash}, Cash: ${totalCashSales}, UPI: ${totalUpiSales}, Card: ${totalCardSales}, Total: ${calculatedTotalSales}, Expected: ${expectedAmount}, ExpectedCash: ${expectedCash}, ClosingCash: ${closingCash}, Variance: ${cashVariance}`);
+    logger.info(`Shift ${shiftId} detail calc - Time: ${shiftStartTime} to ${shiftEndTime}, Opening: ${openingCash}, Cash: ${totalCashSales}, UPI: ${totalUpiSales}, Card: ${totalCardSales}, OrderSales: ${totalSalesFromOrders}, Expected: ${expectedAmount}, ExpectedCash: ${expectedCash}, ClosingCash: ${closingCash}, Variance: ${cashVariance}`);
 
     // Get staff activity: all users who created orders OR received payments during this shift
     // Includes takeaway/delivery order creators even if not floor-assigned
     let staffActivity = [];
     const floorCond = floorId
-      ? `AND (o.floor_id = ? OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`
+      ? `AND (o.floor_id = ? OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery') AND o.created_by = ${pool.escape(shift.cashier_id)}))`
       : '';
     const payFloorCond = floorId
-      ? `AND (t.floor_id = ? OR (o_x.table_id IS NULL AND o_x.order_type != 'dine_in'))`
+      ? `AND (t.floor_id = ? OR (o_x.table_id IS NULL AND o_x.order_type != 'dine_in' AND o_x.created_by = ${pool.escape(shift.cashier_id)}))`
       : '';
 
     // Build user-source subquery: all users who had activity during shift
@@ -2701,23 +2762,23 @@ const paymentService = {
       userSourceQuery = `
         SELECT DISTINCT created_by as uid FROM orders
         WHERE outlet_id = ? AND created_at >= ? AND created_at <= ?
-          AND (floor_id = ? OR (floor_id IS NULL AND order_type IN ('takeaway', 'delivery')))
+          AND (floor_id = ? OR (floor_id IS NULL AND order_type IN ('takeaway', 'delivery') AND created_by = ?))
         UNION
         SELECT DISTINCT billed_by FROM orders
         WHERE outlet_id = ? AND created_at >= ? AND created_at <= ? AND billed_by IS NOT NULL
-          AND (floor_id = ? OR (floor_id IS NULL AND order_type IN ('takeaway', 'delivery')))
+          AND (floor_id = ? OR (floor_id IS NULL AND order_type IN ('takeaway', 'delivery') AND created_by = ?))
         UNION
         SELECT DISTINCT p.received_by FROM payments p
         JOIN orders o ON p.order_id = o.id LEFT JOIN tables t ON o.table_id = t.id
         WHERE p.outlet_id = ? AND p.status = 'completed' AND p.created_at >= ? AND p.created_at <= ?
-          AND (t.floor_id = ? OR (o.table_id IS NULL AND o.order_type != 'dine_in'))
+          AND (t.floor_id = ? OR (o.table_id IS NULL AND o.order_type != 'dine_in' AND o.created_by = ?))
         UNION
         SELECT uf.user_id FROM user_floors uf
         WHERE uf.floor_id = ? AND uf.outlet_id = ? AND uf.is_active = 1`;
       userSourceParams.push(
-        shift.outlet_id, shiftStartTime, shiftEndTime, floorId,
-        shift.outlet_id, shiftStartTime, shiftEndTime, floorId,
-        shift.outlet_id, shiftStartTime, shiftEndTime, floorId,
+        shift.outlet_id, shiftStartTime, shiftEndTime, floorId, shift.cashier_id,
+        shift.outlet_id, shiftStartTime, shiftEndTime, floorId, shift.cashier_id,
+        shift.outlet_id, shiftStartTime, shiftEndTime, floorId, shift.cashier_id,
         floorId, shift.outlet_id
       );
     } else {
@@ -2840,8 +2901,8 @@ const paymentService = {
       WHERE o.outlet_id = ? AND o.created_at >= ? AND o.created_at <= ?`;
     const ordersParams = [shift.outlet_id, shiftStartTime, shiftEndTime];
     if (floorId) {
-      ordersQuery += ` AND (o.floor_id = ? OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`;
-      ordersParams.push(floorId);
+      ordersQuery += ` AND (o.floor_id = ? OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery') AND o.created_by = ?))`;
+      ordersParams.push(floorId, shift.cashier_id);
     }
     ordersQuery += ` ORDER BY o.created_at DESC`;
 
@@ -2860,8 +2921,8 @@ const paymentService = {
         AND (p.is_adjustment IS NULL OR p.is_adjustment = 0)`;
     const dueCollParams = [shift.outlet_id, shiftStartTime, shiftEndTime];
     if (floorId) {
-      dueCollQuery += ` AND (o.floor_id = ? OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`;
-      dueCollParams.push(floorId);
+      dueCollQuery += ` AND (o.floor_id = ? OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery') AND o.created_by = ?))`;
+      dueCollParams.push(floorId, shift.cashier_id);
     }
     dueCollQuery += ` ORDER BY cdt.created_at DESC`;
 
@@ -3036,8 +3097,8 @@ const paymentService = {
     // Cost/Profit
     const shiftMakingCost = parseFloat(costRows[0][0]?.making_cost) || 0;
     const shiftProfit = parseFloat(costRows[0][0]?.profit) || 0;
-    const shiftFoodCostPct = calculatedTotalSales > 0
-      ? parseFloat(((shiftMakingCost / calculatedTotalSales) * 100).toFixed(2)) : 0;
+    const shiftFoodCostPct = totalSalesFromOrders > 0
+      ? parseFloat(((shiftMakingCost / totalSalesFromOrders) * 100).toFixed(2)) : 0;
 
     // Wastage
     const shiftWastageCount = parseInt(wastageRows[0][0]?.wastage_count) || 0;
@@ -3072,7 +3133,7 @@ const paymentService = {
       card: totalCardSales,
       upi: totalUpiSales,
       other: totalOtherSales,
-      total: calculatedTotalSales
+      total: calculatedPaymentTotal
     };
 
     // Extract wallet and credit from merged payment breakdown for collection block
@@ -3097,8 +3158,9 @@ const paymentService = {
       expectedAmount: expectedAmount,       // Opening + ALL Sales
       expectedCash: expectedCash,           // Opening + Cash Sales only
       cashVariance: cashVariance,           // Calculated: closingCash - expectedCash
-      // Real-time calculated totals
-      totalSales: calculatedTotalSales,
+      // Real-time calculated totals (totalSales = SUM(total_amount) of completed orders)
+      totalSales: r2(totalSalesFromOrders),
+      totalCollection: r2(totalSalesFromOrders),
       totalOrders: realTotalOrders,
       totalCashSales: totalCashSales,
       totalCardSales: totalCardSales,
@@ -3138,9 +3200,9 @@ const paymentService = {
         adjustmentAmount: parseFloat(orderStats[0]?.total_adjustment_amount) || 0,
         totalDueAmount: parseFloat(orderStats[0]?.total_due_amount) || 0
       },
+      note: 'totalSales = SUM(total_amount) of completed orders. Due collection not added to sale/collection.',
       collection: {
-        totalCollection: r2(calculatedTotalSales),
-        freshCollection: r2(calculatedTotalSales - totalDueCollected),
+        totalCollection: r2(totalSalesFromOrders),
         dueCollection: r2(totalDueCollected),
         paymentBreakdown: {
           cash: r2(totalCashSales),
@@ -3251,12 +3313,12 @@ const paymentService = {
 
     const floorId = shift.floor_id;
 
-    // Build query parts — include takeaway/delivery orders for floor-based shifts
+    // Build query parts — takeaway/delivery with no floor → assign to shift's cashier to avoid double-counting
     let orderFloorCond = '';
     const orderParams = [shift.outlet_id, shiftStartTime, shiftEndTime];
     if (floorId) {
-      orderFloorCond = ` AND (floor_id = ? OR (floor_id IS NULL AND order_type IN ('takeaway', 'delivery')))`;
-      orderParams.push(floorId);
+      orderFloorCond = ` AND (floor_id = ? OR (floor_id IS NULL AND order_type IN ('takeaway', 'delivery') AND created_by = ?))`;
+      orderParams.push(floorId, shift.cashier_id);
     }
 
     let paymentFloorCondition = '';
@@ -3264,45 +3326,45 @@ const paymentService = {
     const splitParams = [shift.outlet_id, shiftStartTime, shiftEndTime];
     const dueCollParams = [shift.outlet_id, shiftStartTime, shiftEndTime];
     if (floorId) {
-      paymentFloorCondition = ` AND (t.floor_id = ? OR (o.table_id IS NULL AND o.order_type != 'dine_in'))`;
-      paymentParams.push(floorId);
-      splitParams.push(floorId);
-      dueCollParams.push(floorId);
+      paymentFloorCondition = ` AND (t.floor_id = ? OR (o.table_id IS NULL AND o.order_type != 'dine_in' AND o.created_by = ?))`;
+      paymentParams.push(floorId, shift.cashier_id);
+      splitParams.push(floorId, shift.cashier_id);
+      dueCollParams.push(floorId, shift.cashier_id);
     }
 
-    // Parallel: orderStats + regularPayments + splitPayments + dueCollection
-    let dueCollFloorCond = floorId
-      ? ` AND (o.floor_id = ? OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`
-      : '';
+    // Parallel: orderStats(only completed) + regularPayments(excl due) + splitPayments(excl due) + dueCollection
     const [orderStatsRes, regularPaymentsRes, splitPaymentsRes, dueCollRes] = await Promise.all([
       pool.query(
         `SELECT 
           COUNT(*) as total_orders,
-          SUM(CASE WHEN status IN ('completed', 'paid') THEN 1 ELSE 0 END) as completed_orders,
+          SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_orders,
           SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_orders,
-          SUM(CASE WHEN status IN ('completed', 'paid') THEN total_amount ELSE 0 END) as total_sales,
-          SUM(CASE WHEN order_type = 'dine_in' AND status IN ('completed', 'paid') THEN 1 ELSE 0 END) as dine_in_orders,
-          SUM(CASE WHEN order_type = 'takeaway' AND status IN ('completed', 'paid') THEN 1 ELSE 0 END) as takeaway_orders,
-          SUM(CASE WHEN order_type = 'delivery' AND status IN ('completed', 'paid') THEN 1 ELSE 0 END) as delivery_orders,
-          AVG(CASE WHEN status IN ('completed', 'paid') THEN total_amount ELSE NULL END) as avg_order_value,
-          MAX(CASE WHEN status IN ('completed', 'paid') THEN total_amount ELSE NULL END) as max_order_value,
-          MIN(CASE WHEN status IN ('completed', 'paid') AND total_amount > 0 THEN total_amount ELSE NULL END) as min_order_value,
-          COUNT(CASE WHEN is_nc = 1 THEN 1 END) as nc_orders,
-          SUM(CASE WHEN status != 'cancelled' THEN COALESCE(nc_amount, 0) ELSE 0 END) as nc_amount,
-          COUNT(CASE WHEN is_adjustment = 1 AND status != 'cancelled' THEN 1 END) as adjustment_count,
-          SUM(CASE WHEN status != 'cancelled' THEN COALESCE(adjustment_amount, 0) ELSE 0 END) as total_adjustment_amount,
-          SUM(CASE WHEN status != 'cancelled' THEN COALESCE(due_amount, 0) ELSE 0 END) as total_due_amount
+          SUM(CASE WHEN status = 'completed' THEN total_amount ELSE 0 END) as total_sales,
+          SUM(CASE WHEN order_type = 'dine_in' AND status = 'completed' THEN 1 ELSE 0 END) as dine_in_orders,
+          SUM(CASE WHEN order_type = 'takeaway' AND status = 'completed' THEN 1 ELSE 0 END) as takeaway_orders,
+          SUM(CASE WHEN order_type = 'delivery' AND status = 'completed' THEN 1 ELSE 0 END) as delivery_orders,
+          AVG(CASE WHEN status = 'completed' THEN total_amount ELSE NULL END) as avg_order_value,
+          MAX(CASE WHEN status = 'completed' THEN total_amount ELSE NULL END) as max_order_value,
+          MIN(CASE WHEN status = 'completed' AND total_amount > 0 THEN total_amount ELSE NULL END) as min_order_value,
+          COUNT(CASE WHEN is_nc = 1 AND status = 'completed' THEN 1 END) as nc_orders,
+          SUM(CASE WHEN status = 'completed' THEN COALESCE(nc_amount, 0) ELSE 0 END) as nc_amount,
+          COUNT(CASE WHEN is_adjustment = 1 AND status = 'completed' THEN 1 END) as adjustment_count,
+          SUM(CASE WHEN status = 'completed' THEN COALESCE(adjustment_amount, 0) ELSE 0 END) as total_adjustment_amount,
+          SUM(CASE WHEN status = 'completed' THEN COALESCE(due_amount, 0) ELSE 0 END) as total_due_amount,
+          SUM(CASE WHEN status = 'completed' THEN COALESCE(discount_amount, 0) ELSE 0 END) as total_discounts
         FROM orders
         WHERE outlet_id = ? AND created_at >= ? AND created_at <= ?${orderFloorCond}`,
         orderParams
       ),
+      // Payments EXCLUDING due collections (due already counted in total_amount at order completion)
       pool.query(
         `SELECT p.payment_mode, COUNT(*) as count, SUM(p.total_amount) as total
          FROM payments p
          JOIN orders o ON p.order_id = o.id
          LEFT JOIN tables t ON o.table_id = t.id
          WHERE p.outlet_id = ? AND p.created_at >= ? AND p.created_at <= ? 
-           AND p.status = 'completed' AND p.payment_mode != 'split'${paymentFloorCondition}
+           AND p.status = 'completed' AND p.payment_mode != 'split'
+           AND COALESCE(p.is_due_collection, 0) = 0${paymentFloorCondition}
          GROUP BY p.payment_mode`,
         paymentParams
       ),
@@ -3313,7 +3375,8 @@ const paymentService = {
          JOIN orders o ON p.order_id = o.id
          LEFT JOIN tables t ON o.table_id = t.id
          WHERE p.outlet_id = ? AND p.created_at >= ? AND p.created_at <= ? 
-           AND p.status = 'completed' AND p.payment_mode = 'split'${paymentFloorCondition}
+           AND p.status = 'completed' AND p.payment_mode = 'split'
+           AND COALESCE(p.is_due_collection, 0) = 0${paymentFloorCondition}
          GROUP BY sp.payment_mode`,
         splitParams
       ),
@@ -3332,23 +3395,23 @@ const paymentService = {
     const splitPayments = splitPaymentsRes[0];
     const totalDueCollected = parseFloat(dueCollRes[0][0]?.due_collected) || 0;
 
-    // Merge regular + split payments by mode to avoid duplicate entries
+    // Merge regular + split payments by mode (due collections already excluded)
     const paymentBreakdown = this._mergePaymentsByMode(regularPayments, splitPayments);
-    const { totalCash: totalCashSales, totalCard: totalCardSales, totalUpi: totalUpiSales, totalOther: totalOtherSales, total: totalPayments } = this._calcPaymentTotals(paymentBreakdown);
+    const { totalCash: totalCashSales, totalCard: totalCardSales, totalUpi: totalUpiSales, totalOther: totalOtherSales, total: totalPaymentCollection } = this._calcPaymentTotals(paymentBreakdown);
 
     // Calculate values
     const openingCash = parseFloat(shift.opening_cash) || 0;
     
-    // Total sales = all payments (cash + card + UPI)
-    const totalSalesAmount = totalPayments;
+    // totalSales = SUM(total_amount) of completed orders (source of truth)
+    const totalSalesAmount = parseFloat(orderStats[0]?.total_sales) || 0;
     
-    // Expected amount = Opening + ALL payments (cash + card + UPI)
-    const expectedAmount = openingCash + totalPayments;
+    // Expected amount = Opening + payment collection (excl due collections)
+    const expectedAmount = openingCash + totalPaymentCollection;
     
     // Expected cash in drawer = Opening + Cash Sales only
     const expectedCashInDrawer = openingCash + totalCashSales;
 
-    logger.info(`Shift ${shiftId} summary - Opening: ${openingCash}, Cash Sales: ${totalCashSales}, Total Sales: ${totalPayments}, Expected Amount: ${expectedAmount}, Expected Cash: ${expectedCashInDrawer}`);
+    logger.info(`Shift ${shiftId} summary - Opening: ${openingCash}, Cash Sales: ${totalCashSales}, OrderSales: ${totalSalesAmount}, PaymentTotal: ${totalPaymentCollection}, Expected: ${expectedAmount}, ExpectedCash: ${expectedCashInDrawer}`);
 
     return {
       id: shift.id,
@@ -3370,7 +3433,8 @@ const paymentService = {
       expectedCash: expectedCashInDrawer,      // Opening + Cash Sales only (expected in drawer)
       cashVariance: parseFloat(shift.cash_variance) || 0,
       // Real-time calculated values based on shift time range
-      totalSales: totalSalesAmount,  // All payments (cash + card + UPI etc.)
+      totalSales: r2(totalSalesAmount),  // SUM(total_amount) of completed orders
+      totalCollection: r2(totalSalesAmount),
       totalOrders: parseInt(orderStats[0]?.completed_orders) || 0,
       totalCashSales,
       totalCardSales,
@@ -3397,9 +3461,9 @@ const paymentService = {
         count: parseInt(p.count) || 0,
         total: parseFloat(p.total) || 0
       })),
+      note: 'totalSales = SUM(total_amount) of completed orders. Due collection not added to sale/collection.',
       collection: {
-        totalCollection: r2(totalPayments),
-        freshCollection: r2(totalPayments - totalDueCollected),
+        totalCollection: r2(totalSalesAmount),
         dueCollection: r2(totalDueCollected),
         paymentBreakdown: {
           cash: r2(totalCashSales),
@@ -3472,7 +3536,7 @@ const paymentService = {
         queryParams
       ),
       pool.query(
-        `SELECT ds.id, ds.outlet_id, ds.floor_id, ds.opening_time, ds.closing_time, ds.session_date, ds.status
+        `SELECT ds.id, ds.outlet_id, ds.floor_id, ds.cashier_id, ds.opening_time, ds.closing_time, ds.session_date, ds.status
          FROM day_sessions ds
          WHERE ${whereClause}`,
         queryParams
@@ -3511,41 +3575,45 @@ const paymentService = {
         else if (s.status === 'open') { const n = new Date(); end = fdt(n); }
         else { end = `${fld(s.session_date)} 23:59:59`; }
 
+        // Takeaway/delivery with no floor → assign to shift's cashier to avoid double-counting
         const flCond = s.floor_id
-          ? ` AND (floor_id = ? OR (floor_id IS NULL AND order_type IN ('takeaway','delivery')))`
+          ? ` AND (floor_id = ? OR (floor_id IS NULL AND order_type IN ('takeaway','delivery') AND created_by = ?))`
           : '';
-        const flParams = s.floor_id ? [s.floor_id] : [];
+        const flParams = s.floor_id ? [s.floor_id, s.cashier_id] : [];
         const payFlCond = s.floor_id
-          ? ` AND (t.floor_id = ? OR (o.table_id IS NULL AND o.order_type != 'dine_in'))`
+          ? ` AND (t.floor_id = ? OR (o.table_id IS NULL AND o.order_type != 'dine_in' AND o.created_by = ?))`
           : '';
-        const payFlParams = s.floor_id ? [s.floor_id] : [];
+        const payFlParams = s.floor_id ? [s.floor_id, s.cashier_id] : [];
 
-        // 4 parallel queries per shift: orderStats, regularPay, splitPay, dueColl
+        // 4 parallel queries per shift: orderStats(only completed), regularPay(excl due), splitPay(excl due), dueColl
         const [osRes, rpRes, spRes, dcRes] = await Promise.all([
           pool.query(
             `SELECT 
-              SUM(CASE WHEN status IN ('completed','paid') THEN 1 ELSE 0 END) as completed,
+              SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
               SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled,
-              SUM(CASE WHEN order_type='dine_in' AND status IN ('completed','paid') THEN 1 ELSE 0 END) as dine_in,
-              SUM(CASE WHEN order_type='takeaway' AND status IN ('completed','paid') THEN 1 ELSE 0 END) as takeaway,
-              SUM(CASE WHEN order_type='delivery' AND status IN ('completed','paid') THEN 1 ELSE 0 END) as delivery,
-              SUM(CASE WHEN status!='cancelled' THEN COALESCE(discount_amount,0) ELSE 0 END) as discounts,
-              SUM(CASE WHEN status!='cancelled' THEN COALESCE(nc_amount,0) ELSE 0 END) as nc_amt,
-              SUM(CASE WHEN status!='cancelled' THEN COALESCE(adjustment_amount,0) ELSE 0 END) as adj_amt
+              SUM(CASE WHEN order_type='dine_in' AND status = 'completed' THEN 1 ELSE 0 END) as dine_in,
+              SUM(CASE WHEN order_type='takeaway' AND status = 'completed' THEN 1 ELSE 0 END) as takeaway,
+              SUM(CASE WHEN order_type='delivery' AND status = 'completed' THEN 1 ELSE 0 END) as delivery,
+              SUM(CASE WHEN status = 'completed' THEN COALESCE(total_amount,0) ELSE 0 END) as total_sale,
+              SUM(CASE WHEN status = 'completed' THEN COALESCE(discount_amount,0) ELSE 0 END) as discounts,
+              SUM(CASE WHEN status = 'completed' THEN COALESCE(nc_amount,0) ELSE 0 END) as nc_amt,
+              SUM(CASE WHEN status = 'completed' THEN COALESCE(adjustment_amount,0) ELSE 0 END) as adj_amt
              FROM orders WHERE outlet_id=? AND created_at>=? AND created_at<=?${flCond}`,
             [s.outlet_id, start, end, ...flParams]
           ),
           pool.query(
             `SELECT p.payment_mode, SUM(p.total_amount) as total
              FROM payments p JOIN orders o ON p.order_id=o.id LEFT JOIN tables t ON o.table_id=t.id
-             WHERE p.outlet_id=? AND p.created_at>=? AND p.created_at<=? AND p.status='completed' AND p.payment_mode!='split'${payFlCond}
+             WHERE p.outlet_id=? AND p.created_at>=? AND p.created_at<=? AND p.status='completed' AND p.payment_mode!='split'
+               AND COALESCE(p.is_due_collection,0)=0${payFlCond}
              GROUP BY p.payment_mode`,
             [s.outlet_id, start, end, ...payFlParams]
           ),
           pool.query(
             `SELECT sp.payment_mode, SUM(sp.amount) as total
              FROM split_payments sp JOIN payments p ON sp.payment_id=p.id JOIN orders o ON p.order_id=o.id LEFT JOIN tables t ON o.table_id=t.id
-             WHERE p.outlet_id=? AND p.created_at>=? AND p.created_at<=? AND p.status='completed' AND p.payment_mode='split'${payFlCond}
+             WHERE p.outlet_id=? AND p.created_at>=? AND p.created_at<=? AND p.status='completed' AND p.payment_mode='split'
+               AND COALESCE(p.is_due_collection,0)=0${payFlCond}
              GROUP BY sp.payment_mode`,
             [s.outlet_id, start, end, ...payFlParams]
           ),
@@ -3561,8 +3629,9 @@ const paymentService = {
         const merged = this._mergePaymentsByMode(rpRes[0], spRes[0]);
         const { totalCash, totalCard, totalUpi, total } = this._calcPaymentTotals(merged);
         const dc = parseFloat(dcRes[0][0]?.dc) || 0;
+        const shiftSale = parseFloat(os0.total_sale) || 0;
 
-        grandTotalSales += total;
+        grandTotalSales += shiftSale;
         grandCompletedOrders += parseInt(os0.completed) || 0;
         grandCancelledOrders += parseInt(os0.cancelled) || 0;
         grandDineIn += parseInt(os0.dine_in) || 0;
@@ -3576,7 +3645,7 @@ const paymentService = {
         grandNC += parseFloat(os0.nc_amt) || 0;
         grandAdj += parseFloat(os0.adj_amt) || 0;
         grandTotalOrders += (parseInt(os0.completed) || 0);
-        perShiftSales.push(total);
+        perShiftSales.push(shiftSale);
       }));
     }
 
@@ -3608,9 +3677,9 @@ const paymentService = {
         takeawayOrders: grandTakeaway,
         deliveryOrders: grandDelivery
       },
+      note: 'totalSales = SUM(total_amount) of completed orders. Due collection not added to sale/collection.',
       collection: {
         totalCollection: r2(grandTotalSales),
-        freshCollection: r2(grandTotalSales - grandDueCollected),
         dueCollection: r2(grandDueCollected),
         paymentBreakdown: {
           cash: r2(grandCash),
