@@ -1,0 +1,250 @@
+﻿Grand Total col: "Grand Total (Γé╣)"
+Total rows: 68
+
+=== EMPTY Sub Order Type rows ===
+  #3298 | OrderType:  | Pay: Card | GrandTotal: 1194 | Created:  | Items: 
+  #3298 | OrderType:  | Pay: Cash | GrandTotal: 3000 | Created:  | Items: 
+  #3298 | OrderType:  | Pay: Not Paid | GrandTotal: 0 | Created:  | Items: 
+  #3294 | OrderType:  | Pay: Other [UPI] | GrandTotal: 500 | Created:  | Items: 
+  #3294 | OrderType:  | Pay: Cash | GrandTotal: 66 | Created:  | Items: 
+  #3294 | OrderType:  | Pay: Not Paid | GrandTotal: 0 | Created:  | Items: 
+  #3274 | OrderType:  | Pay: Other [UPI] | GrandTotal: 50 | Created:  | Items: 
+  #3274 | OrderType:  | Pay: Cash | GrandTotal: 320 | Created:  | Items: 
+  #3274 | OrderType:  | Pay: Not Paid | GrandTotal: 0 | Created:  | Items: 
+  #3266 | OrderType:  | Pay: Other [UPI] | GrandTotal: 103 | Created:  | Items: 
+  #3266 | OrderType:  | Pay: Cash | GrandTotal: 200 | Created:  | Items: 
+  #3266 | OrderType:  | Pay: Not Paid | GrandTotal: 0 | Created:  | Items: 
+
+=== Part Payment rows ===
+  #3298 | SubType: Resturant | GrandTotal: 0 | MyAmt: 4962 | PayDesc: Total : 4194.00 | Created: 8 Apr 2026 23:48:02
+  #3294 | SubType: BAR | GrandTotal: 0 | MyAmt: 480 | PayDesc: Total : 566.00 | Created: 8 Apr 2026 23:25:23
+  #3274 | SubType: BAR | GrandTotal: 0 | MyAmt: 369 | PayDesc: Total : 370.00 | Created: 8 Apr 2026 21:28:22
+  #3266 | SubType: Roof Top | GrandTotal: 0 | MyAmt: 289 | PayDesc: Total : 303.00 | Created: 8 Apr 2026 20:19:33
+
+=== Not Paid rows ===
+  #3298 | SubType:  | OrderType:  | GrandTotal: 0 | Status:  | Created: 
+  #3294 | SubType:  | OrderType:  | GrandTotal: 0 | Status:  | Created: 
+  #3274 | SubType:  | OrderType:  | GrandTotal: 0 | Status:  | Created: 
+  #3266 | SubType:  | OrderType:  | GrandTotal: 0 | Status:  | Created: 
+
+=== Pick Up / Delivery rows ===
+  #3289 | OrderType: Delivery | SubType: Swiggy | Pay: Online | GrandTotal: 205 | Created: 8 Apr 2026 23:07:28
+  #3288 | OrderType: Delivery | SubType: Zomato | Pay: Online | GrandTotal: 230 | Created: 8 Apr 2026 23:06:09
+  #3268 | OrderType: Pick Up | SubType: Pick Up | Pay: Cash | GrandTotal: 470 | Created: 8 Apr 2026 21:09:28
+  #3263 | OrderType: Delivery | SubType: Zomato | Pay: Online | GrandTotal: 429 | Created: 8 Apr 2026 20:01:18
+  #3261 | OrderType: Delivery | SubType: Swiggy | Pay: Online | GrandTotal: 1405 | Created: 8 Apr 2026 18:56:44
+  #3248 | OrderType: Delivery | SubType: Swiggy | Pay: Online | GrandTotal: 394 | Created: 8 Apr 2026 12:01:15
+
+=== Zomato / Swiggy / Online rows ===
+  #3289 | OrderType: Delivery | SubType: Swiggy | Pay: Online | GrandTotal: 205
+  #3288 | OrderType: Delivery | SubType: Zomato | Pay: Online | GrandTotal: 230
+  #3263 | OrderType: Delivery | SubType: Zomato | Pay: Online | GrandTotal: 429
+  #3261 | OrderType: Delivery | SubType: Swiggy | Pay: Online | GrandTotal: 1405
+  #3248 | OrderType: Delivery | SubType: Swiggy | Pay: Online | GrandTotal: 394
+
+=== ITEMS ANALYSIS ===
+Unique item names found in Excel: 116
+  - Aaj Ki Sabzi
+  - Aloo-pyaaz Paratha
+  - Bacardi Mango Chilli (Large 60 ML)
+  - Bhuna Mutton (Single)
+  - Blackpepper Chicken
+  - Blender'S Pride (Large 60 ML)
+  - Blender'S Pride (Small 30 ML)
+  - Blue Lagoon
+  - Bread Basket
+  - Brownie With Ice Cream
+  - Budweiser Magnum 650ml
+  - Budweiser Magnum Cane
+  - Butter Chicken (Family)
+  - Butter Chicken (Single)
+  - Butter Naan
+  - Chana Roast
+  - Chicken 65
+  - Chicken Bagheli (Single)
+  - Chicken Biriyani
+  - Chicken Hakka Noodles
+  - Chicken Hot N Sour Soup
+  - Chicken Lemon Coriander Soup
+  - Chicken Manchurian Dry
+  - Chicken Spring Roll
+  - Chicken Sweet Corn Soup
+  - Chilli Chicken Dry
+  - Chilli Chicken Gravy
+  - Chilli Paneer Dry
+  - Chilli Paneer Gravy
+  - Chivas Regal 18 Year (Large 60 ML)
+  - Cigarette Big
+  - Classic Margherita Pizza
+  - Classic Veg Burger
+  - Coffee
+  - Cold Coffee With Ice Cream
+  - Crispy Chicken Salt And Pepper
+  - Crispy Corn Salt & Pepper
+  - Crispy Honey Chilli Potato
+  - Dal Fry
+  - Dal Tadka
+  - Egg Curry
+  - Egg Masala
+  - Garlic Naan
+  - Green Salad
+  - Gulab Jamun
+  - Jeera Rice
+  - Kadhai Paneer
+  - Kaju Curry
+  - Kingfisher Strong 650ml
+  - Kingfisher Ultra 650ml
+  - Kuchumber Salad
+  - Laccha Paratha
+  - Manchow Soup
+  - Masala Papad
+  - Masala Peanut
+  - Methi Matar Malai
+  - Mineral Water
+  - Mix Veg Raita
+  - Mushroom Masala
+  - Mushroom Paneer
+  - Mutton Kadhai (Family)
+  - Old Monk (Large 60 ML)
+  - Old Monk (Small 30 ML)
+  - Omlette
+  - Onion Salad
+  - Orange Splash
+  - Oreo Shake
+  - Paneer & Corn Capsicum Pizza
+  - Paneer 65
+  - Paneer Butter Masala
+  - Paneer Jungali
+  - Paneer Malai Tikka
+  - Paneer Noodles
+  - Paneer Pahadi Tikka
+  - Paneer Parda
+  - Paneer Punjabi
+  - Papad Roasted
+  - Peri Peri Paneer Tikka Pizza
+  - Plain Rice
+  - Rahra Chicken (Family)
+  - Rasmalai
+  - Red Bull 330 Ml
+  - Red Bull Mojito
+  - Red Label (Large 60 ML)
+  - Royal Stag (Large 60 ML)
+  - Shahi Paneer
+  - Signature (30 ML)
+  - Signature (60 ML)
+  - Stuffed Kulcha
+  - Tandoori Chicken (Half)
+  - Tandoori Roti
+  - Tandoori Roti Butter
+  - Triple Fried Rice
+  - Veg Biriyani
+  - Veg Chilli Garlic Fried Rice
+  - Veg Hakka Noodles
+  - Veg Kothe
+  - Veg Lollypop
+  - Veg Noodles
+  - Veg Schezwan Noodles
+  - Veg Spring Roll
+  - Virgin Mojito
+  - Water Bottle 1Lt.
+  - b pride reserve 750 ml
+  - butter coriander chicken
+  - butter coriander paneer
+  - chicken Afgani k/b
+  - chicken nurani
+  - chicken nurani k/b
+  - french fies
+  - paneer achari tika
+  - paneer lababdar
+  - paneer rajwadi
+  - peri peri french fries
+  - pineapple peech
+  - the City view SPL chicken
+
+=== order_items TABLE COLUMNS ===
+  id | bigint(20) unsigned | NOT NULL | Default: null
+  order_id | bigint(20) unsigned | NOT NULL | Default: null
+  item_id | bigint(20) unsigned | NOT NULL | Default: null
+  variant_id | bigint(20) unsigned | NULL | Default: null
+  item_name | varchar(150) | NOT NULL | Default: null
+  variant_name | varchar(50) | NULL | Default: null
+  item_type | enum('veg','non_veg','egg','vegan') | NULL | Default: null
+  quantity | decimal(10,3) | NOT NULL | Default: 1.000
+  weight | varchar(50) | NULL | Default: null
+  unit_price | decimal(10,2) | NOT NULL | Default: null
+  base_price | decimal(10,2) | NOT NULL | Default: null
+  discount_amount | decimal(10,2) | NULL | Default: 0.00
+  tax_amount | decimal(10,2) | NULL | Default: 0.00
+  total_price | decimal(10,2) | NOT NULL | Default: null
+  tax_group_id | bigint(20) unsigned | NULL | Default: null
+  tax_details | longtext | NULL | Default: null
+  price_rule_applied | longtext | NULL | Default: null
+  special_instructions | text | NULL | Default: null
+  status | enum('pending','sent_to_kitchen','preparing','ready','served','cancelled') | NULL | Default: pending
+  kot_id | bigint(20) unsigned | NULL | Default: null
+  is_complimentary | tinyint(1) | NULL | Default: 0
+  complimentary_reason | varchar(255) | NULL | Default: null
+  cancelled_by | bigint(20) unsigned | NULL | Default: null
+  cancelled_at | datetime | NULL | Default: null
+  cancel_reason | varchar(255) | NULL | Default: null
+  cancel_quantity | decimal(10,3) | NULL | Default: 0.000
+  created_by | bigint(20) unsigned | NULL | Default: null
+  created_at | datetime | NULL | Default: current_timestamp()
+  updated_at | datetime | NULL | Default: current_timestamp()
+  is_nc | tinyint(1) | NULL | Default: 0
+  nc_reason_id | bigint(20) unsigned | NULL | Default: null
+  nc_reason | varchar(255) | NULL | Default: null
+  nc_amount | decimal(12,2) | NULL | Default: 0.00
+  nc_by | bigint(20) unsigned | NULL | Default: null
+  nc_at | datetime | NULL | Default: null
+  stock_deducted | tinyint(1) | NULL | Default: 0
+  is_open_item | tinyint(1) | NULL | Default: 0
+
+=== Item/Menu/Product related tables ===
+  channel_menu_mapping
+  menu_media
+  menu_qr_codes
+  user_menu_access
+  production_inputs
+  production_recipe_ingredients
+  production_recipes
+  productions
+  combo_items
+  inventory_items
+  item_addon_groups
+  item_counters
+  item_floors
+  item_kitchen_stations
+  item_rules
+  item_sales
+  item_sections
+  item_time_slots
+  items
+  kot_items
+  order_item_addons
+  order_item_costs
+  order_item_ingredients
+  order_items
+  purchase_items
+  purchase_order_items
+  top_selling_items
+node : Error: Table 'restro.menu_items' doesn't exist
+At line:1 char:1
++ node tests/inspect-apr8-v2.js 2>&1 | Out-File -FilePath tests/inspect ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Error: Table 'r...' doesn't exist:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+    at PromisePool.query (E:\restro\node_modules\mysql2\lib\promise\pool.js:36:22)
+    at main (E:\restro\tests\inspect-apr8-v2.js:108:34)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5) {
+  code: 'ER_NO_SUCH_TABLE',
+  errno: 1146,
+  sql: 'SELECT mi.id, mi.name, mi.category_id, mi.price, mc.name as category_name\n' +
+    '     FROM menu_items mi \n' +
+    '     LEFT JOIN menu_categories mc ON mi.category_id = mc.id\n' +
+    '     WHERE mi.outlet_id = 46 AND mi.is_active = 1\n' +
+    '     ORDER BY mi.name',
+  sqlState: '42S02',
+  sqlMessage: "Table 'restro.menu_items' doesn't exist"
+}

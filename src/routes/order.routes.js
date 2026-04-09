@@ -446,6 +446,47 @@ router.post('/cash-drawer/:outletId/close', validate(orderValidation.closeCashDr
  */
 router.get('/cash-drawer/:outletId/status', orderController.getCashDrawerStatus);
 
+// ========================
+// OUTSIDE COLLECTIONS
+// ========================
+
+/**
+ * @route   POST /api/v1/orders/outside-collections/:outletId
+ * @desc    Add an outside collection (Party Hall, Kitty Party, etc.)
+ * @access  Private (cashier, manager, admin)
+ * @body    amount, paymentMode, reason, description, collectionDate, floorId
+ */
+router.post('/outside-collections/:outletId', authorize('super_admin', 'admin', 'manager', 'cashier'), orderController.addOutsideCollection);
+
+/**
+ * @route   GET /api/v1/orders/outside-collections/:outletId
+ * @desc    List outside collections with filters
+ * @access  Private (cashier, manager, admin)
+ * @query   startDate, endDate, floorId, collectedBy, status, page, limit
+ */
+router.get('/outside-collections/:outletId', authorize('super_admin', 'admin', 'manager', 'cashier'), orderController.getOutsideCollections);
+
+/**
+ * @route   GET /api/v1/orders/outside-collections/:outletId/:id
+ * @desc    Get single outside collection
+ * @access  Private (cashier, manager, admin)
+ */
+router.get('/outside-collections/:outletId/:id', authorize('super_admin', 'admin', 'manager', 'cashier'), orderController.getOutsideCollectionById);
+
+/**
+ * @route   PUT /api/v1/orders/outside-collections/:outletId/:id
+ * @desc    Update an outside collection
+ * @access  Private (manager, admin)
+ */
+router.put('/outside-collections/:outletId/:id', authorize('super_admin', 'admin', 'manager'), orderController.updateOutsideCollection);
+
+/**
+ * @route   DELETE /api/v1/orders/outside-collections/:outletId/:id
+ * @desc    Cancel (soft-delete) an outside collection
+ * @access  Private (manager, admin)
+ */
+router.delete('/outside-collections/:outletId/:id', authorize('super_admin', 'admin', 'manager'), orderController.cancelOutsideCollection);
+
 /**
  * @route   GET /api/v1/orders/shifts/:outletId/floors
  * @desc    Get all floor shifts status for an outlet

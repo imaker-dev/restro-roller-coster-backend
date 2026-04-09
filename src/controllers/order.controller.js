@@ -14,6 +14,7 @@ const logger = require('../utils/logger');
 const csvExport = require('../utils/csv-export');
 
 const costSnapshotService = require('../services/costSnapshot.service');
+const outsideCollectionService = require('../services/outsideCollection.service');
 
 const orderController = {
   // ========================
@@ -792,7 +793,8 @@ const orderController = {
       const status = await paymentService.getCashDrawerStatus(
         outletId,
         floorId ? parseInt(floorId) : null,
-        req.user.userId
+        req.user.userId,
+        req.user.roles || []
       );
       res.json({ success: true, data: status });
     } catch (error) {
@@ -839,7 +841,12 @@ const orderController = {
     try {
       const { outletId } = req.params;
       const floorIds = await getUserFloorIds(req.user.userId, outletId);
-      const dashboard = await reportsService.getLiveDashboard(outletId, floorIds);
+      const userRoles = req.user.roles || [];
+      const isCashierOnly = userRoles.length > 0 && !userRoles.some(r => ['admin', 'super_admin', 'manager', 'owner'].includes(r));
+      const dashboard = await reportsService.getLiveDashboard(outletId, floorIds, {
+        cashierId: isCashierOnly ? req.user.userId : null,
+        isCashierOnly
+      });
       res.json({ success: true, data: dashboard });
     } catch (error) {
       logger.error('Get live dashboard error:', error);
@@ -852,7 +859,12 @@ const orderController = {
       const { outletId } = req.params;
       const { startDate, endDate } = req.query;
       const floorIds = await getUserFloorIds(req.user.userId, outletId);
-      const report = await reportsService.getDailySalesReport(outletId, startDate, endDate, floorIds);
+      const userRoles = req.user.roles || [];
+      const isCashierOnly = userRoles.length > 0 && !userRoles.some(r => ['admin', 'super_admin', 'manager', 'owner'].includes(r));
+      const report = await reportsService.getDailySalesReport(outletId, startDate, endDate, floorIds, {
+        cashierId: isCashierOnly ? req.user.userId : null,
+        isCashierOnly
+      });
       res.json({ success: true, data: report });
     } catch (error) {
       logger.error('Get daily sales report error:', error);
@@ -2075,6 +2087,122 @@ const orderController = {
     } catch (error) {
       logger.error('Get order costs error:', error);
       res.status(500).json({ success: false, message: error.message });
+    }
+  },
+
+  // ========================
+  // OUTSIDE COLLECTIONS
+  // ========================
+
+  /**
+   * POST /api/v1/orders/outside-collections/:outletId
+   * Add an outside collection
+   */
+  async addOutsideCollection(req, res) {
+    try {
+      const { outletId } = req.params;
+      const { amount, paymentMode, reason, description, collectionDate, floorId } = req.body;
+      const result = await outsideCollectionService.addCollection({
+        outletId: parseInt(outletId),
+        collectedBy: req.user.userId,
+        amount: parseFloat(amount),
+        paymentMode: paymentMode || 'cash',
+        reason,
+        description: description || null,
+        collectionDate: collectionDate || null,
+        floorId: floorId ? parseInt(floorId) : null
+      });
+      res.status(201).json({ success: true, message: 'Outside collection added', data: result });
+    } catch (error) {
+      logger.error('Add outside collection error:', error);
+      res.status(error.message.includes('required') ? 400 : 500).json({ success: false, message: error.message });
+    }
+  },
+
+  /**
+   * GET /api/v1/orders/outside-collections/:outletId
+   * List outside collections with filters
+   */
+  async getOutsideCollections(req, res) {
+    try {
+      const { outletId } = req.params;
+      const { startDate, endDate, floorId, collectedBy, status, page, limit } = req.query;
+
+      // Cashiers only see their own collections
+      const isCashier = req.user.roles?.includes('cashier');
+      const effectiveCollectedBy = isCashier ? req.user.userId : (collectedBy ? parseInt(collectedBy) : null);
+
+      const result = await outsideCollectionService.getCollections({
+        outletId: parseInt(outletId),
+        startDate: startDate || null,
+        endDate: endDate || null,
+        floorId: floorId ? parseInt(floorId) : null,
+        collectedBy: effectiveCollectedBy,
+        status: status || 'active',
+        page: parseInt(page) || 1,
+        limit: parseInt(limit) || 20
+      });
+      res.json({ success: true, data: result });
+    } catch (error) {
+      logger.error('Get outside collections error:', error);
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
+
+  /**
+   * GET /api/v1/orders/outside-collections/:outletId/:id
+   * Get single outside collection
+   */
+  async getOutsideCollectionById(req, res) {
+    try {
+      const { id } = req.params;
+      const result = await outsideCollectionService.getCollectionById(parseInt(id));
+      res.json({ success: true, data: result });
+    } catch (error) {
+      logger.error('Get outside collection error:', error);
+      const status = error.message.includes('not found') ? 404 : 500;
+      res.status(status).json({ success: false, message: error.message });
+    }
+  },
+
+  /**
+   * PUT /api/v1/orders/outside-collections/:outletId/:id
+   * Update an outside collection
+   */
+  async updateOutsideCollection(req, res) {
+    try {
+      const { id } = req.params;
+      const result = await outsideCollectionService.updateCollection(
+        parseInt(id),
+        req.body,
+        req.user.userId
+      );
+      res.json({ success: true, message: 'Outside collection updated', data: result });
+    } catch (error) {
+      logger.error('Update outside collection error:', error);
+      const status = error.message.includes('not found') ? 404 : error.message.includes('Cannot') ? 400 : 500;
+      res.status(status).json({ success: false, message: error.message });
+    }
+  },
+
+  /**
+   * DELETE /api/v1/orders/outside-collections/:outletId/:id
+   * Cancel (soft-delete) an outside collection
+   */
+  async cancelOutsideCollection(req, res) {
+    try {
+      const { id } = req.params;
+      const { cancelReason } = req.body;
+      const result = await outsideCollectionService.cancelCollection(
+        parseInt(id),
+        req.user.userId,
+        cancelReason || null
+      );
+      res.json({ success: true, message: 'Outside collection cancelled', data: result });
+    } catch (error) {
+      logger.error('Cancel outside collection error:', error);
+      const status = error.message.includes('not found') ? 404 : error.message.includes('already') ? 400 : 500;
+      res.status(status).json({ success: false, message: error.message });
     }
   }
 };

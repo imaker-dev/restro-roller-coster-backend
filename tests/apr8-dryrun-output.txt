@@ -1,0 +1,110 @@
+﻿Excel: 68 rows, 56 unique orders
+Excluded (Zomato/Swiggy/Online): 5 orders [3248, 3261, 3263, 3288, 3289]
+Importable: 51 orders
+Mode: ≡ƒöì DRY RUN
+
+Starting: ORD2604080001, PAY2604080001
+
+ΓÜá∩╕Å VALIDATION ERRORS:
+  Γ¥î Order #3252: Amount mismatch! calc=563 vs grand=560 (diff=3)
+  Γ¥î Order #3265: Amount mismatch! calc=555 vs grand=600 (diff=-45)
+  Γ¥î Order #3267: Amount mismatch! calc=302 vs grand=300 (diff=2)
+  Γ¥î Order #3268: Amount mismatch! calc=472 vs grand=470 (diff=2)
+  Γ¥î Order #3271: Amount mismatch! calc=1804 vs grand=1850 (diff=-46)
+  Γ¥î Order #3277: Amount mismatch! calc=434 vs grand=450 (diff=-16)
+  Γ¥î Order #3281: Amount mismatch! calc=2532 vs grand=2530 (diff=2)
+
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+  ORDERS TO IMPORT
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+  Total orders: 51
+  Total Sale:     Rs 77019
+  Total Discount: Rs 4588.16
+  Total Tax:      Rs 4427.88
+
+  By Floor:
+    Resturant       15 orders   Rs 27205
+    BAR             23 orders   Rs 37044
+    Roof Top        12 orders   Rs 12300
+    Pick Up         1 orders   Rs 470
+
+  By Payment:
+    upi             27 orders   Rs 35069
+    cash            16 orders   Rs 28354
+    Split           4 orders   Rs 5433
+    card            1 orders   Rs 6290
+    Due             3 orders   Rs 1873
+
+  ΓÜá∩╕Å Unmatched items (14) ΓÇö will be created as open items:
+    - Bacardi Mango Chilli (Large 60 ML)
+    - b pride reserve 750 ml
+    - butter coriander chicken
+    - butter coriander paneer
+    - chicken Afgani k/b
+    - chicken nurani
+    - chicken nurani k/b
+    - french fies
+    - paneer achari tika
+    - paneer lababdar
+    - paneer rajwadi
+    - peri peri french fries
+    - pineapple peech
+    - the City view SPL chicken
+
+  Order list:
+    ORD2604080001 | Excel#3249 | A6     | Rs   2410 | upi             | completed | 2026-04-08 14:27:04 | 4 items
+    ORD2604080002 | Excel#3250 | A8     | Rs    300 | cash            | completed | 2026-04-08 14:54:30 | 2 items
+    ORD2604080003 | Excel#3251 | A5     | Rs   1369 | upi             | completed | 2026-04-08 14:56:37 | 6 items
+    ORD2604080004 | Excel#3252 | A6     | Rs    560 | cash            | completed | 2026-04-08 16:04:46 | 4 items
+    ORD2604080005 | Excel#3253 | BAR20  | Rs    387 | cash            | completed | 2026-04-08 16:05:00 | 2 items
+    ORD2604080006 | Excel#3254 | BAR8   | Rs   1323 | upi             | completed | 2026-04-08 16:05:28 | 2 items
+    ORD2604080007 | Excel#3255 | BAR1   | Rs   2064 | upi             | completed | 2026-04-08 16:38:49 | 2 items
+    ORD2604080008 | Excel#3256 | B16    | Rs    501 | upi             | completed | 2026-04-08 17:01:56 | 3 items
+    ORD2604080009 | Excel#3257 | BAR15  | Rs   1371 | upi             | completed | 2026-04-08 17:03:08 | 3 items
+    ORD2604080010 | Excel#3258 | BAR5   | Rs   1229 | cash            | completed | 2026-04-08 17:16:14 | 5 items
+    ORD2604080011 | Excel#3259 | B21    | Rs    103 | upi             | completed | 2026-04-08 17:45:53 | 1 items
+    ORD2604080012 | Excel#3260 | A5     | Rs    878 | upi             | completed | 2026-04-08 18:52:30 | 4 items
+    ORD2604080013 | Excel#3262 | A7     | Rs    469 | cash            | completed | 2026-04-08 19:24:17 | 3 items
+    ORD2604080014 | Excel#3264 | B21    | Rs    510 | upi             | completed | 2026-04-08 20:04:02 | 4 items
+    ORD2604080015 | Excel#3265 | BAR1   | Rs    600 | upi             | completed | 2026-04-08 20:06:17 | 2 items
+    ORD2604080016 | Excel#3266 | B15    | Rs    303 | SPLIT(upi+cash) | completed | 2026-04-08 20:19:33 | 1 items
+    ORD2604080017 | Excel#3267 | A4     | Rs    300 | cash            | completed | 2026-04-08 20:31:44 | 2 items
+    ORD2604080018 | Excel#3268 | PICKUP | Rs    470 | cash            | completed | 2026-04-08 21:09:28 | 1 items
+    ORD2604080019 | Excel#3269 | B18    | Rs    878 | upi             | completed | 2026-04-08 21:16:26 | 4 items
+    ORD2604080020 | Excel#3270 | BAR20  | Rs    680 | upi             | completed | 2026-04-08 21:17:53 | 1 items
+    ORD2604080021 | Excel#3271 | BAR9   | Rs   1850 | upi             | completed | 2026-04-08 21:18:16 | 2 items
+    ORD2604080022 | Excel#3272 | BAR16  | Rs    779 | cash            | completed | 2026-04-08 21:19:12 | 3 items
+    ORD2604080023 | Excel#3273 | BAR8   | Rs   1059 | upi             | completed | 2026-04-08 21:22:17 | 5 items
+    ORD2604080024 | Excel#3274 | BAR5   | Rs    370 | SPLIT(upi+cash) | completed | 2026-04-08 21:28:22 | 2 items
+    ORD2604080025 | Excel#3275 | B16    | Rs   1959 | upi             | completed | 2026-04-08 21:32:49 | 10 items
+    ORD2604080026 | Excel#3276 | BAR2   | Rs   1020 | upi             | completed | 2026-04-08 21:37:01 | 3 items
+    ORD2604080027 | Excel#3277 | BAR9   | Rs    450 | upi             | completed | 2026-04-08 21:42:32 | 2 items
+    ORD2604080028 | Excel#3278 | BAR19  | Rs   1020 | upi             | completed | 2026-04-08 21:43:12 | 1 items
+    ORD2604080029 | Excel#3279 | B14    | Rs    460 | upi             | completed | 2026-04-08 21:43:21 | 2 items
+    ORD2604080030 | Excel#3280 | B15    | Rs    992 | upi             | completed | 2026-04-08 22:00:22 | 4 items
+    ORD2604080031 | Excel#3281 | B20    | Rs   2530 | cash            | completed | 2026-04-08 22:19:50 | 10 items
+    ORD2604080032 | Excel#3282 | B22    | Rs   2820 | upi             | completed | 2026-04-08 22:34:48 | 11 items
+    ORD2604080033 | Excel#3283 | BAR12  | Rs   3456 | upi             | completed | 2026-04-08 22:40:27 | 5 items
+    ORD2604080034 | Excel#3284 | BAR14  | Rs   2830 | upi             | completed | 2026-04-08 22:42:06 | 4 items
+    ORD2604080035 | Excel#3285 | BAR16  | Rs    997 | cash            | completed | 2026-04-08 22:43:03 | 1 items
+    ORD2604080036 | Excel#3286 | A12    | Rs   4345 | cash            | completed | 2026-04-08 23:02:00 | 12 items
+    ORD2604080037 | Excel#3287 | BAR1   | Rs   1971 | cash            | completed | 2026-04-08 23:02:50 | 3 items
+    ORD2604080038 | Excel#3290 | A9     | Rs   6290 | card            | completed | 2026-04-08 23:11:14 | 15 items
+    ORD2604080039 | Excel#3291 | B23    | Rs   1004 | upi             | completed | 2026-04-08 23:14:47 | 7 items
+    ORD2604080040 | Excel#3292 | BAR10  | Rs   9900 | cash            | completed | 2026-04-08 23:18:43 | 9 items
+    ORD2604080041 | Excel#3293 | B20    | Rs    240 | cash            | completed | 2026-04-08 23:25:07 | 2 items
+    ORD2604080042 | Excel#3294 | BAR9   | Rs    566 | SPLIT(upi+cash) | completed | 2026-04-08 23:25:23 | 2 items
+    ORD2604080043 | Excel#3295 | BAR15  | Rs   1114 | upi             | completed | 2026-04-08 23:44:42 | 2 items
+    ORD2604080044 | Excel#3296 | BAR14  | Rs    804 | upi             | completed | 2026-04-08 23:44:45 | 3 items
+    ORD2604080045 | Excel#3297 | A8     | Rs   1544 | upi             | completed | 2026-04-08 23:45:18 | 7 items
+    ORD2604080046 | Excel#3298 | A2     | Rs   4194 | SPLIT(card+cash) | completed | 2026-04-08 23:48:02 | 13 items
+    ORD2604080047 | Excel#3299 | A1     | Rs    590 | cash            | completed | 2026-04-08 23:50:22 | 4 items
+    ORD2604080048 | Excel#3300 | A7     | Rs   3287 | cash            | completed | 2026-04-09 00:04:03 | 15 items
+    ORD2604080049 | Excel#3301 | A12    | Rs    544 | DUE             | partial   | 2026-04-09 00:07:54 | 3 items
+    ORD2604080050 | Excel#3302 | A4     | Rs    125 | DUE             | partial   | 2026-04-09 00:09:00 | 1 items
+    ORD2604080051 | Excel#3303 | BAR1   | Rs   1204 | DUE             | partial   | 2026-04-09 00:15:10 | 2 items
+
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+  ≡ƒöì DRY RUN COMPLETE ΓÇö No changes made to DB
+  To execute: node tests/import-apr8-orders.js --execute
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
