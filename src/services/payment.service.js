@@ -13,6 +13,7 @@ const tableService = require('./table.service');
 const billingService = require('./billing.service');
 const kotService = require('./kot.service');
 const whatsappService = require('./whatsapp.service');
+const outsideCollectionService = require('./outsideCollection.service');
 
 /**
  * Business day starts at this hour. Orders before this hour belong to the previous business day.
@@ -1612,8 +1613,9 @@ const paymentService = {
    * @param {number} outletId - Outlet ID
    * @param {number} floorId - Floor ID (optional)
    * @param {number} userId - User ID to get their assigned floor if floorId not provided
+   * @param {string[]} userRoles - User roles array (to determine if cashier should only see own collections)
    */
-  async getCashDrawerStatus(outletId, floorId = null, userId = null) {
+  async getCashDrawerStatus(outletId, floorId = null, userId = null, userRoles = []) {
     const pool = getPool();
     const today = getLocalDate();
 
@@ -1877,6 +1879,15 @@ const paymentService = {
     const cashMovements = cashMovRes[0];
     const dueCollData = dueCollRes[0];
 
+    // Fetch outside collections for this shift
+    // Cashiers only see their own collections; managers/admins see all
+    const isCashierOnly = userRoles.length > 0 && 
+      !userRoles.some(r => ['admin', 'super_admin', 'manager', 'owner'].includes(r));
+    const outsideCollData = await outsideCollectionService.getCollectionsForShift(
+      outletId, shiftStartTime, shiftEndTime, floorId,
+      { cashierId: userId, isCashierOnly }
+    );
+
     // Combine regular and split payments into one breakdown
     const paymentBreakdown = [...regularPayments, ...splitPayments];
 
@@ -2026,19 +2037,19 @@ const paymentService = {
       userId,
       // Key summary values for UI
       openingAmount: openingCashFromSession,
-      expectedAmount: expectedAmount,         // Opening + ALL payment collections (incl due) + Cash In - Cash Out - Refunds - Expenses
-      totalSales: totalSales,                 // SUM(total_amount) of completed orders
-      totalCollection: paymentSummary.total,   // Actual money collected (incl due collections)
-      currentBalance: expectedCashInDrawer,   // Expected cash in drawer only
-      expectedCash: expectedCashInDrawer,     // Expected cash in drawer only
+      expectedAmount: expectedAmount + outsideCollData.cash,  // Outside cash collections added to expected
+      totalSales: totalSales + outsideCollData.total,         // SUM(total_amount) of completed orders + outside collections
+      totalCollection: paymentSummary.total + outsideCollData.total,   // Actual money collected (incl due + outside)
+      currentBalance: expectedCashInDrawer + outsideCollData.cash,   // Expected cash in drawer + outside cash
+      expectedCash: expectedCashInDrawer + outsideCollData.cash,     // Expected cash in drawer + outside cash
       // Real-time sales data
       sales: {
         totalOrders: parseInt(orderData[0]?.total_orders) || 0,
         completedOrders: parseInt(completedStats[0]?.completed_orders) || 0,
         activeOrders: parseInt(orderData[0]?.active_orders) || 0,
         totalGuests: parseInt(orderData[0]?.total_guests) || 0,
-        totalSale: totalSales,
-        totalCollection: paymentSummary.total,
+        totalSale: totalSales + outsideCollData.total,
+        totalCollection: paymentSummary.total + outsideCollData.total,
         pendingAmount: parseFloat(orderData[0]?.pending_amount) || 0,
         discountAmount: parseFloat(completedStats[0]?.discount_amount) || 0,
         ncOrderCount: parseInt(completedStats[0]?.nc_order_count) || 0,
@@ -2046,17 +2057,19 @@ const paymentService = {
         adjustmentCount: parseInt(completedStats[0]?.adjustment_count) || 0,
         adjustmentAmount: parseFloat(completedStats[0]?.adjustment_amount) || 0,
         dueAmount: parseFloat(completedStats[0]?.due_amount) || 0,
-        dueCollected: dueCollected
+        dueCollected: dueCollected,
+        outsideCollection: outsideCollData.total
       },
-      // Collection breakdown — includes due collections (real money received during shift)
+      // Collection breakdown — includes due collections + outside collections (real money received during shift)
       collection: {
-        totalCollection: paymentSummary.total,
+        totalCollection: paymentSummary.total + outsideCollData.total,
         dueCollection: dueCollected,
-        cash: paymentSummary.cash,
-        card: paymentSummary.card,
-        upi: paymentSummary.upi,
+        outsideCollection: outsideCollData.total,
+        cash: paymentSummary.cash + outsideCollData.cash,
+        card: paymentSummary.card + outsideCollData.card,
+        upi: paymentSummary.upi + outsideCollData.upi,
         wallet: paymentSummary.wallet,
-        note: 'totalCollection = SUM of all payments during shift (incl due collections). dueCollection shown separately for reference.'
+        note: 'totalCollection = SUM of all payments during shift (incl due + outside collections). outsideCollection shown separately for reference.'
       },
       // Payment breakdown by mode
       paymentBreakdown: paymentSummary,
@@ -2084,6 +2097,18 @@ const paymentService = {
         userName: t.user_name,
         createdAt: t.created_at
       })),
+      // Outside collections
+      outsideCollections: {
+        total: outsideCollData.total,
+        count: outsideCollData.count,
+        items: outsideCollData.items,
+        paymentBreakdown: {
+          cash: outsideCollData.cash,
+          card: outsideCollData.card,
+          upi: outsideCollData.upi,
+          other: outsideCollData.other
+        }
+      },
       // Running tables status
       runningTables: {
         summary: {
@@ -2481,10 +2506,16 @@ const paymentService = {
       const shiftWastageCount = parseInt(shiftWastageRows[0]?.wastage_count) || 0;
       const shiftWastageCost = parseFloat(shiftWastageRows[0]?.wastage_cost) || 0;
 
+      // Fetch outside collections for this shift — only those collected by the shift's cashier
+      const outsideCollData = await outsideCollectionService.getCollectionsForShift(
+        shift.outlet_id, shiftStartTime, shiftEndTime, shift.floor_id,
+        { cashierId: shift.cashier_id, isCashierOnly: true }
+      );
+
       const openingCash = parseFloat(shift.opening_cash) || 0;
       const closingCash = parseFloat(shift.closing_cash) || 0;
-      const expectedAmount = openingCash + totalPaymentCollection;
-      const expectedCash = openingCash + totalCashSales;
+      const expectedAmount = openingCash + totalPaymentCollection + outsideCollData.cash;
+      const expectedCash = openingCash + totalCashSales + outsideCollData.cash;
       const cashVariance = shift.status === 'closed' ? (closingCash - expectedCash) : 0;
 
       return {
@@ -2504,13 +2535,13 @@ const paymentService = {
         expectedAmount: expectedAmount,
         expectedCash: expectedCash,
         cashVariance: cashVariance,
-        totalSales: r2(totalSales),
-        totalCollection: r2(totalSales),
+        totalSales: r2(totalSales + outsideCollData.total),
+        totalCollection: r2(totalSales + outsideCollData.total),
         totalOrders: parseInt(os.completed_orders) || 0,
-        totalCashSales: totalCashSales,
-        totalCardSales: totalCardSales,
-        totalUpiSales: totalUpiSales,
-        totalOtherSales: totalOtherSales,
+        totalCashSales: totalCashSales + outsideCollData.cash,
+        totalCardSales: totalCardSales + outsideCollData.card,
+        totalUpiSales: totalUpiSales + outsideCollData.upi,
+        totalOtherSales: totalOtherSales + outsideCollData.other,
         totalDiscounts: parseFloat(os.total_discounts) || 0,
         orderStats: {
           totalOrders: parseInt(os.total_orders) || 0,
@@ -2526,12 +2557,13 @@ const paymentService = {
           totalDueAmount: parseFloat(os.total_due_amount) || 0
         },
         collection: {
-          totalCollection: r2(totalSales),
+          totalCollection: r2(totalSales + outsideCollData.total),
           dueCollection: r2(totalDueCollected),
+          outsideCollection: r2(outsideCollData.total),
           paymentBreakdown: {
-            cash: r2(totalCashSales),
-            card: r2(totalCardSales),
-            upi: r2(totalUpiSales),
+            cash: r2(totalCashSales + outsideCollData.cash),
+            card: r2(totalCardSales + outsideCollData.card),
+            upi: r2(totalUpiSales + outsideCollData.upi),
             wallet: r2(mergedPayments.find(p => p.payment_mode === 'wallet')?.total || 0),
             credit: r2(mergedPayments.find(p => p.payment_mode === 'credit')?.total || 0)
           },
@@ -2541,9 +2573,13 @@ const paymentService = {
           totalAdjustment: r2(parseFloat(os.total_adjustment_amount) || 0),
           adjustmentCount: parseInt(os.adjustment_count) || 0
         },
+        outsideCollections: {
+          total: outsideCollData.total,
+          count: outsideCollData.count
+        },
         makingCost: shiftMakingCost,
         profit: shiftProfit,
-        note: 'totalSales = SUM(total_amount) of completed orders. Due collection not added to sale/collection.',
+        note: 'totalSales = SUM(total_amount) of completed orders + outside collections. Due collection not added to sale/collection.',
         foodCostPercentage: totalSales > 0 ? parseFloat(((shiftMakingCost / totalSales) * 100).toFixed(2)) : 0,
         wastageCount: shiftWastageCount,
         wastageCost: shiftWastageCost,
@@ -2750,17 +2786,23 @@ const paymentService = {
     // totalSales = SUM(total_amount) of completed orders (source of truth, not payments)
     const totalSalesFromOrders = parseFloat(orderStats[0]?.real_total_sales) || 0;
 
+    // Fetch outside collections for this shift — only those collected by the shift's cashier
+    const outsideCollData = await outsideCollectionService.getCollectionsForShift(
+      shift.outlet_id, shiftStartTime, shiftEndTime, floorId,
+      { cashierId: shift.cashier_id, isCashierOnly: true }
+    );
+
     const openingCash = parseFloat(shift.opening_cash) || 0;
     const closingCash = parseFloat(shift.closing_cash) || 0;
-    const expectedAmount = openingCash + calculatedPaymentTotal;
-    const expectedCash = openingCash + totalCashSales;
+    const expectedAmount = openingCash + calculatedPaymentTotal + outsideCollData.cash;
+    const expectedCash = openingCash + totalCashSales + outsideCollData.cash;
     // Calculate cash variance: actual closing cash vs expected cash (positive = over, negative = short)
     const cashVariance = shift.status === 'closed' ? (closingCash - expectedCash) : 0;
     
     // Use calculated values for accuracy
     const realTotalOrders = parseInt(orderStats[0]?.completed_orders) || 0;
 
-    logger.info(`Shift ${shiftId} detail calc - Time: ${shiftStartTime} to ${shiftEndTime}, Opening: ${openingCash}, Cash: ${totalCashSales}, UPI: ${totalUpiSales}, Card: ${totalCardSales}, OrderSales: ${totalSalesFromOrders}, Expected: ${expectedAmount}, ExpectedCash: ${expectedCash}, ClosingCash: ${closingCash}, Variance: ${cashVariance}`);
+    logger.info(`Shift ${shiftId} detail calc - Time: ${shiftStartTime} to ${shiftEndTime}, Opening: ${openingCash}, Cash: ${totalCashSales}, UPI: ${totalUpiSales}, Card: ${totalCardSales}, OrderSales: ${totalSalesFromOrders}, OutsideColl: ${outsideCollData.total}, Expected: ${expectedAmount}, ExpectedCash: ${expectedCash}, ClosingCash: ${closingCash}, Variance: ${cashVariance}`);
 
     // Get staff activity: all users who created orders OR received payments during this shift
     // Includes takeaway/delivery order creators even if not floor-assigned
@@ -3183,14 +3225,14 @@ const paymentService = {
       expectedAmount: expectedAmount,       // Opening + ALL Sales
       expectedCash: expectedCash,           // Opening + Cash Sales only
       cashVariance: cashVariance,           // Calculated: closingCash - expectedCash
-      // Real-time calculated totals (totalSales = SUM(total_amount) of completed orders)
-      totalSales: r2(totalSalesFromOrders),
-      totalCollection: r2(calculatedPaymentTotal),
+      // Real-time calculated totals (totalSales = SUM(total_amount) of completed orders + outside collections)
+      totalSales: r2(totalSalesFromOrders + outsideCollData.total),
+      totalCollection: r2(calculatedPaymentTotal + outsideCollData.total),
       totalOrders: realTotalOrders,
-      totalCashSales: totalCashSales,
-      totalCardSales: totalCardSales,
-      totalUpiSales: totalUpiSales,
-      totalOtherSales: totalOtherSales,
+      totalCashSales: totalCashSales + outsideCollData.cash,
+      totalCardSales: totalCardSales + outsideCollData.card,
+      totalUpiSales: totalUpiSales + outsideCollData.upi,
+      totalOtherSales: totalOtherSales + outsideCollData.other,
       totalDiscounts: r2(parseFloat(orderStats[0]?.total_discount) || 0),
       totalRefunds: 0,
       totalCancellations: r2(parseFloat(orderStats[0]?.cancelled_total) || 0),
@@ -3227,7 +3269,7 @@ const paymentService = {
         cancelledTotal: r2(parseFloat(orderStats[0]?.cancelled_total) || 0),
         cancelledWithValueCount: parseInt(orderStats[0]?.cancelled_with_value_count) || 0
       },
-      note: 'totalSales = SUM(total_amount) of completed orders. freshPaymentTotal = payments received during shift (excl due collections).',
+      note: 'totalSales = SUM(total_amount) of completed orders + outside collections. freshPaymentTotal = payments received during shift (excl due collections).',
       saleBifurcation: {
         subtotal: r2(parseFloat(orderStats[0]?.total_subtotal) || 0),
         discount: r2(parseFloat(orderStats[0]?.total_discount) || 0),
@@ -3243,11 +3285,12 @@ const paymentService = {
       collection: {
         freshPaymentTotal: r2(calculatedPaymentTotal),
         dueCollection: r2(totalDueCollected),
-        totalMoneyReceived: r2(calculatedPaymentTotal + totalDueCollected),
+        outsideCollection: r2(outsideCollData.total),
+        totalMoneyReceived: r2(calculatedPaymentTotal + totalDueCollected + outsideCollData.total),
         paymentBreakdown: {
-          cash: r2(totalCashSales),
-          card: r2(totalCardSales),
-          upi: r2(totalUpiSales),
+          cash: r2(totalCashSales + outsideCollData.cash),
+          card: r2(totalCardSales + outsideCollData.card),
+          upi: r2(totalUpiSales + outsideCollData.upi),
           wallet: r2(totalWalletSales),
           credit: r2(totalCreditSales)
         },
@@ -3277,6 +3320,17 @@ const paymentService = {
           due: r2(parseFloat(orderStats[0]?.delivery_due) || 0)
         },
         note: 'dineIn.sales + takeaway.sales + delivery.sales = totalSales'
+      },
+      outsideCollections: {
+        total: outsideCollData.total,
+        count: outsideCollData.count,
+        items: outsideCollData.items,
+        paymentBreakdown: {
+          cash: outsideCollData.cash,
+          card: outsideCollData.card,
+          upi: outsideCollData.upi,
+          other: outsideCollData.other
+        }
       },
       cashierBreakdown,
       dueCollections: {
@@ -3465,14 +3519,20 @@ const paymentService = {
     
     // totalSales = SUM(total_amount) of completed orders (source of truth)
     const totalSalesAmount = parseFloat(orderStats[0]?.total_sales) || 0;
-    
-    // Expected amount = Opening + payment collection (excl due collections)
-    const expectedAmount = openingCash + totalPaymentCollection;
-    
-    // Expected cash in drawer = Opening + Cash Sales only
-    const expectedCashInDrawer = openingCash + totalCashSales;
 
-    logger.info(`Shift ${shiftId} summary - Opening: ${openingCash}, Cash Sales: ${totalCashSales}, OrderSales: ${totalSalesAmount}, PaymentTotal: ${totalPaymentCollection}, Expected: ${expectedAmount}, ExpectedCash: ${expectedCashInDrawer}`);
+    // Fetch outside collections for this shift — only those collected by the shift's cashier
+    const outsideCollData = await outsideCollectionService.getCollectionsForShift(
+      shift.outlet_id, shiftStartTime, shiftEndTime, shift.floor_id,
+      { cashierId: shift.cashier_id, isCashierOnly: true }
+    );
+    
+    // Expected amount = Opening + payment collection (excl due collections) + outside cash
+    const expectedAmount = openingCash + totalPaymentCollection + outsideCollData.cash;
+    
+    // Expected cash in drawer = Opening + Cash Sales + outside cash only
+    const expectedCashInDrawer = openingCash + totalCashSales + outsideCollData.cash;
+
+    logger.info(`Shift ${shiftId} summary - Opening: ${openingCash}, Cash Sales: ${totalCashSales}, OrderSales: ${totalSalesAmount}, PaymentTotal: ${totalPaymentCollection}, OutsideColl: ${outsideCollData.total}, Expected: ${expectedAmount}, ExpectedCash: ${expectedCashInDrawer}`);
 
     return {
       id: shift.id,
@@ -3493,14 +3553,14 @@ const paymentService = {
       expectedAmount: expectedAmount,          // Opening + ALL Sales (cash + card + UPI)
       expectedCash: expectedCashInDrawer,      // Opening + Cash Sales only (expected in drawer)
       cashVariance: parseFloat(shift.cash_variance) || 0,
-      // Real-time calculated values based on shift time range
-      totalSales: r2(totalSalesAmount),  // SUM(total_amount) of completed orders
-      totalCollection: r2(totalSalesAmount),
+      // Real-time calculated values based on shift time range (including outside collections)
+      totalSales: r2(totalSalesAmount + outsideCollData.total),
+      totalCollection: r2(totalSalesAmount + outsideCollData.total),
       totalOrders: parseInt(orderStats[0]?.completed_orders) || 0,
-      totalCashSales,
-      totalCardSales,
-      totalUpiSales,
-      totalOtherSales,
+      totalCashSales: totalCashSales + outsideCollData.cash,
+      totalCardSales: totalCardSales + outsideCollData.card,
+      totalUpiSales: totalUpiSales + outsideCollData.upi,
+      totalOtherSales: totalOtherSales + outsideCollData.other,
       orderStats: {
         totalOrders: parseInt(orderStats[0]?.total_orders) || 0,
         completedOrders: parseInt(orderStats[0]?.completed_orders) || 0,
@@ -3522,14 +3582,15 @@ const paymentService = {
         count: parseInt(p.count) || 0,
         total: parseFloat(p.total) || 0
       })),
-      note: 'totalSales = SUM(total_amount) of completed orders. Due collection not added to sale/collection.',
+      note: 'totalSales = SUM(total_amount) of completed orders + outside collections. Due collection not added to sale/collection.',
       collection: {
-        totalCollection: r2(totalSalesAmount),
+        totalCollection: r2(totalSalesAmount + outsideCollData.total),
         dueCollection: r2(totalDueCollected),
+        outsideCollection: r2(outsideCollData.total),
         paymentBreakdown: {
-          cash: r2(totalCashSales),
-          card: r2(totalCardSales),
-          upi: r2(totalUpiSales),
+          cash: r2(totalCashSales + outsideCollData.cash),
+          card: r2(totalCardSales + outsideCollData.card),
+          upi: r2(totalUpiSales + outsideCollData.upi),
           wallet: r2(paymentBreakdown.find(p => p.payment_mode === 'wallet')?.total || 0),
           credit: r2(paymentBreakdown.find(p => p.payment_mode === 'credit')?.total || 0)
         },
@@ -3538,6 +3599,10 @@ const paymentService = {
         ncOrderCount: parseInt(orderStats[0]?.nc_orders) || 0,
         totalAdjustment: r2(parseFloat(orderStats[0]?.total_adjustment_amount) || 0),
         adjustmentCount: parseInt(orderStats[0]?.adjustment_count) || 0
+      },
+      outsideCollections: {
+        total: outsideCollData.total,
+        count: outsideCollData.count
       },
       shiftTimeRange: {
         start: shiftStartTime,

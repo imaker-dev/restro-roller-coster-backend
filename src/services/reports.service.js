@@ -7,6 +7,7 @@
 const { getPool } = require('../database');
 const { cache } = require('../config/redis');
 const logger = require('../utils/logger');
+const outsideCollectionService = require('./outsideCollection.service');
 
 /**
  * Business day starts at this hour (IST). Orders before this hour belong to the previous business day.
@@ -406,7 +407,8 @@ const reportsService = {
   /**
    * 8.1 Daily Sales Report — live from orders + payments
    */
-  async getDailySalesReport(outletId, startDate, endDate, floorIds = []) {
+  async getDailySalesReport(outletId, startDate, endDate, floorIds = [], options = {}) {
+    const { cashierId = null, isCashierOnly = false } = options;
     const pool = getPool();
     const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
     const ff = floorFilter(floorIds);
@@ -504,6 +506,26 @@ const reportsService = {
     const costRows = costRowsRes[0];
     const wastageRows = wastageRowsRes[0];
 
+    // Fetch outside collections for the date range
+    const outsideCollDataRaw = await outsideCollectionService.getCollectionsForDateRange(outletId, start, end, floorIds);
+    // If cashier role, filter to only their own collections
+    let outsideCollData = outsideCollDataRaw;
+    if (isCashierOnly && cashierId) {
+      const myColl = (outsideCollDataRaw.byCashier || []).find(c => c.cashierId === cashierId);
+      if (myColl) {
+        const days = Object.keys(outsideCollDataRaw.byDate || {});
+        const byDate = {};
+        if (days.length <= 1) {
+          const dayKey = days[0] || start;
+          byDate[dayKey] = { total: myColl.total, count: myColl.count, cash: myColl.cash, card: myColl.card, upi: myColl.upi, other: myColl.other };
+        }
+        outsideCollData = { total: myColl.total, count: myColl.count, cash: myColl.cash, card: myColl.card, upi: myColl.upi, other: myColl.other, byDate, byCashier: [myColl] };
+      } else {
+        outsideCollData = { total: 0, count: 0, cash: 0, card: 0, upi: 0, other: 0, byDate: {}, byCashier: [] };
+      }
+    }
+    const outsideByDate = outsideCollData.byDate || {};
+
     const splitPayMap = {};
     splitPayRows.forEach(r => { splitPayMap[r.report_date instanceof Date ? r.report_date.toISOString().slice(0, 10) : r.report_date] = r; });
     
@@ -554,16 +576,20 @@ const reportsService = {
       const pay = payMap[dateKey] || {};
       const cost = costMap[dateKey] || { making_cost: 0, profit: 0 };
       const wst = wastageMap[dateKey] || { wastage_count: 0, wastage_cost: 0 };
+      const oc = outsideByDate[dateKey] || { total: 0, count: 0, cash: 0, card: 0, upi: 0, other: 0 };
       const totalSaleVal = parseFloat(r.total_sale) || 0;
+      const totalSaleWithOutside = totalSaleVal + oc.total;
       const avgOrderValue = r.total_orders > 0 ? (totalSaleVal / r.total_orders).toFixed(2) : '0.00';
       const avgGuestSpend = r.total_guests > 0 ? (totalSaleVal / r.total_guests).toFixed(2) : '0.00';
-      const foodCostPct = totalSaleVal > 0 ? parseFloat(((cost.making_cost / totalSaleVal) * 100).toFixed(2)) : 0;
+      const foodCostPct = totalSaleWithOutside > 0 ? parseFloat(((cost.making_cost / totalSaleWithOutside) * 100).toFixed(2)) : 0;
       return {
         ...r,
-        total_collection: totalSaleVal,
-        cash_collection: pay.cash_collection || 0,
-        card_collection: pay.card_collection || 0,
-        upi_collection: pay.upi_collection || 0,
+        total_collection: totalSaleWithOutside,
+        outside_collection: oc.total,
+        outside_collection_count: oc.count,
+        cash_collection: (pay.cash_collection || 0) + oc.cash,
+        card_collection: (pay.card_collection || 0) + oc.card,
+        upi_collection: (pay.upi_collection || 0) + oc.upi,
         wallet_collection: pay.wallet_collection || 0,
         credit_collection: pay.credit_collection || 0,
         tip_amount: pay.tip_amount || 0,
@@ -575,11 +601,12 @@ const reportsService = {
         average_order_value: avgOrderValue,
         average_guest_spend: avgGuestSpend,
         collection: {
-          totalCollection: totalSaleVal,
+          totalCollection: totalSaleWithOutside,
           dueCollection: 0,
-          cash: pay.cash_collection || 0,
-          card: pay.card_collection || 0,
-          upi: pay.upi_collection || 0,
+          outsideCollection: oc.total,
+          cash: (pay.cash_collection || 0) + oc.cash,
+          card: (pay.card_collection || 0) + oc.card,
+          upi: (pay.upi_collection || 0) + oc.upi,
           wallet: pay.wallet_collection || 0,
           credit: pay.credit_collection || 0,
           totalDue: parseFloat(r.due_amount) || 0,
@@ -587,7 +614,7 @@ const reportsService = {
           ncOrderCount: r.nc_orders || 0,
           totalAdjustment: parseFloat(r.adjustment_amount) || 0,
           adjustmentCount: r.adjustment_count || 0,
-          note: 'totalCollection = total_sale from completed orders. Due collections excluded.'
+          note: 'totalCollection = total_sale from completed orders + outside collections. Due collections excluded.'
         }
       };
     });
@@ -596,6 +623,7 @@ const reportsService = {
     const totalOrders = rows.reduce((s, r) => s + (r.total_orders || 0), 0);
     const totalGuests = rows.reduce((s, r) => s + parseInt(r.total_guests || 0), 0);
     const totalSale = rows.reduce((s, r) => s + parseFloat(r.total_sale || 0), 0);
+    const totalSaleWithOutside = totalSale + outsideCollData.total;
     const totalDiscount = rows.reduce((s, r) => s + parseFloat(r.discount_amount || 0), 0);
     const totalTax = rows.reduce((s, r) => s + parseFloat(r.tax_amount || 0), 0);
     const totalServiceCharge = rows.reduce((s, r) => s + parseFloat(r.service_charge || 0), 0);
@@ -630,8 +658,10 @@ const reportsService = {
         adjustment_count: totalAdjustmentCount,
         adjustment_amount: totalAdjustmentAmount.toFixed(2),
         total_guests: totalGuests,
-        total_sale: totalSale.toFixed(2),
-        total_collection: totalSale.toFixed(2),
+        total_sale: totalSaleWithOutside.toFixed(2),
+        total_collection: totalSaleWithOutside.toFixed(2),
+        outside_collection: outsideCollData.total.toFixed(2),
+        outside_collection_count: outsideCollData.count,
         discount_amount: totalDiscount.toFixed(2),
         tax_amount: totalTax.toFixed(2),
         service_charge: totalServiceCharge.toFixed(2),
@@ -643,15 +673,16 @@ const reportsService = {
         tip_amount: totalTips.toFixed(2),
         making_cost: daily.reduce((s, r) => s + (r.making_cost || 0), 0).toFixed(2),
         profit: daily.reduce((s, r) => s + (r.profit || 0), 0).toFixed(2),
-        food_cost_percentage: totalSale > 0 ? ((daily.reduce((s, r) => s + (r.making_cost || 0), 0) / totalSale) * 100).toFixed(2) : '0.00',
+        food_cost_percentage: totalSaleWithOutside > 0 ? ((daily.reduce((s, r) => s + (r.making_cost || 0), 0) / totalSaleWithOutside) * 100).toFixed(2) : '0.00',
         wastage_count: daily.reduce((s, r) => s + (r.wastage_count || 0), 0),
         wastage_cost: daily.reduce((s, r) => s + (r.wastage_cost || 0), 0).toFixed(2),
         average_order_value: totalOrders > 0 ? (totalSale / totalOrders).toFixed(2) : '0.00',
         average_guest_spend: totalGuests > 0 ? (totalSale / totalGuests).toFixed(2) : '0.00',
-        average_daily_sales: daily.length > 0 ? (totalSale / daily.length).toFixed(2) : '0.00',
+        average_daily_sales: daily.length > 0 ? (totalSaleWithOutside / daily.length).toFixed(2) : '0.00',
         collection: {
-          totalCollection: totalSale,
+          totalCollection: totalSaleWithOutside,
           dueCollection: 0,
+          outsideCollection: outsideCollData.total,
           cash: cashCollection,
           card: cardCollection,
           upi: upiCollection,
@@ -662,9 +693,20 @@ const reportsService = {
           ncOrderCount: totalNCOrders,
           totalAdjustment: totalAdjustmentAmount,
           adjustmentCount: totalAdjustmentCount,
-          note: 'totalCollection = total_sale from completed orders. Due collections excluded from payments.'
+          note: 'totalCollection = total_sale from completed orders + outside collections. Due collections excluded from payments.'
         },
-        note: 'Only completed orders. total_sale = SUM(total_amount). No gross/net split.'
+        outsideCollections: {
+          total: outsideCollData.total,
+          count: outsideCollData.count,
+          byCashier: outsideCollData.byCashier || [],
+          paymentBreakdown: {
+            cash: outsideCollData.cash,
+            card: outsideCollData.card,
+            upi: outsideCollData.upi,
+            other: outsideCollData.other
+          }
+        },
+        note: 'Only completed orders + outside collections. total_sale = SUM(total_amount) + outside_collection.'
       }
     };
   },
@@ -2457,7 +2499,8 @@ const reportsService = {
   /**
    * Get live dashboard stats
    */
-  async getLiveDashboard(outletId, floorIds = []) {
+  async getLiveDashboard(outletId, floorIds = [], options = {}) {
+    const { cashierId = null, isCashierOnly = false } = options;
     const pool = getPool();
     const today = getLocalDate();
     const { startDt, endDt } = businessDayRange(today, today);
@@ -2551,7 +2594,25 @@ const reportsService = {
     }
 
     const r2 = (n) => parseFloat((parseFloat(n) || 0).toFixed(2));
-    const totalSale = r2(completedSales.total_sale);
+    const orderSale = r2(completedSales.total_sale);
+
+    // Fetch outside collections for today (business day)
+    // If cashier role, only show their own collections; admins/managers see all
+    const outsideCollData = await outsideCollectionService.getCollectionsForDateRange(outletId, today, today, floorIds);
+    // Filter byCashier for the response; for cashier role, only count their own total
+    let effectiveOutsideColl = outsideCollData;
+    if (isCashierOnly && cashierId) {
+      const myColl = (outsideCollData.byCashier || []).find(c => c.cashierId === cashierId);
+      effectiveOutsideColl = myColl
+        ? { total: myColl.total, count: myColl.count, cash: myColl.cash, card: myColl.card, upi: myColl.upi, other: myColl.other, byCashier: [myColl] }
+        : { total: 0, count: 0, cash: 0, card: 0, upi: 0, other: 0, byCashier: [] };
+    }
+    const totalSale = r2(orderSale + effectiveOutsideColl.total);
+
+    // Add outside collections to payment breakdown
+    if (effectiveOutsideColl.cash > 0) payBreakdown['cash'] = (payBreakdown['cash'] || 0) + effectiveOutsideColl.cash;
+    if (effectiveOutsideColl.card > 0) payBreakdown['card'] = (payBreakdown['card'] || 0) + effectiveOutsideColl.card;
+    if (effectiveOutsideColl.upi > 0) payBreakdown['upi'] = (payBreakdown['upi'] || 0) + effectiveOutsideColl.upi;
 
     return {
       date: today,
@@ -2560,6 +2621,9 @@ const reportsService = {
         total_orders: parseInt(completedSales.total_orders) || 0,
         total_sale: totalSale,
         total_collection: totalSale,
+        order_sale: orderSale,
+        outside_collection: r2(effectiveOutsideColl.total),
+        outside_collection_count: effectiveOutsideColl.count,
         discount_amount: r2(completedSales.discount_amount),
         nc_orders: parseInt(completedSales.nc_orders) || 0,
         nc_amount: r2(completedSales.nc_amount),
@@ -2573,7 +2637,7 @@ const reportsService = {
         delivery_orders: parseInt(completedSales.delivery_orders) || 0,
         active_orders: parseInt(activeOrders.active_orders) || 0,
         average_order_value: (parseInt(completedSales.total_orders) || 0) > 0
-          ? r2(totalSale / parseInt(completedSales.total_orders)) : 0
+          ? r2(orderSale / parseInt(completedSales.total_orders)) : 0
       },
       activeTables: activeTables[0].count,
       pendingKots: pendingKots.reduce((obj, k) => { obj[k.station] = k.count; return obj; }, {}),
@@ -2581,14 +2645,26 @@ const reportsService = {
       collection: {
         totalCollection: totalSale,
         dueCollection: 0,
+        outsideCollection: r2(effectiveOutsideColl.total),
         cash: payBreakdown.cash || 0,
         card: payBreakdown.card || 0,
         upi: payBreakdown.upi || 0,
         wallet: payBreakdown.wallet || 0,
         credit: payBreakdown.credit || 0,
-        note: 'totalCollection = totalSales from completed orders. Due collections excluded from payments.'
+        note: 'totalCollection = orderSale + outsideCollection. Due collections excluded from payments.'
       },
-      note: 'Only completed orders. total_sale = SUM(total_amount). No net/gross split.'
+      outsideCollections: {
+        total: r2(effectiveOutsideColl.total),
+        count: effectiveOutsideColl.count,
+        byCashier: effectiveOutsideColl.byCashier || [],
+        paymentBreakdown: {
+          cash: r2(effectiveOutsideColl.cash),
+          card: r2(effectiveOutsideColl.card),
+          upi: r2(effectiveOutsideColl.upi),
+          other: r2(effectiveOutsideColl.other)
+        }
+      },
+      note: 'total_sale = order_sale + outside_collection. Only completed orders + outside collections.'
     };
   },
 
@@ -6997,12 +7073,19 @@ const reportsService = {
     ] = await Promise.all([summaryQuery, cancelledQuery, regularPayQuery, splitPayQuery, dueCollQuery, salesQuery]);
 
     const s = summaryRows[0];
-    const totalSale = r2(s.total_sale);
+    const orderTotalSale = r2(s.total_sale);
+
+    // Fetch outside collections
+    const outsideCollData = await outsideCollectionService.getCollectionsForDateRange(outletId, start, end, floorIds);
+    const totalSale = r2(orderTotalSale + outsideCollData.total);
 
     const summary = {
       total_orders: parseInt(s.order_count) || 0,
       total_sale: totalSale,
       total_collection: totalSale,
+      order_sale: orderTotalSale,
+      outside_collection: r2(outsideCollData.total),
+      outside_collection_count: outsideCollData.count,
       cancelled_orders: parseInt(cancelledRows[0].cnt) || 0,
       discount_amount: r2(s.discount),
       tax_amount: r2(s.tax),
@@ -7022,10 +7105,14 @@ const reportsService = {
       ]
     };
 
-    // Payment breakdown (for reference — actual money received)
+    // Payment breakdown (for reference — actual money received, including outside collections)
     const payModeMap = {};
     for (const r of regularPayRows) payModeMap[r.payment_mode] = (payModeMap[r.payment_mode] || 0) + (parseFloat(r.amount) || 0);
     for (const r of splitPayRows) payModeMap[r.payment_mode] = (payModeMap[r.payment_mode] || 0) + (parseFloat(r.amount) || 0);
+    // Add outside collections to payment mode map
+    if (outsideCollData.cash > 0) payModeMap['cash'] = (payModeMap['cash'] || 0) + outsideCollData.cash;
+    if (outsideCollData.card > 0) payModeMap['card'] = (payModeMap['card'] || 0) + outsideCollData.card;
+    if (outsideCollData.upi > 0) payModeMap['upi'] = (payModeMap['upi'] || 0) + outsideCollData.upi;
 
     const totalPaid = Object.values(payModeMap).reduce((a, b) => a + b, 0);
     const totalForPct = totalSale > 0 ? totalSale : 1;
@@ -7101,14 +7188,27 @@ const reportsService = {
       summary,
       payments,
       sales,
+      outsideCollections: {
+        total: r2(outsideCollData.total),
+        count: outsideCollData.count,
+        byCashier: outsideCollData.byCashier || [],
+        paymentBreakdown: {
+          cash: r2(outsideCollData.cash),
+          card: r2(outsideCollData.card),
+          upi: r2(outsideCollData.upi),
+          other: r2(outsideCollData.other)
+        }
+      },
       crossVerification: {
         total_sale: totalSale,
+        order_sale: orderTotalSale,
+        outside_collection: r2(outsideCollData.total),
         channel_sum: channelSum,
         paid_plus_due_plus_adj: r2(r2(s.paid_amount) + dueAmt + r2(s.adjustment_amount)),
         payment_mode_total: r2(totalPaid),
-        paid_matches_payments: Math.abs(r2(s.paid_amount) - r2(totalPaid)) < 0.01,
-        match: Math.abs(totalSale - channelSum) < 0.01,
-        note: 'Only completed orders. total_sale = SUM(total_amount). payment_mode_total should match total_paid_amount.'
+        paid_matches_payments: Math.abs(r2(s.paid_amount) - r2(totalPaid - outsideCollData.total)) < 0.01,
+        match: Math.abs(orderTotalSale - channelSum) < 0.01,
+        note: 'total_sale = order_sale + outside_collection. channel_sum only covers order channels. payment_mode_total includes outside collections.'
       }
     };
   },
@@ -7221,6 +7321,10 @@ const reportsService = {
     const costByDate = costByDateRes[0];
     const wastageByDate = wastageByDateRes[0];
 
+    // Fetch outside collections for the date range
+    const outsideCollData = await outsideCollectionService.getCollectionsForDateRange(outletId, start, end, floorIds);
+    const outsideByDate = outsideCollData.byDate || {};
+
     // Build payment maps (all payments for completed orders, grouped by order date)
     const paymentByDate = {};
     for (const pr of payRows) {
@@ -7254,13 +7358,24 @@ const reportsService = {
       const pay = paymentByDate[dateKey] || { breakdown: {} };
       const cost = costByDateMap[dateKey] || { making_cost: 0, profit: 0 };
       const wst = wastageByDateMap[dateKey] || { wastage_count: 0, wastage_cost: 0 };
-      const totalSaleVal = r2(r.total_sale);
+      const oc = outsideByDate[dateKey] || { total: 0, count: 0, cash: 0, card: 0, upi: 0, other: 0 };
+      const orderSaleVal = r2(r.total_sale);
+      const totalSaleVal = r2(orderSaleVal + oc.total);
+
+      // Add outside collections to payment breakdown for this day
+      const dayPayBreakdown = { ...pay.breakdown };
+      if (oc.cash > 0) dayPayBreakdown['cash'] = (dayPayBreakdown['cash'] || 0) + oc.cash;
+      if (oc.card > 0) dayPayBreakdown['card'] = (dayPayBreakdown['card'] || 0) + oc.card;
+      if (oc.upi > 0) dayPayBreakdown['upi'] = (dayPayBreakdown['upi'] || 0) + oc.upi;
 
       return {
         date: dateKey,
         total_orders: parseInt(r.total_orders) || 0,
         total_sale: totalSaleVal,
         total_collection: totalSaleVal,
+        order_sale: orderSaleVal,
+        outside_collection: r2(oc.total),
+        outside_collection_count: oc.count || 0,
         ordersByType: {
           dine_in: parseInt(r.dine_in_orders) || 0,
           takeaway: parseInt(r.takeaway_orders) || 0,
@@ -7276,8 +7391,8 @@ const reportsService = {
         due_amount: r2(r.due_amount),
         adjustment_count: parseInt(r.adjustment_count) || 0,
         adjustment_amount: r2(r.adjustment_amount),
-        average_order_value: (parseInt(r.total_orders) || 0) > 0 ? r2(totalSaleVal / parseInt(r.total_orders)) : 0,
-        paymentBreakdown: pay.breakdown,
+        average_order_value: (parseInt(r.total_orders) || 0) > 0 ? r2(orderSaleVal / parseInt(r.total_orders)) : 0,
+        paymentBreakdown: dayPayBreakdown,
         makingCost: cost.making_cost,
         profit: cost.profit,
         foodCostPercentage: totalSaleVal > 0 ? r2((cost.making_cost / totalSaleVal) * 100) : 0,
@@ -7295,6 +7410,9 @@ const reportsService = {
       total_orders: grandOrders,
       total_sale: grandSale,
       total_collection: grandSale,
+      order_sale: r2(days.reduce((s, d) => s + (d.order_sale || 0), 0)),
+      outside_collection: r2(outsideCollData.total),
+      outside_collection_count: outsideCollData.count,
       ordersByType: {
         dine_in: days.reduce((s, d) => s + d.ordersByType.dine_in, 0),
         takeaway: days.reduce((s, d) => s + d.ordersByType.takeaway, 0),
@@ -7323,11 +7441,23 @@ const reportsService = {
       days,
       grandTotal,
       dayCount: days.length,
+      outsideCollections: {
+        total: r2(outsideCollData.total),
+        count: outsideCollData.count,
+        byCashier: outsideCollData.byCashier || [],
+        paymentBreakdown: {
+          cash: r2(outsideCollData.cash),
+          card: r2(outsideCollData.card),
+          upi: r2(outsideCollData.upi),
+          other: r2(outsideCollData.other)
+        }
+      },
       crossVerification: {
         grand_total_sale: grandSale,
         day_sum_sale: r2(days.reduce((s, d) => s + d.total_sale, 0)),
+        outside_collection: r2(outsideCollData.total),
         match: Math.abs(grandSale - r2(days.reduce((s, d) => s + d.total_sale, 0))) < 0.01,
-        note: 'Only completed orders. total_sale = SUM(total_amount). total_collection = total_sale. No gross/net split.'
+        note: 'total_sale = SUM(total_amount) of completed orders + outside_collections. total_collection = total_sale. No gross/net split.'
       }
     };
   },
@@ -7453,6 +7583,12 @@ const reportsService = {
     );
 
     // ────────────────────────────────────────────────
+    // OUTSIDE COLLECTIONS
+    // ────────────────────────────────────────────────
+    const outsideCollData = await outsideCollectionService.getCollectionsForDateRange(outletId, start, end, floorIds);
+    const outsideByDate = outsideCollData.byDate || {};
+
+    // ────────────────────────────────────────────────
     // BUILD RESPONSE
     // ────────────────────────────────────────────────
     const r2 = (n) => parseFloat((parseFloat(n) || 0).toFixed(2));
@@ -7463,11 +7599,15 @@ const reportsService = {
         ? row.report_date.toISOString().slice(0, 10)
         : row.report_date;
 
+      const oc = outsideByDate[dateKey] || { total: 0, count: 0 };
       return {
         date: dateKey,
         total_orders: row.total_orders || 0,
-        total_sale: r2(row.total_sale),
-        total_collection: r2(row.total_sale), // same as total_sale per requirement
+        total_sale: r2(parseFloat(row.total_sale) + oc.total),
+        total_collection: r2(parseFloat(row.total_sale) + oc.total),
+        order_sale: r2(row.total_sale),
+        outside_collection: r2(oc.total),
+        outside_collection_count: oc.count || 0,
         dine_in_orders: row.dine_in_orders || 0,
         takeaway_orders: row.takeaway_orders || 0,
         delivery_orders: row.delivery_orders || 0,
@@ -7497,8 +7637,9 @@ const reportsService = {
       };
     });
 
-    // Overall summary
+    // Overall summary (total_sale already includes outside collections per-day)
     const grandTotalSale = daily.reduce((s, d) => s + d.total_sale, 0);
+    const grandOrderSale = daily.reduce((s, d) => s + (d.order_sale || 0), 0);
     const grandTotalOrders = daily.reduce((s, d) => s + d.total_orders, 0);
     const grandDiscount = daily.reduce((s, d) => s + d.discount_amount, 0);
     const grandNCAmount = daily.reduce((s, d) => s + d.nc_amount, 0);
@@ -7547,7 +7688,10 @@ const reportsService = {
       summary: {
         total_orders: grandTotalOrders,
         total_sale: r2(grandTotalSale),
-        total_collection: r2(grandTotalSale), // = total_sale (full bill of completed orders)
+        total_collection: r2(grandTotalSale),
+        order_sale: r2(grandOrderSale),
+        outside_collection: r2(outsideCollData.total),
+        outside_collection_count: outsideCollData.count,
         // Bifurcations
         discount_amount: r2(grandDiscount),
         nc_order_count: grandNCOrders,
@@ -7569,13 +7713,26 @@ const reportsService = {
           ? r2(grandTotalSale / grandTotalOrders) : 0
       },
       daily,
+      outsideCollections: {
+        total: r2(outsideCollData.total),
+        count: outsideCollData.count,
+        byCashier: outsideCollData.byCashier || [],
+        paymentBreakdown: {
+          cash: r2(outsideCollData.cash),
+          card: r2(outsideCollData.card),
+          upi: r2(outsideCollData.upi),
+          other: r2(outsideCollData.other)
+        }
+      },
       // Cross-verification section
       crossVerification: {
         summary_total_sale: r2(grandTotalSale),
         order_level_total: r2(orderLevelTotal),
-        match: Math.abs(grandTotalSale - orderLevelTotal) < 0.01,
-        formula: 'total_sale = SUM(total_amount) of all completed orders',
-        note: 'total_collection equals total_sale. NC, discount, adjustment, due amounts are included in total_sale and NOT excluded.'
+        outside_collection: r2(outsideCollData.total),
+        order_level_plus_outside: r2(orderLevelTotal + outsideCollData.total),
+        match: Math.abs(grandTotalSale - (orderLevelTotal + outsideCollData.total)) < 0.01,
+        formula: 'total_sale = SUM(total_amount) of all completed orders + outside_collections',
+        note: 'total_collection equals total_sale. NC, discount, adjustment, due amounts are included in total_sale and NOT excluded. Outside collections added separately.'
       },
       orders
     };

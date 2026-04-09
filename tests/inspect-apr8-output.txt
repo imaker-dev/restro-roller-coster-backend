@@ -1,0 +1,82 @@
+﻿=== SHEETS ===
+[ 'Sheet1' ]
+
+=== SHEET: Sheet1 ===
+Total rows: 73
+
+Headers (row 4): 
+  Col 0: "Order No."
+  Col 1: "Client OrderID"
+  Col 2: "Order Type"
+  Col 3: "Sub Order Type"
+  Col 4: "Customer Name"
+  Col 5: "Customer Phone"
+  Col 6: "GSTIN"
+  Col 7: "Customer Address"
+  Col 8: "Delivery Boy"
+  Col 9: "Delivery Boy Number"
+  Col 10: "Items"
+  Col 11: "My Amount (Γé╣)"
+  Col 12: "Total Discount (Γé╣)"
+  Col 13: "Delivery Charge (Γé╣)"
+  Col 14: "Container Charge (Γé╣)"
+  Col 15: "Total Tax (Γé╣)"
+  Col 16: "Round Off (Γé╣)"
+  Col 17: "Grand Total (Γé╣)"
+  Col 18: "Payment Type"
+  Col 19: "Payment Description"
+  Col 20: "Status"
+  Col 21: "Created"
+  Col 22: "Sequence Name"
+
+Data rows: 68
+
+Unique "Order Type": ["Dine In (BAR1)","Dine In (A4)","Dine In (A12)","Dine In (A7)","Dine In (A1)","Dine In (A2)","Dine In (A8)","Dine In (BAR14)","Dine In (BAR15)","Dine In (BAR9)","Dine In (B20)","Dine In (BAR10)","Dine In (B23)","Dine In (A9)","Delivery","Dine In (BAR16)","Dine In (BAR12)","Dine In (B22)","Dine In (B15)","Dine In (B14)","Dine In (BAR19)","Dine In (BAR2)","Dine In (B16)","Dine In (BAR5)","Dine In (BAR8)","Dine In (BAR20)","Dine In (B18)","Pick Up","Dine In (B21)","Dine In (A5)","Dine In (A6)"]
+Unique "Sub Order Type": ["BAR","Resturant","Roof Top","Swiggy","Zomato","Pick Up"]
+Unique "Payment Type": ["Due Payment","Cash","Part Payment","Card","Not Paid","Other [UPI]","Online"]
+Unique "Payment Description": ["Total : 4194.00","pp","Total : 566.00","R upi","Total : 370.00","ppp","r upi","Total : 303.00"]
+Unique "Order Status": []
+
+Extracted table names: ["A1","A12","A2","A4","A5","A6","A7","A8","A9","B14","B15","B16","B18","B20","B21","B22","B23","BAR1","BAR10","BAR12","BAR14","BAR15","BAR16","BAR19","BAR2","BAR20","BAR5","BAR8","BAR9"]
+
+Item-related columns: ["Items"]
+
+Sample rows (first 3):
+  Row 0: {"Order No.":3303,"Client OrderID":"","Order Type":"Dine In (BAR1)","Sub Order Type":"BAR","Customer Name":"vikram patel","Customer Phone":7067287817,"GSTIN":"","Customer Address":"","Delivery Boy":"","Delivery Boy Number":"","Items":"Blender'S Pride (Large 60 ML), Blender'S Pride (Small 30 ML)","My Amount (Γé╣)":1020,"Total Discount (Γé╣)":0,"Delivery Charge (Γé╣)":0,"Container Charge (Γé╣)":0,"Total Tax (Γé╣)":183.6,"Round Off (Γé╣)":0.4,"Grand Total (Γé╣)":1204,"Payment Type":"Due Payment","Payment Description":"","Status":"Printed","Created":"9 Apr 2026 00:15:10","Sequence Name":""}
+  Row 1: {"Order No.":3302,"Client OrderID":"","Order Type":"Dine In (A4)","Sub Order Type":"Resturant","Customer Name":"amit bhaiya","Customer Phone":8085813683,"GSTIN":"","Customer Address":"jadhaw bhaiya","Delivery Boy":"the city view","Delivery Boy Number":"","Items":"Brownie With Ice Cream","My Amount (Γé╣)":119,"Total Discount (Γé╣)":0,"Delivery Charge (Γé╣)":0,"Container Charge (Γé╣)":0,"Total Tax (Γé╣)":5.96,"Round Off (Γé╣)":0.04,"Grand Total (Γé╣)":125,"Payment Type":"Due Payment","Payment Description":"","Status":"Printed","Created":"9 Apr 2026 00:09:00","Sequence Name":""}
+  Row 2: {"Order No.":3301,"Client OrderID":"","Order Type":"Dine In (A12)","Sub Order Type":"Resturant","Customer Name":"vikram patel","Customer Phone":7067287817,"GSTIN":"","Customer Address":"","Delivery Boy":"the city view","Delivery Boy Number":"","Items":"Chicken Bagheli (Single), Garlic Naan, Jeera Rice","My Amount (Γé╣)":518,"Total Discount (Γé╣)":0,"Delivery Charge (Γé╣)":0,"Container Charge (Γé╣)":0,"Total Tax (Γé╣)":25.9,"Round Off (Γé╣)":0.1,"Grand Total (Γé╣)":544,"Payment Type":"Due Payment","Payment Description":"","Status":"Printed","Created":"9 Apr 2026 00:07:54","Sequence Name":""}
+
+Amount columns present:
+  "My Amount (Γé╣)" present
+  "Total Discount (Γé╣)" present
+  "Total Tax (Γé╣)" present
+  "Round Off (Γé╣)" present
+  "Grand Total (Γé╣)" present
+  "Delivery Charge (Γé╣)" present
+  "Container Charge (Γé╣)" present
+  "Service Charge" NOT FOUND
+  "Packaging Charge" NOT FOUND
+
+By Sub Order Type:
+  BAR: 23 orders, total=36108
+  Resturant: 15 orders, total=23011
+  : 12 orders, total=5433
+  Roof Top: 12 orders, total=11997
+  Swiggy: 3 orders, total=2004
+  Zomato: 2 orders, total=659
+  Pick Up: 1 orders, total=470
+
+By Payment Type:
+  Due Payment: 3 orders, total=1873
+  Cash: 20 orders, total=31940
+  Part Payment: 4 orders, total=0
+  Card: 2 orders, total=7484
+  Not Paid: 4 orders, total=0
+  Other [UPI]: 30 orders, total=35722
+  Online: 5 orders, total=2663
+
+Zomato orders: 2
+Swiggy orders: 3
+Online payment: 5
+
+All column headers: ["Order No.","Client OrderID","Order Type","Sub Order Type","Customer Name","Customer Phone","GSTIN","Customer Address","Delivery Boy","Delivery Boy Number","Items","My Amount (Γé╣)","Total Discount (Γé╣)","Delivery Charge (Γé╣)","Container Charge (Γé╣)","Total Tax (Γé╣)","Round Off (Γé╣)","Grand Total (Γé╣)","Payment Type","Payment Description","Status","Created","Sequence Name"]
