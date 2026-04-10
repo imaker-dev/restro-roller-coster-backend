@@ -7406,6 +7406,16 @@ const reportsService = {
     const grandOrders = days.reduce((s, d) => s + d.total_orders, 0);
     const grandMakingCost = r2(days.reduce((s, d) => s + d.makingCost, 0));
 
+    // Aggregate paymentBreakdown across all days
+    const grandPayBreakdown = {};
+    for (const d of days) {
+      if (d.paymentBreakdown) {
+        for (const [mode, amount] of Object.entries(d.paymentBreakdown)) {
+          grandPayBreakdown[mode] = r2((grandPayBreakdown[mode] || 0) + (parseFloat(amount) || 0));
+        }
+      }
+    }
+
     const grandTotal = {
       total_orders: grandOrders,
       total_sale: grandSale,
@@ -7429,6 +7439,11 @@ const reportsService = {
       adjustment_count: days.reduce((s, d) => s + d.adjustment_count, 0),
       adjustment_amount: r2(days.reduce((s, d) => s + d.adjustment_amount, 0)),
       average_order_value: grandOrders > 0 ? r2(grandSale / grandOrders) : 0,
+      paymentBreakdown: {
+        cash: r2(grandPayBreakdown['cash'] || 0),
+        card: r2(grandPayBreakdown['card'] || 0),
+        upi: r2(grandPayBreakdown['upi'] || 0),
+      },
       makingCost: grandMakingCost,
       profit: r2(days.reduce((s, d) => s + d.profit, 0)),
       foodCostPercentage: grandSale > 0 ? r2((grandMakingCost / grandSale) * 100) : 0,
