@@ -1325,11 +1325,12 @@ const printerService = {
 
   formatBillContent(billData) {
     const lines = [];
-    const w = 64; // 64-char width for TVS RP3230 80mm with Font B at 203 DPI
+    const w = 48; // 48-char full width for Font A on 80mm (zero char spacing fills the paper)
     const dash = '-'.repeat(w);
     const cmd = this.getEscPosCommands();
-    const FONT_B = '\x1B\x4D\x01'; // Condensed font (9x17, 64 chars/line on 80mm)
-    const LS_BODY = '\x1B\x33\x30'; // 48-dot line spacing — extra space to prevent text merging on thermal printers
+    const FONT_A = '\x1B\x4D\x00'; // Standard font (12x24) — bigger, clearer text
+    const CHAR_SPACE_0 = '\x1B\x20\x00'; // Zero right-side character spacing — fills full paper width
+    const LS_BODY = '\x1B\x33\x38'; // 56-dot line spacing — clean, readable spacing for Font A
 
     // ── 1. HEADER ───────────────────────────────
     if (billData.isDuplicate) {
@@ -1340,13 +1341,13 @@ const printerService = {
 
     // Restaurant name (double height, bold, centered)
     lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HEIGHT + (billData.outletName || 'Restaurant'));
-    // Switch to FONT_B + body line spacing — stays for entire bill body
-    lines.push(cmd.NORMAL + cmd.BOLD_OFF + FONT_B + LS_BODY);
+    // Switch to FONT_A + zero char spacing + body line spacing — stays for entire bill body
+    lines.push(cmd.NORMAL + cmd.BOLD_OFF + FONT_A + CHAR_SPACE_0 + LS_BODY);
     if (billData.outletAddress) lines.push(billData.outletAddress);
     if (billData.outletPhone) lines.push('Ph: ' + billData.outletPhone);
     if (billData.outletGstin) lines.push('GSTIN: ' + billData.outletGstin);
 
-    // ── 2. BILL META (left + right, full width) ─
+    // ── 2. BILL META ────────────────────────────
     lines.push(cmd.ALIGN_LEFT + dash);
     const orderLabel = billData.orderType === 'dine_in'
       ? 'Dine In: ' + (billData.tableNumber || '')
@@ -1356,11 +1357,9 @@ const printerService = {
       orderLabel,
       w
     ) + cmd.BOLD_OFF);
-    lines.push(this.padBetween(
-      'Bill: ' + (billData.invoiceNumber || ''),
-      'Cashier: ' + (billData.cashierName || 'Staff'),
-      w
-    ));
+    // Bill and Cashier on separate lines for cleaner look
+    lines.push('Bill: ' + (billData.invoiceNumber || ''));
+    lines.push('Cashier: ' + (billData.cashierName || 'Staff'));
 
     // ── 3. CUSTOMER (strict 2-column) ───────────
     lines.push(dash);
@@ -1397,9 +1396,9 @@ const printerService = {
     }
 
     // ── 4. ITEM TABLE (full width fixed grid) ───
-    // ITEM=34  QTY=6  RATE=11  AMT=13  = 64
+    // ITEM=24  QTY=5  RATE=9  AMT=10  = 48
     lines.push(dash);
-    const cN = 34, cQ = 6, cP = 11, cA = 13;
+    const cN = 24, cQ = 5, cP = 9, cA = 10;
     lines.push(cmd.BOLD_ON +
       'ITEM'.padEnd(cN) +
       this.rAlign('QTY', cQ) +
@@ -1421,7 +1420,7 @@ const printerService = {
         this.rAlign(amount, cA);
       let name = item.itemName || '';
       if (item.variantName) name += ' (' + item.variantName + ')';
-      if (item.taxRate && item.taxRate >= 18) name += ' \u2022';
+      if (item.taxRate && item.taxRate >= 18) name += '*';
       if (item.isNC) name += ' [NC]';
 
       if (name.length <= cN) {
@@ -1435,7 +1434,7 @@ const printerService = {
     lines.push(dash);
 
     // ── 5. SUMMARY (right-aligned values) ───────
-    lines.push(this.padBetween('Total Qty: ' + totalQty, '', w));
+    lines.push(cmd.BOLD_ON + this.padBetween('Total Qty: ' + totalQty, '', w) + cmd.BOLD_OFF);
     lines.push(this.padBetween('Subtotal:', billData.subtotal, w));
 
     for (const tax of billData.taxes || []) {
@@ -1467,11 +1466,13 @@ const printerService = {
       lines.push(cmd.BOLD_ON + this.padBetween('NO CHARGE (NC):', '-' + parseFloat(billData.ncAmount).toFixed(2), w) + cmd.BOLD_OFF);
     }
 
-    // ── 6. GRAND TOTAL (center, bold, double height)
-    lines.push(dash);
-    lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HEIGHT + 'GRAND TOTAL Rs.' + billData.grandTotal);
-    // Restore FONT_B + body spacing after DOUBLE_HEIGHT resets print mode
-    lines.push(cmd.NORMAL + cmd.BOLD_OFF + FONT_B + LS_BODY + cmd.ALIGN_LEFT + dash);
+    // ── 6. GRAND TOTAL (center, bold, double width + double height — max size)
+    const eqDash = '='.repeat(w);
+    lines.push(eqDash);
+    lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HW + 'GRAND TOTAL');
+    lines.push('Rs.' + billData.grandTotal);
+    // Restore FONT_A + zero char spacing + body spacing after DOUBLE_HW resets print mode
+    lines.push(cmd.NORMAL + cmd.BOLD_OFF + FONT_A + CHAR_SPACE_0 + LS_BODY + cmd.ALIGN_LEFT + eqDash);
 
     // ── 7. PAYMENT (full width) ─────────────────
     if (billData.dueAmount && parseFloat(billData.dueAmount) > 0) {
@@ -1550,6 +1551,7 @@ const printerService = {
       ALIGN_CENTER: '\x1B\x61\x01', // Align center
       ALIGN_RIGHT: '\x1B\x61\x02',  // Align right
       DOUBLE_HEIGHT: '\x1B\x21\x10', // Double height
+      DOUBLE_HW: '\x1B\x21\x30',      // Double height + double width (4x size)
       NORMAL: '\x1B\x21\x00',        // Normal text
       FEED_LINES: '\x1B\x64\x05',    // Feed 8 lines
       CUT: '\x1D\x56\x00',           // Full cut
