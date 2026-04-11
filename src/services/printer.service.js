@@ -1262,6 +1262,10 @@ const printerService = {
     const dash = '-'.repeat(w);
     const cmd = this.getEscPosCommands();
 
+    // Check if this is a bar order (BOT) - don't show item type for bar orders
+    const station = (cancelData.station || '').toLowerCase();
+    const isBarOrder = station.includes('bar') || station.includes('bot');
+
     lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + '*** CANCEL ***');
     lines.push(cmd.BOLD_OFF + cmd.ALIGN_LEFT + 'Order#: ' + (cancelData.orderNumber || 'N/A'));
     lines.push(this.padBetween(
@@ -1272,7 +1276,8 @@ const printerService = {
     lines.push(dash);
 
     for (const item of cancelData.items || []) {
-      const tag = item.itemType ? ` [${item.itemType.toUpperCase()}]` : '';
+      // Show food type (veg/non-veg) only for KOT (kitchen), not for BOT (bar)
+      const tag = (!isBarOrder && item.itemType) ? ` [${item.itemType.toUpperCase()}]` : '';
       lines.push(`${item.quantity} x ${item.itemName || ''}${tag}`);
       if (item.variantName) lines.push(`  (${item.variantName})`);
     }
