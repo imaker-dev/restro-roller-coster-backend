@@ -35,6 +35,22 @@ function getLocalDate(date = new Date()) {
   return `${year}-${month}-${day}`;
 }
 
+/**
+ * Convert business-day date strings to actual datetime range for index-friendly WHERE.
+ * For startDate=2026-04-11, endDate=2026-04-11:
+ *   startDt = '2026-04-11 04:00:00' (4am April 11)
+ *   endDt   = '2026-04-12 04:00:00' (4am April 12, exclusive)
+ */
+function businessDayRange(startDate, endDate) {
+  const h = String(BUSINESS_DAY_START_HOUR).padStart(2, '0') + ':00:00';
+  const startDt = `${startDate} ${h}`;
+  const ed = new Date(endDate + 'T00:00:00');
+  ed.setDate(ed.getDate() + 1);
+  const endStr = ed.getFullYear() + '-' + String(ed.getMonth() + 1).padStart(2, '0') + '-' + String(ed.getDate()).padStart(2, '0');
+  const endDt = `${endStr} ${h}`;
+  return { startDt, endDt };
+}
+
 const PAYMENT_MODES = {
   CASH: 'cash',
   CARD: 'card',
@@ -4292,18 +4308,21 @@ const paymentService = {
     const sortCol = sortMap[sortBy] || 'actual_due';
     const order = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
 
-    // Build date filter for orders (IST — MySQL stores dates in IST, use DATE() directly)
+    // Build date filter for orders (business hours: 4am to 4am)
     let orderDateFilter = '';
     const orderDateParams = [];
     if (startDate && endDate) {
-      orderDateFilter = ' AND DATE(o.created_at) BETWEEN ? AND ?';
-      orderDateParams.push(startDate, endDate);
+      const { startDt, endDt } = businessDayRange(startDate, endDate);
+      orderDateFilter = ' AND o.created_at >= ? AND o.created_at < ?';
+      orderDateParams.push(startDt, endDt);
     } else if (startDate) {
-      orderDateFilter = ' AND DATE(o.created_at) >= ?';
-      orderDateParams.push(startDate);
+      const { startDt } = businessDayRange(startDate, startDate);
+      orderDateFilter = ' AND o.created_at >= ?';
+      orderDateParams.push(startDt);
     } else if (endDate) {
-      orderDateFilter = ' AND DATE(o.created_at) <= ?';
-      orderDateParams.push(endDate);
+      const { endDt } = businessDayRange(endDate, endDate);
+      orderDateFilter = ' AND o.created_at < ?';
+      orderDateParams.push(endDt);
     }
 
     // Get customers with actual due calculated from orders (exclude cancelled orders)

@@ -28,6 +28,30 @@ const ORDER_STATUS = {
   CANCELLED: 'cancelled'
 };
 
+/**
+ * Business day starts at this hour (IST). Orders before this hour belong to the previous business day.
+ * E.g. 4 means: business day = 4:00 AM today → 3:59:59 AM tomorrow.
+ */
+const BUSINESS_DAY_START_HOUR = 4;
+
+/**
+ * Convert business-day date strings to actual datetime range for index-friendly WHERE.
+ * For startDate=2026-04-11, endDate=2026-04-11:
+ *   startDt = '2026-04-11 04:00:00' (4am April 11)
+ *   endDt   = '2026-04-12 04:00:00' (4am April 12, exclusive)
+ * This captures all orders from 4am April 11 to 3:59:59am April 12.
+ */
+function businessDayRange(startDate, endDate) {
+  const h = String(BUSINESS_DAY_START_HOUR).padStart(2, '0') + ':00:00';
+  const startDt = `${startDate} ${h}`;
+  // endDate is inclusive, so the upper bound is the START of the NEXT day
+  const ed = new Date(endDate + 'T00:00:00');
+  ed.setDate(ed.getDate() + 1);
+  const endStr = ed.getFullYear() + '-' + String(ed.getMonth() + 1).padStart(2, '0') + '-' + String(ed.getDate()).padStart(2, '0');
+  const endDt = `${endStr} ${h}`;
+  return { startDt, endDt };
+}
+
 const ITEM_STATUS = {
   PENDING: 'pending',
   SENT_TO_KITCHEN: 'sent_to_kitchen',
@@ -2562,14 +2586,19 @@ const orderService = {
       params.push(searchPattern, searchPattern, searchPattern, searchPattern);
     }
 
-    // Date range filter
-    if (startDate) {
-      query += ` AND DATE(o.created_at) >= ?`;
-      params.push(startDate);
-    }
-    if (endDate) {
-      query += ` AND DATE(o.created_at) <= ?`;
-      params.push(endDate);
+    // Date range filter (business hours: 4am to 4am)
+    if (startDate && endDate) {
+      const { startDt, endDt } = businessDayRange(startDate, endDate);
+      query += ` AND o.created_at >= ? AND o.created_at < ?`;
+      params.push(startDt, endDt);
+    } else if (startDate) {
+      const { startDt } = businessDayRange(startDate, startDate);
+      query += ` AND o.created_at >= ?`;
+      params.push(startDt);
+    } else if (endDate) {
+      const { endDt } = businessDayRange(endDate, endDate);
+      query += ` AND o.created_at < ?`;
+      params.push(endDt);
     }
 
     // Open item filter
@@ -2893,11 +2922,18 @@ const orderService = {
     let floorFilter = '';
     const params = [outletId, captainId];
 
+    // Date range filter (business hours: 4am to 4am)
     if (startDate && endDate) {
-      dateFilter = 'AND DATE(o.created_at) BETWEEN ? AND ?';
-      params.push(startDate, endDate);
+      const { startDt, endDt } = businessDayRange(startDate, endDate);
+      dateFilter = 'AND o.created_at >= ? AND o.created_at < ?';
+      params.push(startDt, endDt);
     } else {
-      dateFilter = 'AND DATE(o.created_at) = CURDATE()';
+      // Default to today's business day (4am today to 4am tomorrow)
+      const today = new Date();
+      const todayStr = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+      const { startDt, endDt } = businessDayRange(todayStr, todayStr);
+      dateFilter = 'AND o.created_at >= ? AND o.created_at < ?';
+      params.push(startDt, endDt);
     }
 
     if (floorIds && floorIds.length > 0) {
@@ -3769,14 +3805,22 @@ const orderService = {
       queryParams.push(paymentStatus);
     }
 
-    // Date range filter
-    if (startDate) {
-      conditions.push('DATE(o.created_at) >= ?');
-      queryParams.push(startDate);
-    }
-    if (endDate) {
-      conditions.push('DATE(o.created_at) <= ?');
-      queryParams.push(endDate);
+    // Date range filter (business hours: 4am to 4am)
+    if (startDate && endDate) {
+      // Both dates provided - use business day range
+      const { startDt, endDt } = businessDayRange(startDate, endDate);
+      conditions.push('o.created_at >= ? AND o.created_at < ?');
+      queryParams.push(startDt, endDt);
+    } else if (startDate) {
+      // Only start date - from 4am on that day onwards
+      const { startDt } = businessDayRange(startDate, startDate);
+      conditions.push('o.created_at >= ?');
+      queryParams.push(startDt);
+    } else if (endDate) {
+      // Only end date - up to 4am the next day
+      const { endDt } = businessDayRange(endDate, endDate);
+      conditions.push('o.created_at < ?');
+      queryParams.push(endDt);
     }
 
     // Captain filter
@@ -4052,13 +4096,19 @@ const orderService = {
       conditions.push('o.payment_status = ?');
       queryParams.push(paymentStatus);
     }
-    if (startDate) {
-      conditions.push('DATE(o.created_at) >= ?');
-      queryParams.push(startDate);
-    }
-    if (endDate) {
-      conditions.push('DATE(o.created_at) <= ?');
-      queryParams.push(endDate);
+    // Date range filter (business hours: 4am to 4am)
+    if (startDate && endDate) {
+      const { startDt, endDt } = businessDayRange(startDate, endDate);
+      conditions.push('o.created_at >= ? AND o.created_at < ?');
+      queryParams.push(startDt, endDt);
+    } else if (startDate) {
+      const { startDt } = businessDayRange(startDate, startDate);
+      conditions.push('o.created_at >= ?');
+      queryParams.push(startDt);
+    } else if (endDate) {
+      const { endDt } = businessDayRange(endDate, endDate);
+      conditions.push('o.created_at < ?');
+      queryParams.push(endDt);
     }
     if (captainId) {
       conditions.push('o.created_by = ?');

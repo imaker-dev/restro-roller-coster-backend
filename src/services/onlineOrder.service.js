@@ -11,6 +11,24 @@ const orderService = require('./order.service');
 const kotService = require('./kot.service');
 const dynoService = require('./dyno.service');
 
+/**
+ * Business day starts at this hour (IST). Orders before this hour belong to the previous business day.
+ */
+const BUSINESS_DAY_START_HOUR = 4;
+
+/**
+ * Convert business-day date strings to actual datetime range for index-friendly WHERE.
+ */
+function businessDayRange(startDate, endDate) {
+  const h = String(BUSINESS_DAY_START_HOUR).padStart(2, '0') + ':00:00';
+  const startDt = `${startDate} ${h}`;
+  const ed = new Date(endDate + 'T00:00:00');
+  ed.setDate(ed.getDate() + 1);
+  const endStr = ed.getFullYear() + '-' + String(ed.getMonth() + 1).padStart(2, '0') + '-' + String(ed.getDate()).padStart(2, '0');
+  const endDt = `${endStr} ${h}`;
+  return { startDt, endDt };
+}
+
 // Online order status enum
 const ONLINE_ORDER_STATUS = {
   RECEIVED: 'received',
@@ -657,13 +675,19 @@ const onlineOrderService = {
       query += ' AND oo.pos_status = ?';
       params.push(status);
     }
-    if (startDate) {
-      query += ' AND DATE(oo.created_at) >= ?';
-      params.push(startDate);
-    }
-    if (endDate) {
-      query += ' AND DATE(oo.created_at) <= ?';
-      params.push(endDate);
+    // Date range filter (business hours: 4am to 4am)
+    if (startDate && endDate) {
+      const { startDt, endDt } = businessDayRange(startDate, endDate);
+      query += ' AND oo.created_at >= ? AND oo.created_at < ?';
+      params.push(startDt, endDt);
+    } else if (startDate) {
+      const { startDt } = businessDayRange(startDate, startDate);
+      query += ' AND oo.created_at >= ?';
+      params.push(startDt);
+    } else if (endDate) {
+      const { endDt } = businessDayRange(endDate, endDate);
+      query += ' AND oo.created_at < ?';
+      params.push(endDt);
     }
 
     query += ' ORDER BY oo.created_at DESC LIMIT ?';
