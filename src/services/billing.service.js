@@ -29,6 +29,22 @@ function getLocalDate(date = new Date()) {
   return `${year}-${month}-${day}`;
 }
 
+/**
+ * Convert business-day date strings to actual datetime range for index-friendly WHERE.
+ * For startDate=2026-04-11, endDate=2026-04-11:
+ *   startDt = '2026-04-11 04:00:00' (4am April 11)
+ *   endDt   = '2026-04-12 04:00:00' (4am April 12, exclusive)
+ */
+function businessDayRange(startDate, endDate) {
+  const h = String(BUSINESS_DAY_START_HOUR).padStart(2, '0') + ':00:00';
+  const startDt = `${startDate} ${h}`;
+  const ed = new Date(endDate + 'T00:00:00');
+  ed.setDate(ed.getDate() + 1);
+  const endStr = ed.getFullYear() + '-' + String(ed.getMonth() + 1).padStart(2, '0') + '-' + String(ed.getDate()).padStart(2, '0');
+  const endDt = `${endStr} ${h}`;
+  return { startDt, endDt };
+}
+
 // ========================
 // FORMAT HELPERS — clean camelCase output matching KOT details style
 // ========================
@@ -1505,23 +1521,31 @@ const billingService = {
     let whereClause = `WHERE i.outlet_id = ? AND i.is_cancelled = 0`;
     const params = [outletId];
 
-    // Date range filter — use range comparison (NOT DATE() which prevents index usage)
-    if (fromDate) {
+    // Date range filter (business hours: 4am to 4am)
+    if (fromDate && toDate && fromDate.length === 10 && toDate.length === 10) {
+      // Both dates provided as YYYY-MM-DD - use business day range
+      const { startDt, endDt } = businessDayRange(fromDate, toDate);
+      whereClause += ` AND i.created_at >= ? AND i.created_at < ?`;
+      params.push(startDt, endDt);
+    } else if (fromDate) {
       if (fromDate.length === 10) {
-        // Date-only: start of day
+        // Date-only: from 4am on that day
+        const { startDt } = businessDayRange(fromDate, fromDate);
         whereClause += ` AND i.created_at >= ?`;
-        params.push(`${fromDate} 00:00:00`);
+        params.push(startDt);
       } else {
+        // Full datetime provided - use as-is
         whereClause += ` AND i.created_at >= ?`;
         params.push(fromDate);
       }
-    }
-    if (toDate) {
+    } else if (toDate) {
       if (toDate.length === 10) {
-        // Date-only: end of day
-        whereClause += ` AND i.created_at <= ?`;
-        params.push(`${toDate} 23:59:59`);
+        // Date-only: up to 4am the next day
+        const { endDt } = businessDayRange(toDate, toDate);
+        whereClause += ` AND i.created_at < ?`;
+        params.push(endDt);
       } else {
+        // Full datetime provided - use as-is
         whereClause += ` AND i.created_at <= ?`;
         params.push(toDate);
       }

@@ -1240,7 +1240,8 @@ const printerService = {
     lines.push(dash);
 
     for (const item of kotData.items || []) {
-      const tag = item.itemType ? ` [${item.itemType.toUpperCase()}]` : '';
+      // Show food type (veg/non-veg) only for KOT (kitchen), not for BOT (bar)
+      const tag = (!isBarOrder && item.itemType) ? ` [${item.itemType.toUpperCase()}]` : '';
       lines.push(`${item.quantity} x ${item.itemName || ''}${tag}`);
       if (item.variantName) lines.push(`  (${item.variantName})`);
       if (item.weight) lines.push(`  Wt: ${item.weight}`);
