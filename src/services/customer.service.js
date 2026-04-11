@@ -52,6 +52,27 @@ function hasText(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+/**
+ * Business day starts at this hour (IST). Orders before this hour belong to the previous business day.
+ */
+const BUSINESS_DAY_START_HOUR = 4;
+
+/**
+ * Convert business-day date strings to actual datetime range for index-friendly WHERE.
+ * For startDate=2026-04-11, endDate=2026-04-11:
+ *   startDt = '2026-04-11 04:00:00' (4am April 11)
+ *   endDt   = '2026-04-12 04:00:00' (4am April 12, exclusive)
+ */
+function businessDayRange(startDate, endDate) {
+  const h = String(BUSINESS_DAY_START_HOUR).padStart(2, '0') + ':00:00';
+  const startDt = `${startDate} ${h}`;
+  const ed = new Date(endDate + 'T00:00:00');
+  ed.setDate(ed.getDate() + 1);
+  const endStr = ed.getFullYear() + '-' + String(ed.getMonth() + 1).padStart(2, '0') + '-' + String(ed.getDate()).padStart(2, '0');
+  const endDt = `${endStr} ${h}`;
+  return { startDt, endDt };
+}
+
 const customerService = {
   // ========================
   // CUSTOMER CRUD
@@ -624,13 +645,43 @@ const customerService = {
       params.push(orderType.trim());
     }
 
-    if (hasText(fromDate)) {
-      whereParts.push('o.created_at >= ?');
-      params.push(fromDate.trim());
-    }
-    if (hasText(toDate)) {
-      whereParts.push('o.created_at <= ?');
-      params.push(toDate.trim());
+    // Date range filter (business hours: 4am to 4am)
+    if (hasText(fromDate) && hasText(toDate)) {
+      // Both dates provided - use business day range
+      const fromDateStr = fromDate.trim();
+      const toDateStr = toDate.trim();
+      // Check if dates are in YYYY-MM-DD format (10 chars)
+      if (fromDateStr.length === 10 && toDateStr.length === 10) {
+        const { startDt, endDt } = businessDayRange(fromDateStr, toDateStr);
+        whereParts.push('o.created_at >= ? AND o.created_at < ?');
+        params.push(startDt, endDt);
+      } else {
+        // Full datetime provided - use as-is
+        whereParts.push('o.created_at >= ?');
+        params.push(fromDateStr);
+        whereParts.push('o.created_at <= ?');
+        params.push(toDateStr);
+      }
+    } else if (hasText(fromDate)) {
+      const fromDateStr = fromDate.trim();
+      if (fromDateStr.length === 10) {
+        const { startDt } = businessDayRange(fromDateStr, fromDateStr);
+        whereParts.push('o.created_at >= ?');
+        params.push(startDt);
+      } else {
+        whereParts.push('o.created_at >= ?');
+        params.push(fromDateStr);
+      }
+    } else if (hasText(toDate)) {
+      const toDateStr = toDate.trim();
+      if (toDateStr.length === 10) {
+        const { endDt } = businessDayRange(toDateStr, toDateStr);
+        whereParts.push('o.created_at < ?');
+        params.push(endDt);
+      } else {
+        whereParts.push('o.created_at <= ?');
+        params.push(toDateStr);
+      }
     }
 
     const minTotal = toSafeNumber(minAmount);
@@ -1373,14 +1424,40 @@ const customerService = {
       );
     }
 
-    // Date filters on due orders
-    if (hasText(fromDate)) {
-      orderSearchCondition += ' AND o.created_at >= ?';
-      orderSearchParams.push(fromDate.trim());
-    }
-    if (hasText(toDate)) {
-      orderSearchCondition += ' AND o.created_at <= ?';
-      orderSearchParams.push(toDate.trim());
+    // Date filters on due orders (business hours: 4am to 4am)
+    if (hasText(fromDate) && hasText(toDate)) {
+      const fromDateStr = fromDate.trim();
+      const toDateStr = toDate.trim();
+      if (fromDateStr.length === 10 && toDateStr.length === 10) {
+        const { startDt, endDt } = businessDayRange(fromDateStr, toDateStr);
+        orderSearchCondition += ' AND o.created_at >= ? AND o.created_at < ?';
+        orderSearchParams.push(startDt, endDt);
+      } else {
+        orderSearchCondition += ' AND o.created_at >= ?';
+        orderSearchParams.push(fromDateStr);
+        orderSearchCondition += ' AND o.created_at <= ?';
+        orderSearchParams.push(toDateStr);
+      }
+    } else if (hasText(fromDate)) {
+      const fromDateStr = fromDate.trim();
+      if (fromDateStr.length === 10) {
+        const { startDt } = businessDayRange(fromDateStr, fromDateStr);
+        orderSearchCondition += ' AND o.created_at >= ?';
+        orderSearchParams.push(startDt);
+      } else {
+        orderSearchCondition += ' AND o.created_at >= ?';
+        orderSearchParams.push(fromDateStr);
+      }
+    } else if (hasText(toDate)) {
+      const toDateStr = toDate.trim();
+      if (toDateStr.length === 10) {
+        const { endDt } = businessDayRange(toDateStr, toDateStr);
+        orderSearchCondition += ' AND o.created_at < ?';
+        orderSearchParams.push(endDt);
+      } else {
+        orderSearchCondition += ' AND o.created_at <= ?';
+        orderSearchParams.push(toDateStr);
+      }
     }
 
     const customerWhereClause = customerConditions.join(' AND ');
