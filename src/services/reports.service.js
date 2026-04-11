@@ -34,13 +34,21 @@ function getLocalDate(date = new Date()) {
  * Build SQL snippet + params for floor restriction.
  * @param {number[]} floorIds - array of allowed floor IDs (empty = no restriction)
  * @param {string} alias - table alias for orders, default 'o'
+ * @param {number|null} cashierId - when set, takeaway/delivery orders are restricted to this creator only
  * @returns {{ sql: string, params: number[] }}
  */
-function floorFilter(floorIds, alias = 'o') {
+function floorFilter(floorIds, alias = 'o', cashierId = null) {
   if (!floorIds || floorIds.length === 0) return { sql: '', params: [] };
   const placeholders = floorIds.map(() => '?').join(',');
   // When filtering orders table, include takeaway/delivery (floor_id IS NULL)
+  // If cashierId is provided, restrict takeaway/delivery to only orders created by this cashier
   if (alias === 'o') {
+    if (cashierId) {
+      return {
+        sql: ` AND (${alias}.floor_id IN (${placeholders}) OR (${alias}.floor_id IS NULL AND ${alias}.order_type IN ('takeaway', 'delivery') AND ${alias}.created_by = ?))`,
+        params: [...floorIds, cashierId]
+      };
+    }
     return {
       sql: ` AND (${alias}.floor_id IN (${placeholders}) OR (${alias}.floor_id IS NULL AND ${alias}.order_type IN ('takeaway', 'delivery')))`,
       params: [...floorIds]
@@ -411,7 +419,9 @@ const reportsService = {
     const { cashierId = null, isCashierOnly = false } = options;
     const pool = getPool();
     const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
-    const ff = floorFilter(floorIds);
+    // When cashier is viewing, restrict takeaway/delivery orders to only their own
+    const effectiveCashierId = isCashierOnly ? cashierId : null;
+    const ff = floorFilter(floorIds, 'o', effectiveCashierId);
 
     // Execute all 5 independent queries in parallel
     // ONLY completed orders for sales (not cancelled, not in-progress)
@@ -2504,7 +2514,9 @@ const reportsService = {
     const pool = getPool();
     const today = getLocalDate();
     const { startDt, endDt } = businessDayRange(today, today);
-    const ff = floorFilter(floorIds);
+    // When cashier is viewing, restrict takeaway/delivery orders to only their own
+    const effectiveCashierId = isCashierOnly ? cashierId : null;
+    const ff = floorFilter(floorIds, 'o', effectiveCashierId);
     const ffT = floorFilter(floorIds, 't');
 
     // Execute all 5 independent queries in parallel
@@ -2726,9 +2738,15 @@ const reportsService = {
     let params = [outletId, startDt, endDt];
 
     // Floor restriction for assigned-floor users (include takeaway/delivery with NULL floor)
+    // If cashier, restrict takeaway/delivery to only their own orders via created_by
     if (options.floorIds && options.floorIds.length > 0) {
-      conditions.push(`(o.floor_id IN (${options.floorIds.map(() => '?').join(',')}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`);
-      params.push(...options.floorIds);
+      if (options.isCashierOnly && options.cashierId) {
+        conditions.push(`(o.floor_id IN (${options.floorIds.map(() => '?').join(',')}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery') AND o.created_by = ?))`);
+        params.push(...options.floorIds, options.cashierId);
+      } else {
+        conditions.push(`(o.floor_id IN (${options.floorIds.map(() => '?').join(',')}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`);
+        params.push(...options.floorIds);
+      }
     }
 
     if (orderType) { conditions.push('o.order_type = ?'); params.push(orderType); }
@@ -5287,10 +5305,16 @@ const reportsService = {
     let params = [outletId, startDt, endDt];
 
     // Floor restriction - include takeaway/delivery orders (they have NULL floor_id)
+    // If cashier, restrict takeaway/delivery to only their own orders via created_by
     if (floorIds.length > 0) {
       const floorPlaceholders = floorIds.map(() => '?').join(',');
-      conditions.push(`(o.floor_id IN (${floorPlaceholders}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`);
-      params.push(...floorIds);
+      if (isCashier && userId) {
+        conditions.push(`(o.floor_id IN (${floorPlaceholders}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery') AND o.created_by = ?))`);
+        params.push(...floorIds, userId);
+      } else {
+        conditions.push(`(o.floor_id IN (${floorPlaceholders}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`);
+        params.push(...floorIds);
+      }
     }
 
     // Cashier sees only their billed orders or orders they created
@@ -5538,10 +5562,16 @@ const reportsService = {
     let params = [outletId, startDt, endDt];
 
     // Floor restriction - include takeaway/delivery orders
+    // If cashier, restrict takeaway/delivery to only their own orders via created_by
     if (floorIds.length > 0) {
       const floorPlaceholders = floorIds.map(() => '?').join(',');
-      conditions.push(`(o.floor_id IN (${floorPlaceholders}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`);
-      params.push(...floorIds);
+      if (isCashier && userId) {
+        conditions.push(`(o.floor_id IN (${floorPlaceholders}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery') AND o.created_by = ?))`);
+        params.push(...floorIds, userId);
+      } else {
+        conditions.push(`(o.floor_id IN (${floorPlaceholders}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`);
+        params.push(...floorIds);
+      }
     }
 
     // Cashier sees only their orders
@@ -6137,8 +6167,13 @@ const reportsService = {
     let params = [outletId, startDt, endDt];
 
     if (floorIds.length > 0) {
-      conditions.push(`(o.floor_id IN (${floorIds.map(() => '?').join(',')}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`);
-      params.push(...floorIds);
+      if (userId) {
+        conditions.push(`(o.floor_id IN (${floorIds.map(() => '?').join(',')}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery') AND o.created_by = ?))`);
+        params.push(...floorIds, userId);
+      } else {
+        conditions.push(`(o.floor_id IN (${floorIds.map(() => '?').join(',')}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`);
+        params.push(...floorIds);
+      }
     }
 
     // If userId provided (cashier), only show their data

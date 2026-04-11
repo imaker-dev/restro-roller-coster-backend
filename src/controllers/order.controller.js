@@ -78,7 +78,7 @@ const orderController = {
         limit: req.query.limit,
         status: req.query.status,
         cashierId: req.user.userId,
-        userRole: req.user.role
+        userRoles: req.user.roles || []
       };
       const result = await orderService.getPendingTakeawayOrders(outletId, filters);
       res.json({ success: true, data: result.data, pagination: result.pagination });
@@ -880,12 +880,16 @@ const orderController = {
               captainName, cashierName, floorName, tableNumber,
               sortBy, sortOrder } = req.query;
       const floorIds = await getUserFloorIds(req.user.userId, outletId);
+      const userRoles = req.user.roles || [];
+      const isCashierOnly = userRoles.length > 0 && !userRoles.some(r => ['admin', 'super_admin', 'manager', 'owner'].includes(r));
       const report = await reportsService.getDailySalesDetail(outletId, startDate, endDate, {
         page, limit, search,
         orderType, status, paymentStatus,
         captainName, cashierName, floorName, tableNumber,
         sortBy, sortOrder,
-        floorIds: floorIds.length > 0 ? floorIds : undefined
+        floorIds: floorIds.length > 0 ? floorIds : undefined,
+        cashierId: isCashierOnly ? req.user.userId : null,
+        isCashierOnly
       });
       res.json({ success: true, data: report });
     } catch (error) {

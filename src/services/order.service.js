@@ -1460,7 +1460,7 @@ const orderService = {
     const pool = getPool();
     const {
       search, sortBy = 'created_at', sortOrder = 'DESC',
-      status, cashierId, userRole
+      status, cashierId, userRoles = []
     } = filters;
     const page = Math.max(1, parseInt(filters.page) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(filters.limit) || 20));
@@ -1473,10 +1473,11 @@ const orderService = {
     let whereClause = `WHERE o.outlet_id = ? AND o.order_type = 'takeaway'`;
     const params = [outletId];
 
-    // Cashier-wise filtering: cashiers only see their own orders
+    // Cashier-wise filtering: cashiers only see their own takeaway orders
     // Admins, managers, super_admins can see all orders
     const privilegedRoles = ['super_admin', 'admin', 'manager'];
-    if (cashierId && userRole && !privilegedRoles.includes(userRole)) {
+    const isPrivileged = userRoles.some(r => privilegedRoles.includes(r));
+    if (cashierId && !isPrivileged) {
       whereClause += ` AND o.created_by = ?`;
       params.push(cashierId);
     }

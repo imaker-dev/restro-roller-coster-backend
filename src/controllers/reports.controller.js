@@ -227,7 +227,8 @@ const getDailySalesReport = async (req, res, next) => {
       parseInt(outletId),
       startDate,
       endDate,
-      scope.floorIds
+      scope.floorIds,
+      { cashierId: scope.userId, isCashierOnly: scope.isCashier }
     );
 
     res.status(200).json({
@@ -259,7 +260,7 @@ const getDailySalesDetail = async (req, res, next) => {
       parseInt(outletId),
       startDate,
       endDate,
-      { ...filters, floorIds: scope.floorIds }
+      { ...filters, floorIds: scope.floorIds, cashierId: scope.userId, isCashierOnly: scope.isCashier }
     );
 
     res.status(200).json({
@@ -610,7 +611,8 @@ const getLiveDashboard = async (req, res, next) => {
     
     const result = await reportsService.getLiveDashboard(
       parseInt(outletId),
-      scope.floorIds
+      scope.floorIds,
+      { cashierId: scope.userId, isCashierOnly: scope.isCashier }
     );
 
     res.status(200).json({
