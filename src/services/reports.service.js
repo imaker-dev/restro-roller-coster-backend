@@ -1348,20 +1348,12 @@ const reportsService = {
     
     const ff = floorFilter(floorIds);
 
-    // Build search condition for floor query
-    let floorSearchSql = '';
-    const floorSearchParams = [];
+    // Build search condition — searches both floor and section names (for section + count queries)
+    let searchSql = '';
+    const searchParams = [];
     if (search) {
-      floorSearchSql = ` AND f.name LIKE ?`;
-      floorSearchParams.push(`%${search}%`);
-    }
-
-    // Build search condition for section query  
-    let sectionSearchSql = '';
-    const sectionSearchParams = [];
-    if (search) {
-      sectionSearchSql = ` AND (f.name LIKE ? OR s.name LIKE ?)`;
-      sectionSearchParams.push(`%${search}%`, `%${search}%`);
+      searchSql = ` AND (f.name LIKE ? OR f2.name LIKE ? OR s.name LIKE ? OR s2.name LIKE ?)`;
+      searchParams.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
     }
 
     // Valid sort columns
@@ -1372,8 +1364,8 @@ const reportsService = {
     const [floorRowsRes, countResultRes, sectionRowsRes] = await Promise.all([
       pool.query(
         `SELECT 
-          o.floor_id, 
-          f.name as floor_name,
+          COALESCE(o.floor_id, t.floor_id) as floor_id, 
+          COALESCE(f.name, f2.name) as floor_name,
           COUNT(*) as order_count,
           COALESCE(SUM(CAST(o.guest_count AS UNSIGNED)), 0) as guest_count,
           COALESCE(SUM(o.total_amount), 0) as total_sale,
@@ -1385,26 +1377,31 @@ const reportsService = {
           SUM(COALESCE(o.due_amount, 0)) as due_amount,
           SUM(COALESCE(o.paid_amount, 0)) as paid_amount
          FROM orders o
-         INNER JOIN floors f ON o.floor_id = f.id
-         WHERE o.outlet_id = ? AND o.status = 'completed' AND ${bdWhere('o.created_at')} AND o.floor_id IS NOT NULL${ff.sql}${floorSearchSql}
-         GROUP BY o.floor_id, f.name
+         LEFT JOIN tables t ON o.table_id = t.id
+         LEFT JOIN floors f ON o.floor_id = f.id
+         LEFT JOIN floors f2 ON t.floor_id = f2.id
+         WHERE o.outlet_id = ? AND o.status = 'completed' AND ${bdWhere('o.created_at')}${ff.sql}
+         GROUP BY COALESCE(o.floor_id, t.floor_id), COALESCE(f.name, f2.name)
          ORDER BY total_sale DESC`,
-        [outletId, startDt, endDt, ...ff.params, ...floorSearchParams]
+        [outletId, startDt, endDt, ...ff.params]
       ),
       pool.query(
-        `SELECT COUNT(DISTINCT CONCAT(o.floor_id, '-', COALESCE(o.section_id, 0))) as total
+        `SELECT COUNT(DISTINCT CONCAT(COALESCE(o.floor_id, t.floor_id, 0), '-', COALESCE(o.section_id, t.section_id, 0))) as total
          FROM orders o
-         INNER JOIN floors f ON o.floor_id = f.id
+         LEFT JOIN tables t ON o.table_id = t.id
+         LEFT JOIN floors f ON o.floor_id = f.id
+         LEFT JOIN floors f2 ON t.floor_id = f2.id
          LEFT JOIN sections s ON o.section_id = s.id
-         WHERE o.outlet_id = ? AND o.status = 'completed' AND ${bdWhere('o.created_at')} AND o.floor_id IS NOT NULL${ff.sql}${sectionSearchSql}`,
-        [outletId, startDt, endDt, ...ff.params, ...sectionSearchParams]
+         LEFT JOIN sections s2 ON t.section_id = s2.id
+         WHERE o.outlet_id = ? AND o.status = 'completed' AND ${bdWhere('o.created_at')}${ff.sql}${searchSql}`,
+        [outletId, startDt, endDt, ...ff.params, ...searchParams]
       ),
       pool.query(
         `SELECT 
-          o.floor_id, 
-          f.name as floor_name,
-          o.section_id, 
-          s.name as section_name,
+          COALESCE(o.floor_id, t.floor_id) as floor_id, 
+          COALESCE(f.name, f2.name) as floor_name,
+          COALESCE(o.section_id, t.section_id) as section_id, 
+          COALESCE(s.name, s2.name) as section_name,
           COUNT(*) as order_count,
           COALESCE(SUM(CAST(o.guest_count AS UNSIGNED)), 0) as guest_count,
           COALESCE(SUM(o.total_amount), 0) as total_sale,
@@ -1416,13 +1413,16 @@ const reportsService = {
           SUM(COALESCE(o.due_amount, 0)) as due_amount,
           SUM(COALESCE(o.paid_amount, 0)) as paid_amount
          FROM orders o
-         INNER JOIN floors f ON o.floor_id = f.id
+         LEFT JOIN tables t ON o.table_id = t.id
+         LEFT JOIN floors f ON o.floor_id = f.id
+         LEFT JOIN floors f2 ON t.floor_id = f2.id
          LEFT JOIN sections s ON o.section_id = s.id
-         WHERE o.outlet_id = ? AND o.status = 'completed' AND ${bdWhere('o.created_at')} AND o.floor_id IS NOT NULL${ff.sql}${sectionSearchSql}
-         GROUP BY o.floor_id, f.name, o.section_id, s.name
+         LEFT JOIN sections s2 ON t.section_id = s2.id
+         WHERE o.outlet_id = ? AND o.status = 'completed' AND ${bdWhere('o.created_at')}${ff.sql}${searchSql}
+         GROUP BY COALESCE(o.floor_id, t.floor_id), COALESCE(f.name, f2.name), COALESCE(o.section_id, t.section_id), COALESCE(s.name, s2.name)
          ORDER BY ${orderCol} ${sortOrder}
          LIMIT ? OFFSET ?`,
-        [outletId, startDt, endDt, ...ff.params, ...sectionSearchParams, limit, offset]
+        [outletId, startDt, endDt, ...ff.params, ...searchParams, limit, offset]
       )
     ]);
     const floorRows = floorRowsRes[0];
@@ -1472,10 +1472,14 @@ const reportsService = {
       });
     }
 
-    // Format floors with nested sections
-    const floors = floorRows.map(r => {
+    // Separate named floors from null-floor rows
+    const namedFloorRows = floorRows.filter(r => r.floor_id != null);
+    const nullFloorRow = floorRows.find(r => r.floor_id == null);
+
+    // Format named floors with nested sections
+    const floors = namedFloorRows.map(r => {
       const floorId = r.floor_id;
-      const floorSections = sectionsByFloor[floorId] || sectionsByFloor['unassigned'] || [];
+      const floorSections = sectionsByFloor[floorId] || [];
       return {
         floorId: floorId,
         floorName: r.floor_name || 'Unassigned',
@@ -1493,6 +1497,45 @@ const reportsService = {
         sections: floorSections
       };
     });
+
+    // Merge null-floor (takeaway/delivery) orders into the lowest-id named floor
+    if (nullFloorRow && floors.length > 0) {
+      const target = floors.reduce((a, b) => (a.floorId < b.floorId ? a : b));
+      target.orderCount += parseInt(nullFloorRow.order_count) || 0;
+      target.guestCount += parseInt(nullFloorRow.guest_count) || 0;
+      target.totalSale += parseFloat(nullFloorRow.total_sale) || 0;
+      target.discountAmount += parseFloat(nullFloorRow.discount_amount) || 0;
+      target.taxAmount += parseFloat(nullFloorRow.tax_amount) || 0;
+      target.serviceCharge += parseFloat(nullFloorRow.service_charge) || 0;
+      target.ncOrders += parseInt(nullFloorRow.nc_orders) || 0;
+      target.ncAmount += parseFloat(nullFloorRow.nc_amount) || 0;
+      target.dueAmount += parseFloat(nullFloorRow.due_amount) || 0;
+      target.paidAmount += parseFloat(nullFloorRow.paid_amount) || 0;
+      target.avgOrderValue = target.orderCount > 0 ? parseFloat((target.totalSale / target.orderCount).toFixed(2)) : 0;
+      // Merge unassigned sections into this floor's sections
+      const unassignedSections = sectionsByFloor['unassigned'] || [];
+      if (unassignedSections.length > 0) {
+        target.sections = [...target.sections, ...unassignedSections];
+      }
+    } else if (nullFloorRow) {
+      // No named floors — show as-is
+      floors.push({
+        floorId: null,
+        floorName: 'Unassigned',
+        orderCount: parseInt(nullFloorRow.order_count) || 0,
+        guestCount: parseInt(nullFloorRow.guest_count) || 0,
+        totalSale: parseFloat(nullFloorRow.total_sale) || 0,
+        discountAmount: parseFloat(nullFloorRow.discount_amount) || 0,
+        taxAmount: parseFloat(nullFloorRow.tax_amount) || 0,
+        serviceCharge: parseFloat(nullFloorRow.service_charge) || 0,
+        ncOrders: parseInt(nullFloorRow.nc_orders) || 0,
+        ncAmount: parseFloat(nullFloorRow.nc_amount) || 0,
+        dueAmount: parseFloat(nullFloorRow.due_amount) || 0,
+        paidAmount: parseFloat(nullFloorRow.paid_amount) || 0,
+        avgOrderValue: nullFloorRow.order_count > 0 ? parseFloat((parseFloat(nullFloorRow.total_sale) / nullFloorRow.order_count).toFixed(2)) : 0,
+        sections: sectionsByFloor['unassigned'] || []
+      });
+    }
 
     // Calculate summary totals from floors (more accurate)
     const totalOrders = floors.reduce((s, r) => s + r.orderCount, 0);
@@ -7507,12 +7550,15 @@ const reportsService = {
     });
 
     // Build floor breakdown maps (keyed by date -> floorId)
+    // Takeaway/delivery orders (floor_id IS NULL) are merged into the first (lowest-id) floor
     const floorByDate = {};
+    // First pass: build all floor entries (skip null floors initially)
+    const nullFloorRows = [];
     for (const fr of floorRows) {
       const dk = fr.report_date instanceof Date ? fr.report_date.toISOString().slice(0, 10) : fr.report_date;
-      const fk = fr.floor_id || 'takeaway_delivery';
+      if (!fr.floor_id) { nullFloorRows.push(fr); continue; }
       if (!floorByDate[dk]) floorByDate[dk] = {};
-      floorByDate[dk][fk] = {
+      floorByDate[dk][fr.floor_id] = {
         floor_id: fr.floor_id,
         floor_name: fr.floor_name,
         total_orders: parseInt(fr.total_orders) || 0,
@@ -7535,17 +7581,74 @@ const reportsService = {
         paymentBreakdown: {}
       };
     }
-    // Merge floor-wise payments
+    // Second pass: merge null-floor (takeaway/delivery) rows into the first floor of that date
+    for (const fr of nullFloorRows) {
+      const dk = fr.report_date instanceof Date ? fr.report_date.toISOString().slice(0, 10) : fr.report_date;
+      if (!floorByDate[dk]) floorByDate[dk] = {};
+      const floorKeys = Object.keys(floorByDate[dk]).map(Number).filter(Boolean).sort((a, b) => a - b);
+      const targetKey = floorKeys[0];
+      if (targetKey && floorByDate[dk][targetKey]) {
+        const t = floorByDate[dk][targetKey];
+        t.total_orders += parseInt(fr.total_orders) || 0;
+        t.total_sale = r2(t.total_sale + r2(fr.total_sale));
+        t.ordersByType.dine_in += parseInt(fr.dine_in_orders) || 0;
+        t.ordersByType.takeaway += parseInt(fr.takeaway_orders) || 0;
+        t.ordersByType.delivery += parseInt(fr.delivery_orders) || 0;
+        t.discount_amount = r2(t.discount_amount + r2(fr.discount_amount));
+        t.tax_amount = r2(t.tax_amount + r2(fr.tax_amount));
+        t.service_charge = r2(t.service_charge + r2(fr.service_charge));
+        t.total_guests += parseInt(fr.total_guests) || 0;
+        t.nc_orders += parseInt(fr.nc_orders) || 0;
+        t.nc_amount = r2(t.nc_amount + r2(fr.nc_amount));
+        t.paid_amount = r2(t.paid_amount + r2(fr.paid_amount));
+        t.due_amount = r2(t.due_amount + r2(fr.due_amount));
+        t.adjustment_count += parseInt(fr.adjustment_count) || 0;
+        t.adjustment_amount = r2(t.adjustment_amount + r2(fr.adjustment_amount));
+      } else {
+        // No named floor exists for this date — create with floor info from DB
+        floorByDate[dk]['no_floor'] = {
+          floor_id: null,
+          floor_name: fr.floor_name,
+          total_orders: parseInt(fr.total_orders) || 0,
+          total_sale: r2(fr.total_sale),
+          ordersByType: {
+            dine_in: parseInt(fr.dine_in_orders) || 0,
+            takeaway: parseInt(fr.takeaway_orders) || 0,
+            delivery: parseInt(fr.delivery_orders) || 0
+          },
+          discount_amount: r2(fr.discount_amount),
+          tax_amount: r2(fr.tax_amount),
+          service_charge: r2(fr.service_charge),
+          total_guests: parseInt(fr.total_guests) || 0,
+          nc_orders: parseInt(fr.nc_orders) || 0,
+          nc_amount: r2(fr.nc_amount),
+          paid_amount: r2(fr.paid_amount),
+          due_amount: r2(fr.due_amount),
+          adjustment_count: parseInt(fr.adjustment_count) || 0,
+          adjustment_amount: r2(fr.adjustment_amount),
+          paymentBreakdown: {}
+        };
+      }
+    }
+    // Merge floor-wise payments (null floor payments go to the first floor)
     for (const fp of floorPayRows) {
       const dk = fp.report_date instanceof Date ? fp.report_date.toISOString().slice(0, 10) : fp.report_date;
-      const fk = fp.floor_id || 'takeaway_delivery';
+      let fk = fp.floor_id;
+      if (!fk) {
+        const floorKeys = Object.keys(floorByDate[dk] || {}).map(Number).filter(Boolean).sort((a, b) => a - b);
+        fk = floorKeys[0] || 'no_floor';
+      }
       if (floorByDate[dk] && floorByDate[dk][fk] && fp.payment_mode !== 'split') {
         floorByDate[dk][fk].paymentBreakdown[fp.payment_mode] = (floorByDate[dk][fk].paymentBreakdown[fp.payment_mode] || 0) + (parseFloat(fp.amount) || 0);
       }
     }
     for (const fsp of floorSplitPayRows) {
       const dk = fsp.report_date instanceof Date ? fsp.report_date.toISOString().slice(0, 10) : fsp.report_date;
-      const fk = fsp.floor_id || 'takeaway_delivery';
+      let fk = fsp.floor_id;
+      if (!fk) {
+        const floorKeys = Object.keys(floorByDate[dk] || {}).map(Number).filter(Boolean).sort((a, b) => a - b);
+        fk = floorKeys[0] || 'no_floor';
+      }
       if (floorByDate[dk] && floorByDate[dk][fk]) {
         floorByDate[dk][fk].paymentBreakdown[fsp.payment_mode] = (floorByDate[dk][fk].paymentBreakdown[fsp.payment_mode] || 0) + (parseFloat(fsp.amount) || 0);
       }
@@ -7608,7 +7711,7 @@ const reportsService = {
     const grandFloorMap = {};
     for (const d of days) {
       for (const fb of d.floorBreakdown) {
-        const fk = fb.floor_id || 'takeaway_delivery';
+        const fk = fb.floor_id || 'no_floor';
         if (!grandFloorMap[fk]) {
           grandFloorMap[fk] = {
             floor_id: fb.floor_id,
@@ -7869,12 +7972,14 @@ const reportsService = {
     const r2 = (n) => parseFloat((parseFloat(n) || 0).toFixed(2));
 
     // Build floor breakdown by date
+    // Takeaway/delivery orders (floor_id IS NULL) are merged into the first (lowest-id) floor
     const dsrFloorByDate = {};
+    const dsrNullFloorRows = [];
     for (const fr of floorBkRes) {
       const dk = fr.report_date instanceof Date ? fr.report_date.toISOString().slice(0, 10) : fr.report_date;
-      const fk = fr.floor_id || 'takeaway_delivery';
+      if (!fr.floor_id) { dsrNullFloorRows.push(fr); continue; }
       if (!dsrFloorByDate[dk]) dsrFloorByDate[dk] = {};
-      dsrFloorByDate[dk][fk] = {
+      dsrFloorByDate[dk][fr.floor_id] = {
         floor_id: fr.floor_id,
         floor_name: fr.floor_name,
         total_orders: parseInt(fr.total_orders) || 0,
@@ -7902,6 +8007,67 @@ const reportsService = {
         },
         total_guests: parseInt(fr.total_guests) || 0
       };
+    }
+    // Merge null-floor (takeaway/delivery) rows into the first floor of that date
+    for (const fr of dsrNullFloorRows) {
+      const dk = fr.report_date instanceof Date ? fr.report_date.toISOString().slice(0, 10) : fr.report_date;
+      if (!dsrFloorByDate[dk]) dsrFloorByDate[dk] = {};
+      const floorKeys = Object.keys(dsrFloorByDate[dk]).map(Number).filter(Boolean).sort((a, b) => a - b);
+      const targetKey = floorKeys[0];
+      if (targetKey && dsrFloorByDate[dk][targetKey]) {
+        const t = dsrFloorByDate[dk][targetKey];
+        t.total_orders += parseInt(fr.total_orders) || 0;
+        t.total_sale = r2(t.total_sale + r2(fr.total_sale));
+        t.dine_in_orders += parseInt(fr.dine_in_orders) || 0;
+        t.takeaway_orders += parseInt(fr.takeaway_orders) || 0;
+        t.delivery_orders += parseInt(fr.delivery_orders) || 0;
+        t.discount_amount = r2(t.discount_amount + r2(fr.total_discount));
+        t.nc_order_count += parseInt(fr.nc_order_count) || 0;
+        t.nc_amount = r2(t.nc_amount + r2(fr.nc_amount));
+        t.adjustment_order_count += parseInt(fr.adjustment_order_count) || 0;
+        t.adjustment_amount = r2(t.adjustment_amount + r2(fr.total_adjustment_amount));
+        t.fully_paid_orders += parseInt(fr.fully_paid_orders) || 0;
+        t.partial_paid_orders += parseInt(fr.partial_paid_orders) || 0;
+        t.unpaid_orders += parseInt(fr.unpaid_orders) || 0;
+        t.total_paid_amount = r2(t.total_paid_amount + r2(fr.total_paid_amount));
+        t.total_due_amount = r2(t.total_due_amount + r2(fr.total_due_amount));
+        t.components.subtotal = r2(t.components.subtotal + r2(fr.subtotal));
+        t.components.tax_amount = r2(t.components.tax_amount + r2(fr.tax_amount));
+        t.components.service_charge = r2(t.components.service_charge + r2(fr.service_charge));
+        t.components.packaging_charge = r2(t.components.packaging_charge + r2(fr.packaging_charge));
+        t.components.delivery_charge = r2(t.components.delivery_charge + r2(fr.delivery_charge));
+        t.components.round_off = r2(t.components.round_off + r2(fr.round_off));
+        t.total_guests += parseInt(fr.total_guests) || 0;
+      } else {
+        dsrFloorByDate[dk]['no_floor'] = {
+          floor_id: null,
+          floor_name: fr.floor_name,
+          total_orders: parseInt(fr.total_orders) || 0,
+          total_sale: r2(fr.total_sale),
+          dine_in_orders: parseInt(fr.dine_in_orders) || 0,
+          takeaway_orders: parseInt(fr.takeaway_orders) || 0,
+          delivery_orders: parseInt(fr.delivery_orders) || 0,
+          discount_amount: r2(fr.total_discount),
+          nc_order_count: parseInt(fr.nc_order_count) || 0,
+          nc_amount: r2(fr.nc_amount),
+          adjustment_order_count: parseInt(fr.adjustment_order_count) || 0,
+          adjustment_amount: r2(fr.total_adjustment_amount),
+          fully_paid_orders: parseInt(fr.fully_paid_orders) || 0,
+          partial_paid_orders: parseInt(fr.partial_paid_orders) || 0,
+          unpaid_orders: parseInt(fr.unpaid_orders) || 0,
+          total_paid_amount: r2(fr.total_paid_amount),
+          total_due_amount: r2(fr.total_due_amount),
+          components: {
+            subtotal: r2(fr.subtotal),
+            tax_amount: r2(fr.tax_amount),
+            service_charge: r2(fr.service_charge),
+            packaging_charge: r2(fr.packaging_charge),
+            delivery_charge: r2(fr.delivery_charge),
+            round_off: r2(fr.round_off)
+          },
+          total_guests: parseInt(fr.total_guests) || 0
+        };
+      }
     }
 
     // Per-day breakdown
@@ -7972,7 +8138,7 @@ const reportsService = {
     const dsrGrandFloorMap = {};
     for (const d of daily) {
       for (const fb of d.floorBreakdown) {
-        const fk = fb.floor_id || 'takeaway_delivery';
+        const fk = fb.floor_id || 'no_floor';
         if (!dsrGrandFloorMap[fk]) {
           dsrGrandFloorMap[fk] = {
             floor_id: fb.floor_id,
