@@ -297,11 +297,10 @@ function itemSalesCSV(data, filters) {
     { key: 'variant_name', header: 'Variant' },
     { key: 'category_name', header: 'Category' },
     { key: 'total_quantity', header: 'Qty Sold', type: 'number' },
-    { key: 'gross_revenue', header: 'Gross Revenue (₹)', type: 'currency' },
+    { key: 'total_sale', header: 'Total Sale (₹)', type: 'currency' },
     { key: 'avg_price', header: 'Avg Price (₹)', type: 'currency' },
     { key: 'tax_amount', header: 'Tax (₹)', type: 'currency' },
     { key: 'discount_amount', header: 'Discount (₹)', type: 'currency' },
-    { key: 'net_revenue', header: 'Net Revenue (₹)', type: 'currency' },
     { key: 'nc_quantity', header: 'NC Qty', type: 'number' },
     { key: 'nc_amount', header: 'NC Amount (₹)', type: 'currency' },
     { key: 'making_cost', header: 'Making Cost (₹)', type: 'currency' },
@@ -324,9 +323,9 @@ function itemSalesCSV(data, filters) {
     },
     summary: {
       'Total Items': summary.total_items,
+      'Total Orders': summary.total_orders,
       'Total Quantity': summary.total_quantity,
-      'Gross Revenue': formatCurrency(summary.gross_revenue),
-      'Net Revenue': formatCurrency(summary.net_revenue),
+      'Total Sale': formatCurrency(summary.total_sale),
       'NC Orders': summary.nc_orders || 0,
       'NC Amount': formatCurrency(summary.nc_amount),
       'Due Amount': formatCurrency(summary.due_amount),
@@ -398,9 +397,9 @@ function categorySalesCSV(data, filters) {
     { key: 'category_service_type', header: 'Service Type' },
     { key: 'item_count', header: 'Unique Items', type: 'number' },
     { key: 'total_quantity', header: 'Qty Sold', type: 'number' },
-    { key: 'gross_revenue', header: 'Gross Revenue (₹)', type: 'currency' },
+    { key: 'total_sale', header: 'Total Sale (₹)', type: 'currency' },
     { key: 'discount_amount', header: 'Discount (₹)', type: 'currency' },
-    { key: 'net_revenue', header: 'Net Revenue (₹)', type: 'currency' },
+    { key: 'tax_amount', header: 'Tax (₹)', type: 'currency' },
     { key: 'nc_quantity', header: 'NC Qty', type: 'number' },
     { key: 'nc_amount', header: 'NC Amount (₹)', type: 'currency' },
     { key: 'order_count', header: 'Orders', type: 'number' },
@@ -419,9 +418,9 @@ function categorySalesCSV(data, filters) {
     },
     summary: {
       'Total Categories': summary.total_categories,
+      'Total Orders': summary.total_orders,
       'Total Quantity': summary.total_quantity,
-      'Gross Revenue': formatCurrency(summary.gross_revenue),
-      'Net Revenue': formatCurrency(summary.net_revenue),
+      'Total Sale': formatCurrency(summary.total_sale),
       'NC Amount': formatCurrency(summary.nc_amount),
       'Due Amount': formatCurrency(summary.due_amount),
       'Paid Amount': formatCurrency(summary.paid_amount),
@@ -438,17 +437,17 @@ function staffReportCSV(data, filters) {
     { key: 'user_name', header: 'Staff Name' },
     { key: 'total_orders', header: 'Total Orders', type: 'number' },
     { key: 'total_guests', header: 'Guests', type: 'number' },
-    { key: 'total_sales', header: 'Total Sales (₹)', type: 'currency' },
+    { key: 'total_sale', header: 'Total Sale (₹)', type: 'currency' },
     { key: 'avg_order_value', header: 'Avg Order (₹)', type: 'currency' },
     { key: 'avg_guest_spend', header: 'Avg Guest Spend (₹)', type: 'currency' },
     { key: 'total_discounts', header: 'Discounts (₹)', type: 'currency' },
     { key: 'total_tips', header: 'Tips (₹)', type: 'currency' },
-    { key: 'cancelled_orders', header: 'Cancelled Orders', type: 'number' },
-    { key: 'cancelled_amount', header: 'Cancelled Amt (₹)', type: 'currency' },
     { key: 'nc_orders', header: 'NC Orders', type: 'number' },
     { key: 'nc_amount', header: 'NC Amount (₹)', type: 'currency' },
     { key: 'due_amount', header: 'Due Amount (₹)', type: 'currency' },
-    { key: 'paid_amount', header: 'Paid Amount (₹)', type: 'currency' }
+    { key: 'paid_amount', header: 'Paid Amount (₹)', type: 'currency' },
+    { key: 'adjustment_count', header: 'Adjustments', type: 'number' },
+    { key: 'adjustment_amount', header: 'Adjustment Amt (₹)', type: 'currency' }
   ];
   
   const rows = data.staff || data.data || [];
@@ -464,7 +463,7 @@ function staffReportCSV(data, filters) {
     summary: {
       'Total Staff': summary.total_staff,
       'Total Orders': summary.total_orders,
-      'Total Sales': formatCurrency(summary.total_sales),
+      'Total Sale': formatCurrency(summary.total_sale),
       'NC Orders': summary.nc_orders || 0,
       'NC Amount': formatCurrency(summary.nc_amount),
       'Due Amount': formatCurrency(summary.due_amount),
@@ -497,8 +496,13 @@ function paymentModeCSV(data, filters) {
       'Outlet': filters.outletName || filters.outletId
     },
     summary: {
+      'Total Orders': summary.total_orders,
+      'Total Sale': formatCurrency(summary.total_sale),
       'Total Transactions': summary.total_transactions,
-      'Total Amount': formatCurrency(summary.total_collected || summary.total_amount)
+      'Total Collected': formatCurrency(summary.total_collected || summary.total_amount),
+      'NC Orders': summary.nc_orders || 0,
+      'NC Amount': formatCurrency(summary.nc_amount),
+      'Due Amount': formatCurrency(summary.due_amount)
     }
   });
 }
@@ -533,6 +537,7 @@ function taxReportCSV(data, filters) {
     return acc;
   }, { totalTaxable: 0, totalCgst: 0, totalSgst: 0, totalIgst: 0, totalVat: 0, totalTax: 0 });
   
+  const dataSummary = data.summary || {};
   return toCSV(rows, columns, {
     title: 'Tax Report',
     filters: {
@@ -541,12 +546,17 @@ function taxReportCSV(data, filters) {
       'Outlet': filters.outletName || filters.outletId
     },
     summary: {
-      'Total Taxable': formatCurrency(summary.totalTaxable),
-      'Total CGST': formatCurrency(summary.totalCgst),
-      'Total SGST': formatCurrency(summary.totalSgst),
-      'Total IGST': formatCurrency(summary.totalIgst),
-      'Total VAT': formatCurrency(summary.totalVat),
-      'Total Tax': formatCurrency(summary.totalTax)
+      'Total Orders': dataSummary.total_orders,
+      'Total Sale': formatCurrency(dataSummary.total_sale),
+      'Total Taxable': formatCurrency(dataSummary.total_taxable || summary.totalTaxable),
+      'Total CGST': formatCurrency(dataSummary.total_cgst || summary.totalCgst),
+      'Total SGST': formatCurrency(dataSummary.total_sgst || summary.totalSgst),
+      'Total IGST': formatCurrency(dataSummary.total_igst || summary.totalIgst),
+      'Total VAT': formatCurrency(dataSummary.total_vat || summary.totalVat),
+      'Total Tax': formatCurrency(dataSummary.total_tax || summary.totalTax),
+      'NC Orders': dataSummary.nc_orders || 0,
+      'NC Amount': formatCurrency(dataSummary.nc_amount),
+      'Due Amount': formatCurrency(dataSummary.due_amount)
     }
   });
 }
@@ -736,9 +746,11 @@ function floorSectionCSV(data, filters) {
     { key: 'sectionName', header: 'Section' },
     { key: 'orderCount', header: 'Orders', type: 'number' },
     { key: 'guestCount', header: 'Guests', type: 'number' },
-    { key: 'netSales', header: 'Net Sales (₹)', type: 'currency' },
+    { key: 'totalSale', header: 'Total Sale (₹)', type: 'currency' },
+    { key: 'discountAmount', header: 'Discount (₹)', type: 'currency' },
+    { key: 'taxAmount', header: 'Tax (₹)', type: 'currency' },
+    { key: 'serviceCharge', header: 'Service Charge (₹)', type: 'currency' },
     { key: 'avgOrderValue', header: 'Avg Order (₹)', type: 'currency' },
-    { key: 'cancelledOrders', header: 'Cancelled', type: 'number' },
     { key: 'ncOrders', header: 'NC Orders', type: 'number' },
     { key: 'ncAmount', header: 'NC Amount (₹)', type: 'currency' },
     { key: 'dueAmount', header: 'Due Amount (₹)', type: 'currency' },
@@ -755,9 +767,11 @@ function floorSectionCSV(data, filters) {
       sectionName: '(All Sections)',
       orderCount: floor.orderCount,
       guestCount: floor.guestCount,
-      netSales: floor.netSales,
+      totalSale: floor.totalSale,
+      discountAmount: floor.discountAmount || 0,
+      taxAmount: floor.taxAmount || 0,
+      serviceCharge: floor.serviceCharge || 0,
       avgOrderValue: floor.avgOrderValue,
-      cancelledOrders: floor.cancelledOrders,
       ncOrders: floor.ncOrders || 0,
       ncAmount: floor.ncAmount || 0,
       dueAmount: floor.dueAmount || 0,
@@ -771,9 +785,11 @@ function floorSectionCSV(data, filters) {
           sectionName: section.sectionName,
           orderCount: section.orderCount,
           guestCount: section.guestCount,
-          netSales: section.netSales,
+          totalSale: section.totalSale,
+          discountAmount: section.discountAmount || 0,
+          taxAmount: section.taxAmount || 0,
+          serviceCharge: section.serviceCharge || 0,
           avgOrderValue: section.avgOrderValue,
-          cancelledOrders: section.cancelledOrders,
           ncOrders: section.ncOrders || 0,
           ncAmount: section.ncAmount || 0,
           dueAmount: section.dueAmount || 0,
@@ -793,7 +809,10 @@ function floorSectionCSV(data, filters) {
     summary: data.summary ? {
       'Total Floors': data.summary.total_floors,
       'Total Orders': data.summary.total_orders,
-      'Net Sales': formatCurrency(data.summary.total_sales),
+      'Total Sale': formatCurrency(data.summary.total_sale),
+      'Discount': formatCurrency(data.summary.discount_amount),
+      'Tax': formatCurrency(data.summary.tax_amount),
+      'Service Charge': formatCurrency(data.summary.service_charge),
       'NC Amount': formatCurrency(data.summary.nc_amount),
       'Due Amount': formatCurrency(data.summary.due_amount),
       'Paid Amount': formatCurrency(data.summary.paid_amount)
@@ -1625,6 +1644,288 @@ function ncReportCSV(data, filters) {
   return lines.join('\n');
 }
 
+/**
+ * Accurate Day End Summary CSV Export — with floor breakdown
+ */
+function accurateDayEndSummaryCSV(data, filters) {
+  const lines = [];
+
+  lines.push('Accurate Day End Summary Export');
+  lines.push('');
+  if (filters.startDate) lines.push(`Start Date,${filters.startDate}`);
+  if (filters.endDate) lines.push(`End Date,${filters.endDate}`);
+  if (filters.outletId) lines.push(`Outlet ID,${filters.outletId}`);
+  lines.push(`Generated,${formatDateTime(new Date())}`);
+  lines.push('');
+
+  const gt = data.grandTotal || {};
+  lines.push('GRAND TOTAL');
+  lines.push(`Total Orders,${gt.total_orders || 0}`);
+  lines.push(`Total Sale (incl. Outside Coll.),${formatCurrency(gt.total_sale)}`);
+  lines.push(`Order Sale,${formatCurrency(gt.order_sale)}`);
+  lines.push(`Outside Collection,${formatCurrency(gt.outside_collection)}`);
+  lines.push(`Discount,${formatCurrency(gt.discount_amount)}`);
+  lines.push(`Tax,${formatCurrency(gt.tax_amount)}`);
+  lines.push(`Service Charge,${formatCurrency(gt.service_charge)}`);
+  lines.push(`NC Orders,${gt.nc_orders || 0}`);
+  lines.push(`NC Amount,${formatCurrency(gt.nc_amount)}`);
+  lines.push(`Paid Amount,${formatCurrency(gt.paid_amount)}`);
+  lines.push(`Due Amount,${formatCurrency(gt.due_amount)}`);
+  lines.push(`Adjustment Count,${gt.adjustment_count || 0}`);
+  lines.push(`Adjustment Amount,${formatCurrency(gt.adjustment_amount)}`);
+  lines.push(`Total Guests,${gt.total_guests || 0}`);
+  lines.push(`Average Order Value,${formatCurrency(gt.average_order_value)}`);
+  const pb = gt.paymentBreakdown || {};
+  lines.push(`Payment - Cash,${formatCurrency(pb.cash)}`);
+  lines.push(`Payment - Card,${formatCurrency(pb.card)}`);
+  lines.push(`Payment - UPI,${formatCurrency(pb.upi)}`);
+  lines.push('');
+
+  // Grand total floor breakdown
+  const gfb = gt.floorBreakdown || [];
+  if (gfb.length > 0) {
+    lines.push('FLOOR BREAKDOWN (OVERALL)');
+    lines.push('Floor,Orders,Sale (₹),Dine-In,Takeaway,Delivery,Discount (₹),Tax (₹),Service Charge (₹),NC Orders,NC Amount (₹),Paid (₹),Due (₹),Guests');
+    for (const f of gfb) {
+      const ot = f.ordersByType || {};
+      lines.push([
+        escapeCSV(f.floor_name || 'Unknown'),
+        f.total_orders || 0,
+        formatCurrency(f.total_sale),
+        ot.dine_in || 0, ot.takeaway || 0, ot.delivery || 0,
+        formatCurrency(f.discount_amount), formatCurrency(f.tax_amount), formatCurrency(f.service_charge),
+        f.nc_orders || 0, formatCurrency(f.nc_amount),
+        formatCurrency(f.paid_amount), formatCurrency(f.due_amount),
+        f.total_guests || 0
+      ].join(','));
+    }
+    lines.push('');
+  }
+
+  // Per-day breakdown
+  const days = data.days || [];
+  if (days.length > 0) {
+    lines.push('DAILY BREAKDOWN');
+    lines.push('Date,Orders,Total Sale (₹),Order Sale (₹),Outside Coll. (₹),Dine-In,Takeaway,Delivery,Discount (₹),Tax (₹),Service Charge (₹),NC Orders,NC Amount (₹),Paid (₹),Due (₹),Guests,Avg Order Value (₹)');
+    for (const d of days) {
+      const ot = d.ordersByType || {};
+      lines.push([
+        d.date,
+        d.total_orders || 0,
+        formatCurrency(d.total_sale), formatCurrency(d.order_sale), formatCurrency(d.outside_collection),
+        ot.dine_in || 0, ot.takeaway || 0, ot.delivery || 0,
+        formatCurrency(d.discount_amount), formatCurrency(d.tax_amount), formatCurrency(d.service_charge),
+        d.nc_orders || 0, formatCurrency(d.nc_amount),
+        formatCurrency(d.paid_amount), formatCurrency(d.due_amount),
+        d.total_guests || 0,
+        formatCurrency(d.average_order_value)
+      ].join(','));
+    }
+    lines.push('');
+
+    // Per-day floor breakdowns
+    for (const d of days) {
+      const dfb = d.floorBreakdown || [];
+      if (dfb.length > 0) {
+        lines.push(`FLOOR BREAKDOWN — ${d.date}`);
+        lines.push('Floor,Orders,Sale (₹),Dine-In,Takeaway,Delivery,Discount (₹),NC Orders,NC Amount (₹),Paid (₹),Due (₹)');
+        for (const f of dfb) {
+          const ot = f.ordersByType || {};
+          lines.push([
+            escapeCSV(f.floor_name || 'Unknown'),
+            f.total_orders || 0, formatCurrency(f.total_sale),
+            ot.dine_in || 0, ot.takeaway || 0, ot.delivery || 0,
+            formatCurrency(f.discount_amount),
+            f.nc_orders || 0, formatCurrency(f.nc_amount),
+            formatCurrency(f.paid_amount), formatCurrency(f.due_amount)
+          ].join(','));
+        }
+        lines.push('');
+      }
+    }
+  }
+
+  // Cross-verification
+  const cv = data.crossVerification || {};
+  lines.push('CROSS-VERIFICATION');
+  lines.push(`Grand Total Sale,${formatCurrency(cv.grand_total_sale)}`);
+  lines.push(`Day Sum Sale,${formatCurrency(cv.day_sum_sale)}`);
+  lines.push(`Outside Collection,${formatCurrency(cv.outside_collection)}`);
+  lines.push(`Match,${cv.match ? 'YES' : 'NO'}`);
+  lines.push(`Floor Sum Order Sale,${formatCurrency(cv.floor_sum_order_sale)}`);
+  lines.push(`Floor Match Sale,${cv.floor_match_sale ? 'YES' : 'NO'}`);
+  lines.push(`Floor Match Orders,${cv.floor_match_orders ? 'YES' : 'NO'}`);
+
+  return lines.join('\n');
+}
+
+/**
+ * Accurate DSR CSV Export — with floor breakdown + order list
+ */
+function accurateDSRCSV(data, filters) {
+  const lines = [];
+
+  lines.push('Accurate Daily Sales Report Export');
+  lines.push('');
+  if (filters.startDate) lines.push(`Start Date,${filters.startDate}`);
+  if (filters.endDate) lines.push(`End Date,${filters.endDate}`);
+  if (filters.outletId) lines.push(`Outlet ID,${filters.outletId}`);
+  lines.push(`Generated,${formatDateTime(new Date())}`);
+  lines.push('');
+
+  const s = data.summary || {};
+  lines.push('SUMMARY');
+  lines.push(`Total Orders,${s.total_orders || 0}`);
+  lines.push(`Total Sale (incl. Outside Coll.),${formatCurrency(s.total_sale)}`);
+  lines.push(`Order Sale,${formatCurrency(s.order_sale)}`);
+  lines.push(`Outside Collection,${formatCurrency(s.outside_collection)}`);
+  lines.push(`Dine-In Orders,${s.dine_in_orders || 0}`);
+  lines.push(`Takeaway Orders,${s.takeaway_orders || 0}`);
+  lines.push(`Delivery Orders,${s.delivery_orders || 0}`);
+  lines.push(`Discount,${formatCurrency(s.discount_amount)}`);
+  lines.push(`NC Orders,${s.nc_order_count || 0}`);
+  lines.push(`NC Amount,${formatCurrency(s.nc_amount)}`);
+  lines.push(`Adjustment Orders,${s.adjustment_order_count || 0}`);
+  lines.push(`Adjustment Amount,${formatCurrency(s.adjustment_amount)}`);
+  lines.push(`Fully Paid Orders,${s.fully_paid_orders || 0}`);
+  lines.push(`Partial Paid Orders,${s.partial_paid_orders || 0}`);
+  lines.push(`Unpaid Orders,${s.unpaid_orders || 0}`);
+  lines.push(`Total Paid,${formatCurrency(s.total_paid_amount)}`);
+  lines.push(`Total Due,${formatCurrency(s.total_due_amount)}`);
+  lines.push(`Total Guests,${s.total_guests || 0}`);
+  lines.push(`Average Order Value,${formatCurrency(s.average_order_value)}`);
+  lines.push('');
+
+  // Summary floor breakdown
+  const sfb = s.floorBreakdown || [];
+  if (sfb.length > 0) {
+    lines.push('FLOOR BREAKDOWN (OVERALL)');
+    lines.push('Floor,Orders,Sale (₹),Dine-In,Takeaway,Delivery,Discount (₹),NC Orders,NC Amount (₹),Paid (₹),Due (₹),Guests');
+    for (const f of sfb) {
+      lines.push([
+        escapeCSV(f.floor_name || 'Unknown'),
+        f.total_orders || 0, formatCurrency(f.total_sale),
+        f.dine_in_orders || 0, f.takeaway_orders || 0, f.delivery_orders || 0,
+        formatCurrency(f.discount_amount),
+        f.nc_order_count || 0, formatCurrency(f.nc_amount),
+        formatCurrency(f.total_paid_amount), formatCurrency(f.total_due_amount),
+        f.total_guests || 0
+      ].join(','));
+    }
+    lines.push('');
+  }
+
+  // Daily breakdown
+  const daily = data.daily || [];
+  if (daily.length > 0) {
+    lines.push('DAILY BREAKDOWN');
+    lines.push('Date,Orders,Total Sale (₹),Order Sale (₹),Outside Coll. (₹),Dine-In,Takeaway,Delivery,Discount (₹),NC Orders,NC Amount (₹),Paid (₹),Due (₹),Guests');
+    for (const d of daily) {
+      lines.push([
+        d.date,
+        d.total_orders || 0,
+        formatCurrency(d.total_sale), formatCurrency(d.order_sale), formatCurrency(d.outside_collection),
+        d.dine_in_orders || 0, d.takeaway_orders || 0, d.delivery_orders || 0,
+        formatCurrency(d.discount_amount),
+        d.nc_order_count || 0, formatCurrency(d.nc_amount),
+        formatCurrency(d.total_paid_amount), formatCurrency(d.total_due_amount),
+        d.total_guests || 0
+      ].join(','));
+    }
+    lines.push('');
+  }
+
+  // Order list
+  const orders = data.orders || [];
+  if (orders.length > 0) {
+    lines.push('ORDER LIST');
+    lines.push([
+      'Order No', 'Date', 'Time', 'Order Type', 'Payment Status', 'Floor',
+      'Table', 'Customer', 'Guests',
+      'Total Amount (₹)', 'Discount (₹)', 'Paid (₹)', 'Due (₹)',
+      'Is NC', 'NC Amount (₹)', 'Is Adjustment', 'Adjustment Amount (₹)',
+      'Captain', 'Biller'
+    ].join(','));
+    for (const o of orders) {
+      const dt = o.created_at ? new Date(o.created_at) : null;
+      lines.push([
+        escapeCSV(o.order_number || ''),
+        dt ? formatDate(dt) : '',
+        dt ? dt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '',
+        escapeCSV(o.order_type || ''),
+        escapeCSV(o.payment_status || ''),
+        escapeCSV(o.floor_name || ''),
+        escapeCSV(o.table_number || ''),
+        escapeCSV(o.customer_name || ''),
+        o.guest_count || 0,
+        formatCurrency(o.total_amount),
+        formatCurrency(o.discount_amount),
+        formatCurrency(o.paid_amount),
+        formatCurrency(o.due_amount),
+        o.is_nc ? 'Yes' : 'No',
+        formatCurrency(o.nc_amount),
+        o.is_adjustment ? 'Yes' : 'No',
+        formatCurrency(o.adjustment_amount),
+        escapeCSV(o.captain_name || ''),
+        escapeCSV(o.biller_name || '')
+      ].join(','));
+    }
+    lines.push('');
+  }
+
+  // Cross-verification
+  const cv = data.crossVerification || {};
+  lines.push('CROSS-VERIFICATION');
+  lines.push(`Summary Total Sale,${formatCurrency(cv.summary_total_sale)}`);
+  lines.push(`Order Level Total,${formatCurrency(cv.order_level_total)}`);
+  lines.push(`Outside Collection,${formatCurrency(cv.outside_collection)}`);
+  lines.push(`Order + Outside,${formatCurrency(cv.order_level_plus_outside)}`);
+  lines.push(`Match,${cv.match ? 'YES' : 'NO'}`);
+  lines.push(`Floor Sum Order Sale,${formatCurrency(cv.floor_sum_order_sale)}`);
+  lines.push(`Floor Match Sale,${cv.floor_match_sale ? 'YES' : 'NO'}`);
+  lines.push(`Floor Match Orders,${cv.floor_match_orders ? 'YES' : 'NO'}`);
+
+  return lines.join('\n');
+}
+
+/**
+ * Outside Collections Report CSV
+ */
+function outsideCollectionsCSV(data, filters) {
+  const columns = [
+    { key: 'id', header: 'ID', type: 'number' },
+    { key: 'collectionDate', header: 'Collection Date', type: 'date' },
+    { key: 'amount', header: 'Amount (₹)', type: 'currency' },
+    { key: 'paymentMode', header: 'Payment Mode' },
+    { key: 'reason', header: 'Reason' },
+    { key: 'description', header: 'Description' },
+    { key: 'collectedByName', header: 'Collected By' },
+    { key: 'floorName', header: 'Floor' },
+    { key: 'status', header: 'Status' },
+    { key: 'createdAt', header: 'Created At' }
+  ];
+
+  const rows = data.collections || [];
+  const summary = data.summary || {};
+
+  return toCSV(rows, columns, {
+    title: 'Outside Collections Report',
+    filters: {
+      'Start Date': filters.startDate,
+      'End Date': filters.endDate,
+      'Outlet': filters.outletName || filters.outletId
+    },
+    summary: {
+      'Total Collections': summary.totalCount,
+      'Total Amount': formatCurrency(summary.totalAmount),
+      'Cash': formatCurrency(summary.paymentBreakdown?.cash),
+      'Card': formatCurrency(summary.paymentBreakdown?.card),
+      'UPI': formatCurrency(summary.paymentBreakdown?.upi),
+      'Other': formatCurrency(summary.paymentBreakdown?.other)
+    }
+  });
+}
+
 module.exports = {
   toCSV,
   escapeCSV,
@@ -1660,5 +1961,9 @@ module.exports = {
   // Biller-wise report
   billerWiseCSV,
   // NC report
-  ncReportCSV
+  ncReportCSV,
+  // Accurate reports
+  accurateDayEndSummaryCSV,
+  accurateDSRCSV,
+  outsideCollectionsCSV
 };

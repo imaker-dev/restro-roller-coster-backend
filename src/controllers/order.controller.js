@@ -1894,7 +1894,7 @@ const orderController = {
       const { outletId } = req.params;
       const { startDate, endDate } = req.query;
       const floorIds = await getUserFloorIds(req.user.userId, outletId);
-      const report = await reportsService.getFloorSectionReport(outletId, startDate, endDate, floorIds);
+      const report = await reportsService.getFloorSectionReport(outletId, startDate, endDate, { floorIds });
       
       const csv = csvExport.floorSectionCSV(report, { startDate, endDate, outletId });
       const filename = csvExport.generateFilename('floor_section', { startDate, endDate });
@@ -2207,6 +2207,38 @@ const orderController = {
       logger.error('Cancel outside collection error:', error);
       const status = error.message.includes('not found') ? 404 : error.message.includes('already') ? 400 : 500;
       res.status(status).json({ success: false, message: error.message });
+    }
+  },
+
+  /**
+   * Export outside collections as CSV
+   * GET /api/v1/orders/outside-collections/:outletId/export
+   */
+  async exportOutsideCollections(req, res) {
+    try {
+      const { outletId } = req.params;
+      const { startDate, endDate, floorId, collectedBy, status } = req.query;
+
+      const result = await outsideCollectionService.getCollections({
+        outletId: parseInt(outletId),
+        startDate: startDate || null,
+        endDate: endDate || null,
+        floorId: floorId ? parseInt(floorId) : null,
+        collectedBy: collectedBy ? parseInt(collectedBy) : null,
+        status: status || 'active',
+        page: 1,
+        limit: 100000
+      });
+
+      const csv = csvExport.outsideCollectionsCSV(result, { startDate, endDate, outletId });
+      const filename = csvExport.generateFilename('outside_collections', { startDate, endDate });
+
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.send(csv);
+    } catch (error) {
+      logger.error('Export outside collections error:', error);
+      res.status(500).json({ success: false, message: error.message });
     }
   }
 };

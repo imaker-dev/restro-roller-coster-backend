@@ -94,7 +94,7 @@ const discountReportService = {
        INNER JOIN orders o ON od.order_id = o.id
        WHERE o.outlet_id = ? 
          AND ${bdWhere('od.created_at')}
-         AND o.status NOT IN ('cancelled')`,
+         AND o.status = 'completed'`,
       [outletId, startDt, endDt]
     );
 
@@ -108,7 +108,7 @@ const discountReportService = {
        FROM orders 
        WHERE outlet_id = ? 
          AND ${bdWhere('created_at')}
-         AND status NOT IN ('cancelled')`,
+         AND status = 'completed'`,
       [outletId, startDt, endDt]
     );
 
@@ -124,7 +124,7 @@ const discountReportService = {
        INNER JOIN orders o ON od.order_id = o.id
        WHERE o.outlet_id = ? 
          AND ${bdWhere('od.created_at')}
-         AND o.status NOT IN ('cancelled')
+         AND o.status = 'completed'
          AND od.discount_code IS NOT NULL
        GROUP BY od.discount_code, od.discount_name
        ORDER BY total_amount DESC
@@ -145,7 +145,7 @@ const discountReportService = {
        LEFT JOIN users u ON od.created_by = u.id
        WHERE o.outlet_id = ? 
          AND ${bdWhere('od.created_at')}
-         AND o.status NOT IN ('cancelled')
+         AND o.status = 'completed'
        GROUP BY od.created_by, u.name
        ORDER BY total_amount DESC
        LIMIT 10`,
@@ -163,7 +163,7 @@ const discountReportService = {
        INNER JOIN orders o ON od.order_id = o.id
        WHERE o.outlet_id = ? 
          AND ${bdWhere('od.created_at')}
-         AND o.status NOT IN ('cancelled')
+         AND o.status = 'completed'
        GROUP BY ${toISTDate('od.created_at')}
        ORDER BY date DESC`,
       [outletId, startDt, endDt]
@@ -249,7 +249,7 @@ const discountReportService = {
     const conditions = [
       'o.outlet_id = ?',
       `${bdWhere('od.created_at')}`,
-      "o.status NOT IN ('cancelled')"
+      "o.status = 'completed'"
     ];
     const params = [outletId, startDt, endDt];
 
@@ -451,7 +451,7 @@ const discountReportService = {
     const conditions = [
       'o.outlet_id = ?',
       `${bdWhere('od.created_at')}`,
-      "o.status NOT IN ('cancelled')",
+      "o.status = 'completed'",
       'od.discount_code IS NOT NULL'
     ];
     const params = [outletId, startDt, endDt];
@@ -584,7 +584,7 @@ const discountReportService = {
     const conditions = [
       'o.outlet_id = ?',
       `${bdWhere('od.created_at')}`,
-      "o.status NOT IN ('cancelled')"
+      "o.status = 'completed'"
     ];
     const params = [outletId, startDt, endDt];
 
@@ -700,7 +700,7 @@ const discountReportService = {
     const conditions = [
       'o.outlet_id = ?',
       `${bdWhere('od.created_at')}`,
-      "o.status NOT IN ('cancelled')"
+      "o.status = 'completed'"
     ];
     const params = [outletId, startDt, endDt];
 

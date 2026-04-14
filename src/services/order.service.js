@@ -4039,16 +4039,16 @@ const orderService = {
         totalPages: Math.ceil(total / limit)
       },
       summary: {
-        totalOrders: summaryResult[0]?.total_orders || 0,
-        totalAmount: parseFloat(summaryResult[0]?.total_amount) || 0,
-        completedAmount: parseFloat(summaryResult[0]?.completed_amount) || 0,
-        cancelledCount: summaryResult[0]?.cancelled_count || 0,
-        dineInCount: summaryResult[0]?.dine_in_count || 0,
-        takeawayCount: summaryResult[0]?.takeaway_count || 0,
-        deliveryCount: summaryResult[0]?.delivery_count || 0,
-        avgOrderValue: parseFloat(summaryResult[0]?.avg_order_value) || 0,
-        ncCount: summaryResult[0]?.nc_count || 0,
-        ncAmount: parseFloat(summaryResult[0]?.nc_amount) || 0
+        totalOrders: parseInt(summaryResult[0][0]?.total_orders) || 0,
+        totalAmount: parseFloat(summaryResult[0][0]?.total_amount) || 0,
+        completedAmount: parseFloat(summaryResult[0][0]?.completed_amount) || 0,
+        cancelledCount: parseInt(summaryResult[0][0]?.cancelled_count) || 0,
+        dineInCount: parseInt(summaryResult[0][0]?.dine_in_count) || 0,
+        takeawayCount: parseInt(summaryResult[0][0]?.takeaway_count) || 0,
+        deliveryCount: parseInt(summaryResult[0][0]?.delivery_count) || 0,
+        avgOrderValue: parseFloat(summaryResult[0][0]?.avg_order_value) || 0,
+        ncCount: parseInt(summaryResult[0][0]?.nc_count) || 0,
+        ncAmount: parseFloat(summaryResult[0][0]?.nc_amount) || 0
       }
     };
   },

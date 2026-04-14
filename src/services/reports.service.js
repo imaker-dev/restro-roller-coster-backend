@@ -731,32 +731,35 @@ const reportsService = {
     const ff = floorFilter(floorIds);
     const stf = serviceTypeFilter(serviceType);
 
-    // Execute all 3 independent queries in parallel
+    // Execute all 3 independent queries in parallel — ONLY completed orders
     const [itemCountRes, orderSummaryRes, rowsRes] = await Promise.all([
       pool.query(
         `SELECT 
           COUNT(DISTINCT CONCAT(oi.item_id, '-', COALESCE(oi.variant_name, ''))) as total_items,
-          SUM(CASE WHEN oi.status != 'cancelled' THEN oi.quantity ELSE 0 END) as total_quantity,
-          SUM(CASE WHEN oi.status = 'cancelled' THEN oi.quantity ELSE 0 END) as cancelled_quantity,
-          SUM(CASE WHEN oi.status != 'cancelled' AND oi.is_nc = 1 THEN oi.quantity ELSE 0 END) as nc_quantity,
-          SUM(CASE WHEN oi.status != 'cancelled' AND oi.is_nc = 1 THEN oi.total_price ELSE 0 END) as nc_amount
+          SUM(oi.quantity) as total_quantity,
+          SUM(CASE WHEN oi.is_nc = 1 THEN oi.quantity ELSE 0 END) as nc_quantity,
+          SUM(CASE WHEN oi.is_nc = 1 THEN oi.total_price ELSE 0 END) as nc_amount
          FROM order_items oi
          JOIN orders o ON oi.order_id = o.id
          LEFT JOIN items i ON oi.item_id = i.id
          LEFT JOIN categories c ON i.category_id = c.id
-         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}${stf.sql}`,
+         WHERE o.outlet_id = ? AND o.status = 'completed' AND ${bdWhere('o.created_at')}${ff.sql}${stf.sql}`,
         [outletId, startDt, endDt, ...ff.params, ...stf.params]
       ),
       pool.query(
         `SELECT 
-          SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal + o.tax_amount) ELSE 0 END) as gross_revenue,
-          SUM(CASE WHEN o.status != 'cancelled' THEN o.discount_amount ELSE 0 END) as discount_amount,
-          SUM(CASE WHEN o.status != 'cancelled' THEN o.tax_amount ELSE 0 END) as tax_amount,
-          SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END) as net_revenue,
-          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
-          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount
+          COUNT(*) as total_orders,
+          SUM(o.total_amount) as total_sale,
+          SUM(COALESCE(o.discount_amount, 0)) as discount_amount,
+          SUM(COALESCE(o.tax_amount, 0)) as tax_amount,
+          SUM(COALESCE(o.service_charge, 0)) as service_charge,
+          SUM(COALESCE(o.due_amount, 0)) as due_amount,
+          SUM(COALESCE(o.paid_amount, 0)) as paid_amount,
+          COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
+          SUM(COALESCE(o.nc_amount, 0)) as nc_amount_order,
+          SUM(COALESCE(o.guest_count, 0)) as total_guests
          FROM orders o
-         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'${ff.sql}`,
+         WHERE o.outlet_id = ? AND o.status = 'completed' AND ${bdWhere('o.created_at')}${ff.sql}`,
         [outletId, startDt, endDt, ...ff.params]
       ),
       pool.query(
@@ -764,16 +767,14 @@ const reportsService = {
           oi.item_id, oi.item_name, oi.variant_name,
           c.name as category_name, i.category_id,
           c.service_type as category_service_type,
-          SUM(CASE WHEN oi.status != 'cancelled' THEN oi.quantity ELSE 0 END) as total_quantity,
-          SUM(CASE WHEN oi.status = 'cancelled' THEN oi.quantity ELSE 0 END) as cancelled_quantity,
-          SUM(CASE WHEN oi.status != 'cancelled' THEN oi.total_price ELSE 0 END) as gross_revenue,
-          SUM(CASE WHEN oi.status != 'cancelled' THEN oi.discount_amount ELSE 0 END) as discount_amount,
-          SUM(CASE WHEN oi.status != 'cancelled' THEN oi.tax_amount ELSE 0 END) as tax_amount,
-          SUM(CASE WHEN oi.status != 'cancelled' THEN (oi.total_price - oi.discount_amount) ELSE 0 END) as net_revenue,
+          SUM(oi.quantity) as total_quantity,
+          SUM(oi.total_price) as total_sale,
+          SUM(COALESCE(oi.discount_amount, 0)) as discount_amount,
+          SUM(COALESCE(oi.tax_amount, 0)) as tax_amount,
           COUNT(DISTINCT oi.order_id) as order_count,
-          AVG(CASE WHEN oi.status != 'cancelled' THEN oi.unit_price ELSE NULL END) as avg_price,
-          SUM(CASE WHEN oi.status != 'cancelled' AND oi.is_nc = 1 THEN oi.quantity ELSE 0 END) as nc_quantity,
-          SUM(CASE WHEN oi.status != 'cancelled' AND oi.is_nc = 1 THEN oi.total_price ELSE 0 END) as nc_amount,
+          AVG(oi.unit_price) as avg_price,
+          SUM(CASE WHEN oi.is_nc = 1 THEN oi.quantity ELSE 0 END) as nc_quantity,
+          SUM(CASE WHEN oi.is_nc = 1 THEN oi.total_price ELSE 0 END) as nc_amount,
           COALESCE(SUM(oic.making_cost), 0) as making_cost,
           COALESCE(SUM(oic.profit), 0) as item_profit,
           COALESCE(AVG(oic.making_cost / NULLIF(oi.quantity, 0)), 0) as avg_cost_per_unit
@@ -782,7 +783,7 @@ const reportsService = {
          LEFT JOIN items i ON oi.item_id = i.id
          LEFT JOIN categories c ON i.category_id = c.id
          LEFT JOIN order_item_costs oic ON oic.order_item_id = oi.id
-         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}${stf.sql}
+         WHERE o.outlet_id = ? AND o.status = 'completed' AND ${bdWhere('o.created_at')}${ff.sql}${stf.sql}
          GROUP BY oi.item_id, oi.item_name, oi.variant_name, c.name, i.category_id, c.service_type
          ORDER BY total_quantity DESC
          LIMIT ?`,
@@ -790,43 +791,47 @@ const reportsService = {
       )
     ]);
     const itemCount = itemCountRes[0][0];
-    const summary = { ...itemCount, ...orderSummaryRes[0][0] };
+    const os = orderSummaryRes[0][0] || {};
     const rows = rowsRes[0];
+    const r2 = (n) => parseFloat((parseFloat(n) || 0).toFixed(2));
 
-    // Use summary totals from the first query (accurate counts without LIMIT)
-    const totalItems = parseInt(summary.total_items || 0);
-    const totalQuantity = parseInt(summary.total_quantity || 0);
-    const cancelledQuantity = parseInt(summary.cancelled_quantity || 0);
-    const grossRevenue = parseFloat(summary.gross_revenue || 0);
-    const discountAmount = parseFloat(summary.discount_amount || 0);
-    const taxAmount = parseFloat(summary.tax_amount || 0);
-    const netRevenue = parseFloat(summary.net_revenue || 0);
-    const ncQuantity = parseInt(summary.nc_quantity || 0);
-    const ncAmount = parseFloat(summary.nc_amount || 0);
-    const dueAmount = parseFloat(summary.due_amount || 0);
-    const paidAmount = parseFloat(summary.paid_amount || 0);
+    const totalItems = parseInt(itemCount.total_items || 0);
+    const totalQuantity = parseInt(itemCount.total_quantity || 0);
+    const ncQuantity = parseInt(itemCount.nc_quantity || 0);
+    const ncAmount = r2(itemCount.nc_amount);
+    const totalSale = r2(os.total_sale);
+    const itemSaleSum = r2(rows.reduce((s, r) => s + parseFloat(r.total_sale || 0), 0));
+    const makingCost = r2(rows.reduce((s, r) => s + parseFloat(r.making_cost || 0), 0));
+    const profit = r2(rows.reduce((s, r) => s + parseFloat(r.item_profit || 0), 0));
 
     return {
       dateRange: { start, end },
       items: rows,
       summary: {
         total_items: totalItems,
+        total_orders: parseInt(os.total_orders) || 0,
         total_quantity: totalQuantity,
-        cancelled_quantity: cancelledQuantity,
+        total_sale: totalSale,
         nc_quantity: ncQuantity,
-        nc_amount: ncAmount.toFixed(2),
-        due_amount: dueAmount.toFixed(2),
-        paid_amount: paidAmount.toFixed(2),
-        gross_revenue: grossRevenue.toFixed(2),
-        discount_amount: discountAmount.toFixed(2),
-        tax_amount: taxAmount.toFixed(2),
-        net_revenue: netRevenue.toFixed(2),
-        making_cost: rows.reduce((s, r) => s + parseFloat(r.making_cost || 0), 0).toFixed(2),
-        profit: rows.reduce((s, r) => s + parseFloat(r.item_profit || 0), 0).toFixed(2),
-        food_cost_percentage: netRevenue > 0 ? ((rows.reduce((s, r) => s + parseFloat(r.making_cost || 0), 0) / netRevenue) * 100).toFixed(2) : '0.00',
-        average_item_revenue: rows.length > 0 ? (netRevenue / rows.length).toFixed(2) : '0.00',
+        nc_amount: ncAmount,
+        nc_orders: parseInt(os.nc_orders) || 0,
+        due_amount: r2(os.due_amount),
+        paid_amount: r2(os.paid_amount),
+        discount_amount: r2(os.discount_amount),
+        tax_amount: r2(os.tax_amount),
+        service_charge: r2(os.service_charge),
+        making_cost: makingCost,
+        profit: profit,
+        food_cost_percentage: totalSale > 0 ? r2((makingCost / totalSale) * 100) : 0,
+        average_item_revenue: rows.length > 0 ? r2(totalSale / rows.length) : 0,
+        total_guests: parseInt(os.total_guests) || 0,
         top_seller: rows.length > 0 ? rows[0].item_name : null,
-        top_seller_quantity: rows.length > 0 ? rows[0].total_quantity : 0
+        top_seller_quantity: rows.length > 0 ? parseInt(rows[0].total_quantity) : 0
+      },
+      crossVerification: {
+        order_level_total_sale: totalSale,
+        item_level_total_sale: itemSaleSum,
+        match: Math.abs(totalSale - itemSaleSum) < 1
       }
     };
   },
@@ -841,57 +846,60 @@ const reportsService = {
     const ff = floorFilter(floorIds);
     const stf = serviceTypeFilter(serviceType);
 
-    // Execute both independent queries in parallel
+    // Execute both independent queries in parallel — ONLY completed orders
     const [rowsRes, orderSummaryRes] = await Promise.all([
       pool.query(
         `SELECT 
           i.category_id, c.name as category_name,
           c.service_type as category_service_type,
-          SUM(CASE WHEN oi.status != 'cancelled' THEN oi.quantity ELSE 0 END) as total_quantity,
-          SUM(CASE WHEN oi.status != 'cancelled' THEN oi.total_price ELSE 0 END) as gross_revenue,
-          SUM(CASE WHEN oi.status != 'cancelled' THEN oi.discount_amount ELSE 0 END) as discount_amount,
-          SUM(CASE WHEN oi.status != 'cancelled' THEN (oi.total_price - oi.discount_amount) ELSE 0 END) as net_revenue,
+          SUM(oi.quantity) as total_quantity,
+          SUM(oi.total_price) as total_sale,
+          SUM(COALESCE(oi.discount_amount, 0)) as discount_amount,
+          SUM(COALESCE(oi.tax_amount, 0)) as tax_amount,
           COUNT(DISTINCT oi.item_id) as item_count,
           COUNT(DISTINCT oi.order_id) as order_count,
-          SUM(CASE WHEN oi.status != 'cancelled' AND oi.is_nc = 1 THEN oi.quantity ELSE 0 END) as nc_quantity,
-          SUM(CASE WHEN oi.status != 'cancelled' AND oi.is_nc = 1 THEN oi.total_price ELSE 0 END) as nc_amount
+          SUM(CASE WHEN oi.is_nc = 1 THEN oi.quantity ELSE 0 END) as nc_quantity,
+          SUM(CASE WHEN oi.is_nc = 1 THEN oi.total_price ELSE 0 END) as nc_amount
          FROM order_items oi
          JOIN orders o ON oi.order_id = o.id
          LEFT JOIN items i ON oi.item_id = i.id
          LEFT JOIN categories c ON i.category_id = c.id
-         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}${stf.sql}
+         WHERE o.outlet_id = ? AND o.status = 'completed' AND ${bdWhere('o.created_at')}${ff.sql}${stf.sql}
          GROUP BY i.category_id, c.name, c.service_type
-         ORDER BY net_revenue DESC`,
+         ORDER BY total_sale DESC`,
         [outletId, startDt, endDt, ...ff.params, ...stf.params]
       ),
       pool.query(
         `SELECT 
-          SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal + o.tax_amount) ELSE 0 END) as gross_revenue,
-          SUM(CASE WHEN o.status != 'cancelled' THEN o.discount_amount ELSE 0 END) as discount_amount,
-          SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END) as net_revenue,
-          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
-          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
-          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount,
-          COUNT(CASE WHEN o.is_nc = 1 AND o.status != 'cancelled' THEN 1 END) as nc_orders
+          COUNT(*) as total_orders,
+          SUM(o.total_amount) as total_sale,
+          SUM(COALESCE(o.discount_amount, 0)) as discount_amount,
+          SUM(COALESCE(o.tax_amount, 0)) as tax_amount,
+          SUM(COALESCE(o.service_charge, 0)) as service_charge,
+          SUM(COALESCE(o.nc_amount, 0)) as nc_amount,
+          SUM(COALESCE(o.due_amount, 0)) as due_amount,
+          SUM(COALESCE(o.paid_amount, 0)) as paid_amount,
+          COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
+          SUM(COALESCE(o.guest_count, 0)) as total_guests,
+          COUNT(CASE WHEN o.order_type = 'dine_in' THEN 1 END) as dine_in_orders,
+          COUNT(CASE WHEN o.order_type = 'takeaway' THEN 1 END) as takeaway_orders,
+          COUNT(CASE WHEN o.order_type = 'delivery' THEN 1 END) as delivery_orders
          FROM orders o
-         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'${ff.sql}`,
+         WHERE o.outlet_id = ? AND o.status = 'completed' AND ${bdWhere('o.created_at')}${ff.sql}`,
         [outletId, startDt, endDt, ...ff.params]
       )
     ]);
     const rows = rowsRes[0];
-    const orderSummary = orderSummaryRes[0];
+    const os = orderSummaryRes[0][0] || {};
+    const r2 = (n) => parseFloat((parseFloat(n) || 0).toFixed(2));
 
     const totalQuantity = rows.reduce((s, r) => s + parseInt(r.total_quantity || 0), 0);
-    const grossRevenue = parseFloat(orderSummary[0].gross_revenue || 0);
-    const discountAmount = parseFloat(orderSummary[0].discount_amount || 0);
-    const totalRevenue = parseFloat(orderSummary[0].net_revenue || 0);
-    const ncAmount = parseFloat(orderSummary[0].nc_amount || 0);
-    const dueAmount = parseFloat(orderSummary[0].due_amount || 0);
-    const paidAmount = parseFloat(orderSummary[0].paid_amount || 0);
+    const totalSale = r2(os.total_sale);
+    const itemSaleSum = r2(rows.reduce((s, r) => s + parseFloat(r.total_sale || 0), 0));
 
     const categories = rows.map(r => ({
       ...r,
-      contribution_percent: totalRevenue > 0 ? ((parseFloat(r.net_revenue) / totalRevenue) * 100).toFixed(2) : '0.00'
+      contribution_percent: totalSale > 0 ? ((parseFloat(r.total_sale) / itemSaleSum) * 100).toFixed(2) : '0.00'
     }));
 
     return {
@@ -899,15 +907,27 @@ const reportsService = {
       categories,
       summary: {
         total_categories: categories.length,
+        total_orders: parseInt(os.total_orders) || 0,
         total_quantity: totalQuantity,
-        nc_amount: ncAmount.toFixed(2),
-        due_amount: dueAmount.toFixed(2),
-        paid_amount: paidAmount.toFixed(2),
-        gross_revenue: grossRevenue.toFixed(2),
-        discount_amount: discountAmount.toFixed(2),
-        net_revenue: totalRevenue.toFixed(2),
+        total_sale: totalSale,
+        discount_amount: r2(os.discount_amount),
+        tax_amount: r2(os.tax_amount),
+        service_charge: r2(os.service_charge),
+        nc_orders: parseInt(os.nc_orders) || 0,
+        nc_amount: r2(os.nc_amount),
+        due_amount: r2(os.due_amount),
+        paid_amount: r2(os.paid_amount),
+        total_guests: parseInt(os.total_guests) || 0,
+        dine_in_orders: parseInt(os.dine_in_orders) || 0,
+        takeaway_orders: parseInt(os.takeaway_orders) || 0,
+        delivery_orders: parseInt(os.delivery_orders) || 0,
         top_category: categories.length > 0 ? categories[0].category_name : null,
-        top_category_revenue: categories.length > 0 ? parseFloat(categories[0].net_revenue).toFixed(2) : '0.00'
+        top_category_revenue: categories.length > 0 ? r2(categories[0].total_sale) : 0
+      },
+      crossVerification: {
+        order_level_total_sale: totalSale,
+        item_level_total_sale: itemSaleSum,
+        match: Math.abs(totalSale - itemSaleSum) < 1
       }
     };
   },
@@ -920,8 +940,8 @@ const reportsService = {
     const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
     const ff = floorFilter(floorIds);
 
-    // Execute all 4 independent queries in parallel
-    const [regularRes, splitRes, ncSummaryRes, dueSummaryRes] = await Promise.all([
+    // Execute all 4 independent queries in parallel — ONLY completed orders
+    const [regularRes, splitRes, orderSummaryRes] = await Promise.all([
       pool.query(
         `SELECT 
           p.payment_mode,
@@ -931,7 +951,7 @@ const reportsService = {
           SUM(p.tip_amount) as tip_amount
          FROM payments p
          JOIN orders o ON p.order_id = o.id
-         WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed' AND p.payment_mode != 'split'${ff.sql}
+         WHERE p.outlet_id = ? AND o.status = 'completed' AND ${bdWhere('o.created_at')} AND p.status = 'completed' AND p.payment_mode != 'split'${ff.sql}
          GROUP BY p.payment_mode
          ORDER BY total_amount DESC`,
         [outletId, startDt, endDt, ...ff.params]
@@ -946,32 +966,30 @@ const reportsService = {
          FROM split_payments sp
          JOIN payments p ON sp.payment_id = p.id
          JOIN orders o ON p.order_id = o.id
-         WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed' AND p.payment_mode = 'split'${ff.sql}
+         WHERE p.outlet_id = ? AND o.status = 'completed' AND ${bdWhere('o.created_at')} AND p.status = 'completed' AND p.payment_mode = 'split'${ff.sql}
          GROUP BY sp.payment_mode
          ORDER BY total_amount DESC`,
         [outletId, startDt, endDt, ...ff.params]
       ),
       pool.query(
         `SELECT 
-          COUNT(DISTINCT oi.order_id) as nc_orders,
-          COALESCE(SUM(oi.total_price), 0) as nc_amount
-         FROM order_items oi
-         JOIN orders o ON oi.order_id = o.id
-         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'
-         AND oi.is_nc = 1 AND oi.status != 'cancelled'${ff.sql}`,
-        [outletId, startDt, endDt, ...ff.params]
-      ),
-      pool.query(
-        `SELECT SUM(COALESCE(o.due_amount, 0)) as due_amount
+          COUNT(*) as total_orders,
+          SUM(o.total_amount) as total_sale,
+          SUM(COALESCE(o.discount_amount, 0)) as discount_amount,
+          SUM(COALESCE(o.due_amount, 0)) as due_amount,
+          SUM(COALESCE(o.paid_amount, 0)) as paid_amount,
+          COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
+          SUM(COALESCE(o.nc_amount, 0)) as nc_amount,
+          SUM(COALESCE(o.guest_count, 0)) as total_guests
          FROM orders o
-         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'${ff.sql}`,
+         WHERE o.outlet_id = ? AND o.status = 'completed' AND ${bdWhere('o.created_at')}${ff.sql}`,
         [outletId, startDt, endDt, ...ff.params]
       )
     ]);
     const regularRows = regularRes[0];
     const splitRows = splitRes[0];
-    const ncData = ncSummaryRes[0][0] || {};
-    const dueData = dueSummaryRes[0][0] || {};
+    const os = orderSummaryRes[0][0] || {};
+    const r2 = (n) => parseFloat((parseFloat(n) || 0).toFixed(2));
 
     // Merge regular and split payments by payment_mode
     const modeMap = {};
@@ -1001,26 +1019,37 @@ const reportsService = {
     }
 
     const rows = Object.values(modeMap).sort((a, b) => b.total_amount - a.total_amount);
-    const totalAmount = rows.reduce((sum, r) => sum + r.total_amount, 0);
-    const totalBase = rows.reduce((sum, r) => sum + r.base_amount, 0);
-    const totalTips = rows.reduce((sum, r) => sum + r.tip_amount, 0);
+    const totalCollected = r2(rows.reduce((sum, r) => sum + r.total_amount, 0));
+    const totalBase = r2(rows.reduce((sum, r) => sum + r.base_amount, 0));
+    const totalTips = r2(rows.reduce((sum, r) => sum + r.tip_amount, 0));
     const totalTransactions = rows.reduce((sum, r) => sum + r.transaction_count, 0);
+    const totalSale = r2(os.total_sale);
 
     return {
       dateRange: { start, end },
       modes: rows.map(r => ({
         ...r,
-        percentage_share: totalAmount > 0 ? ((r.total_amount / totalAmount) * 100).toFixed(2) : '0.00'
+        percentage_share: totalCollected > 0 ? ((r.total_amount / totalCollected) * 100).toFixed(2) : '0.00'
       })),
       summary: {
+        total_orders: parseInt(os.total_orders) || 0,
+        total_sale: totalSale,
         total_transactions: totalTransactions,
-        total_collected: totalAmount.toFixed(2),
-        total_base_amount: totalBase.toFixed(2),
-        total_tips: totalTips.toFixed(2),
-        average_transaction: totalTransactions > 0 ? (totalAmount / totalTransactions).toFixed(2) : '0.00',
-        nc_orders: parseInt(ncData.nc_orders) || 0,
-        nc_amount: parseFloat(ncData.nc_amount || 0).toFixed(2),
-        due_amount: parseFloat(dueData.due_amount || 0).toFixed(2)
+        total_collected: totalCollected,
+        total_base_amount: totalBase,
+        total_tips: totalTips,
+        average_transaction: totalTransactions > 0 ? r2(totalCollected / totalTransactions) : 0,
+        nc_orders: parseInt(os.nc_orders) || 0,
+        nc_amount: r2(os.nc_amount),
+        due_amount: r2(os.due_amount),
+        paid_amount: r2(os.paid_amount),
+        discount_amount: r2(os.discount_amount),
+        total_guests: parseInt(os.total_guests) || 0
+      },
+      crossVerification: {
+        order_total_sale: totalSale,
+        payment_total_collected: totalCollected,
+        difference: r2(totalSale - totalCollected)
       }
     };
   },
@@ -1033,8 +1062,8 @@ const reportsService = {
     const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
     const ff = floorFilter(floorIds);
 
-    // Execute all 4 independent queries in parallel
-    const [rowsRes, invoicesRes, ncSummaryRes, dueSummaryRes] = await Promise.all([
+    // Execute all 4 independent queries in parallel — ONLY completed orders
+    const [rowsRes, invoicesRes, orderSummaryRes] = await Promise.all([
       pool.query(
         `SELECT 
           ${toISTDate('i.created_at')} as report_date,
@@ -1052,7 +1081,7 @@ const reportsService = {
           COUNT(*) as invoice_count
          FROM invoices i
          JOIN orders o ON i.order_id = o.id
-         WHERE i.outlet_id = ? AND ${bdWhere('i.created_at')} AND i.is_cancelled = 0${ff.sql}
+         WHERE i.outlet_id = ? AND o.status = 'completed' AND ${bdWhere('o.created_at')} AND i.is_cancelled = 0${ff.sql}
          GROUP BY ${toISTDate('i.created_at')}
          ORDER BY report_date DESC`,
         [outletId, startDt, endDt, ...ff.params]
@@ -1060,30 +1089,29 @@ const reportsService = {
       pool.query(
         `SELECT i.tax_breakup FROM invoices i
          JOIN orders o ON i.order_id = o.id
-         WHERE i.outlet_id = ? AND ${bdWhere('i.created_at')} AND i.is_cancelled = 0${ff.sql}`,
+         WHERE i.outlet_id = ? AND o.status = 'completed' AND ${bdWhere('o.created_at')} AND i.is_cancelled = 0${ff.sql}`,
         [outletId, startDt, endDt, ...ff.params]
       ),
       pool.query(
         `SELECT 
-          COUNT(DISTINCT oi.order_id) as nc_orders,
-          COALESCE(SUM(oi.total_price), 0) as nc_amount
-         FROM order_items oi
-         JOIN orders o ON oi.order_id = o.id
-         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'
-         AND oi.is_nc = 1 AND oi.status != 'cancelled'${ff.sql}`,
-        [outletId, startDt, endDt, ...ff.params]
-      ),
-      pool.query(
-        `SELECT SUM(COALESCE(o.due_amount, 0)) as due_amount
+          COUNT(*) as total_orders,
+          SUM(o.total_amount) as total_sale,
+          SUM(COALESCE(o.discount_amount, 0)) as discount_amount,
+          SUM(COALESCE(o.tax_amount, 0)) as order_tax,
+          SUM(COALESCE(o.due_amount, 0)) as due_amount,
+          SUM(COALESCE(o.paid_amount, 0)) as paid_amount,
+          COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
+          SUM(COALESCE(o.nc_amount, 0)) as nc_amount,
+          SUM(COALESCE(o.guest_count, 0)) as total_guests
          FROM orders o
-         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.status != 'cancelled'${ff.sql}`,
+         WHERE o.outlet_id = ? AND o.status = 'completed' AND ${bdWhere('o.created_at')}${ff.sql}`,
         [outletId, startDt, endDt, ...ff.params]
       )
     ]);
     const rows = rowsRes[0];
     const invoices = invoicesRes[0];
-    const ncData = ncSummaryRes[0][0] || {};
-    const dueData = dueSummaryRes[0][0] || {};
+    const os = orderSummaryRes[0][0] || {};
+    const r2 = (n) => parseFloat((parseFloat(n) || 0).toFixed(2));
 
     const componentTotals = {};
     for (const inv of invoices) {
@@ -1120,25 +1148,45 @@ const reportsService = {
     })).sort((a, b) => b.taxAmount - a.taxAmount);
 
     // Summary totals
-    const summary = {
-      total_subtotal: rows.reduce((s, r) => s + parseFloat(r.subtotal || 0), 0).toFixed(2),
-      total_discount: rows.reduce((s, r) => s + parseFloat(r.discount_amount || 0), 0).toFixed(2),
-      total_taxable: rows.reduce((s, r) => s + parseFloat(r.taxable_amount || 0), 0).toFixed(2),
-      total_cgst: rows.reduce((s, r) => s + parseFloat(r.cgst_amount || 0), 0).toFixed(2),
-      total_sgst: rows.reduce((s, r) => s + parseFloat(r.sgst_amount || 0), 0).toFixed(2),
-      total_igst: rows.reduce((s, r) => s + parseFloat(r.igst_amount || 0), 0).toFixed(2),
-      total_vat: rows.reduce((s, r) => s + parseFloat(r.vat_amount || 0), 0).toFixed(2),
-      total_cess: rows.reduce((s, r) => s + parseFloat(r.cess_amount || 0), 0).toFixed(2),
-      total_tax: rows.reduce((s, r) => s + parseFloat(r.total_tax || 0), 0).toFixed(2),
-      total_service_charge: rows.reduce((s, r) => s + parseFloat(r.service_charge || 0), 0).toFixed(2),
-      total_grand: rows.reduce((s, r) => s + parseFloat(r.grand_total || 0), 0).toFixed(2),
-      total_invoices: rows.reduce((s, r) => s + r.invoice_count, 0)
-    };
-    summary.nc_orders = parseInt(ncData.nc_orders) || 0;
-    summary.nc_amount = parseFloat(ncData.nc_amount || 0).toFixed(2);
-    summary.due_amount = parseFloat(dueData.due_amount || 0).toFixed(2);
+    const invoiceTotalTax = r2(rows.reduce((s, r) => s + parseFloat(r.total_tax || 0), 0));
+    const invoiceGrandTotal = r2(rows.reduce((s, r) => s + parseFloat(r.grand_total || 0), 0));
+    const totalSale = r2(os.total_sale);
 
-    return { dateRange: { start, end }, daily: rows, taxComponents, summary };
+    const summary = {
+      total_orders: parseInt(os.total_orders) || 0,
+      total_sale: totalSale,
+      total_subtotal: r2(rows.reduce((s, r) => s + parseFloat(r.subtotal || 0), 0)),
+      total_discount: r2(rows.reduce((s, r) => s + parseFloat(r.discount_amount || 0), 0)),
+      total_taxable: r2(rows.reduce((s, r) => s + parseFloat(r.taxable_amount || 0), 0)),
+      total_cgst: r2(rows.reduce((s, r) => s + parseFloat(r.cgst_amount || 0), 0)),
+      total_sgst: r2(rows.reduce((s, r) => s + parseFloat(r.sgst_amount || 0), 0)),
+      total_igst: r2(rows.reduce((s, r) => s + parseFloat(r.igst_amount || 0), 0)),
+      total_vat: r2(rows.reduce((s, r) => s + parseFloat(r.vat_amount || 0), 0)),
+      total_cess: r2(rows.reduce((s, r) => s + parseFloat(r.cess_amount || 0), 0)),
+      total_tax: invoiceTotalTax,
+      total_service_charge: r2(rows.reduce((s, r) => s + parseFloat(r.service_charge || 0), 0)),
+      total_grand: invoiceGrandTotal,
+      total_invoices: rows.reduce((s, r) => s + r.invoice_count, 0),
+      nc_orders: parseInt(os.nc_orders) || 0,
+      nc_amount: r2(os.nc_amount),
+      due_amount: r2(os.due_amount),
+      paid_amount: r2(os.paid_amount),
+      total_guests: parseInt(os.total_guests) || 0
+    };
+
+    return {
+      dateRange: { start, end },
+      daily: rows,
+      taxComponents,
+      summary,
+      crossVerification: {
+        order_total_sale: totalSale,
+        invoice_grand_total: invoiceGrandTotal,
+        order_tax: r2(os.order_tax),
+        invoice_tax: invoiceTotalTax,
+        sale_match: Math.abs(totalSale - invoiceGrandTotal) < 1
+      }
+    };
   },
 
   /**
@@ -1201,35 +1249,38 @@ const reportsService = {
     const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
     const ff = floorFilter(floorIds);
 
-    // Execute both independent queries in parallel
+    // Execute both independent queries in parallel — ONLY completed orders
     const [rowsRes, tipsRes] = await Promise.all([
       pool.query(
         `SELECT 
           o.created_by as user_id, u.name as user_name,
           COUNT(*) as total_orders,
-          SUM(o.guest_count) as total_guests,
-          SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END) as total_sales,
-          SUM(CASE WHEN o.status != 'cancelled' THEN o.discount_amount ELSE 0 END) as total_discounts,
-          COUNT(CASE WHEN o.status = 'cancelled' THEN 1 END) as cancelled_orders,
-          SUM(CASE WHEN o.status = 'cancelled' THEN o.total_amount ELSE 0 END) as cancelled_amount,
+          SUM(COALESCE(o.guest_count, 0)) as total_guests,
+          SUM(o.total_amount) as total_sale,
+          SUM(COALESCE(o.discount_amount, 0)) as total_discounts,
+          SUM(COALESCE(o.tax_amount, 0)) as tax_amount,
+          SUM(COALESCE(o.service_charge, 0)) as service_charge,
           COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
-          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
-          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
-          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount,
-          COUNT(CASE WHEN o.is_adjustment = 1 AND o.status != 'cancelled' THEN 1 END) as adjustment_count,
-          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.adjustment_amount, 0) ELSE 0 END) as adjustment_amount
+          SUM(COALESCE(o.nc_amount, 0)) as nc_amount,
+          SUM(COALESCE(o.due_amount, 0)) as due_amount,
+          SUM(COALESCE(o.paid_amount, 0)) as paid_amount,
+          COUNT(CASE WHEN o.is_adjustment = 1 THEN 1 END) as adjustment_count,
+          SUM(COALESCE(o.adjustment_amount, 0)) as adjustment_amount,
+          COUNT(CASE WHEN o.order_type = 'dine_in' THEN 1 END) as dine_in_orders,
+          COUNT(CASE WHEN o.order_type = 'takeaway' THEN 1 END) as takeaway_orders,
+          COUNT(CASE WHEN o.order_type = 'delivery' THEN 1 END) as delivery_orders
          FROM orders o
          JOIN users u ON o.created_by = u.id
-         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')}${ff.sql}
+         WHERE o.outlet_id = ? AND o.status = 'completed' AND ${bdWhere('o.created_at')}${ff.sql}
          GROUP BY o.created_by, u.name
-         ORDER BY total_sales DESC`,
+         ORDER BY total_sale DESC`,
         [outletId, startDt, endDt, ...ff.params]
       ),
       pool.query(
         `SELECT p.received_by as user_id, SUM(p.tip_amount) as tips
          FROM payments p
          JOIN orders o ON p.order_id = o.id
-         WHERE p.outlet_id = ? AND ${bdWhere('p.created_at')} AND p.status = 'completed' AND p.tip_amount > 0${ff.sql}
+         WHERE p.outlet_id = ? AND o.status = 'completed' AND ${bdWhere('o.created_at')} AND p.status = 'completed' AND p.tip_amount > 0${ff.sql}
          GROUP BY p.received_by`,
         [outletId, startDt, endDt, ...ff.params]
       )
@@ -1237,22 +1288,20 @@ const reportsService = {
     const rows = rowsRes[0];
     const tipMap = {};
     tipsRes[0].forEach(t => { tipMap[t.user_id] = parseFloat(t.tips); });
+    const r2 = (n) => parseFloat((parseFloat(n) || 0).toFixed(2));
 
     const staff = rows.map(r => ({
       ...r,
       total_tips: tipMap[r.user_id] || 0,
-      avg_order_value: r.total_orders > 0 ? (parseFloat(r.total_sales) / r.total_orders).toFixed(2) : '0.00',
-      avg_guest_spend: r.total_guests > 0 ? (parseFloat(r.total_sales) / r.total_guests).toFixed(2) : '0.00'
+      avg_order_value: r.total_orders > 0 ? r2(parseFloat(r.total_sale) / r.total_orders) : 0,
+      avg_guest_spend: r.total_guests > 0 ? r2(parseFloat(r.total_sale) / r.total_guests) : 0
     }));
 
-    // Calculate summary totals
     const totalOrders = rows.reduce((s, r) => s + (r.total_orders || 0), 0);
-    const totalGuests = rows.reduce((s, r) => s + (r.total_guests || 0), 0);
-    const totalSales = rows.reduce((s, r) => s + parseFloat(r.total_sales || 0), 0);
-    const totalDiscounts = rows.reduce((s, r) => s + parseFloat(r.total_discounts || 0), 0);
-    const cancelledOrders = rows.reduce((s, r) => s + (r.cancelled_orders || 0), 0);
-    const cancelledAmount = rows.reduce((s, r) => s + parseFloat(r.cancelled_amount || 0), 0);
-    const totalTips = Object.values(tipMap).reduce((s, t) => s + t, 0);
+    const totalGuests = rows.reduce((s, r) => s + parseInt(r.total_guests || 0), 0);
+    const totalSale = r2(rows.reduce((s, r) => s + parseFloat(r.total_sale || 0), 0));
+    const totalDiscounts = r2(rows.reduce((s, r) => s + parseFloat(r.total_discounts || 0), 0));
+    const totalTips = r2(Object.values(tipMap).reduce((s, t) => s + t, 0));
 
     return {
       dateRange: { start, end },
@@ -1261,20 +1310,18 @@ const reportsService = {
         total_staff: staff.length,
         total_orders: totalOrders,
         total_guests: totalGuests,
-        total_sales: totalSales.toFixed(2),
-        total_discounts: totalDiscounts.toFixed(2),
-        cancelled_orders: cancelledOrders,
-        cancelled_amount: cancelledAmount.toFixed(2),
+        total_sale: totalSale,
+        discount_amount: totalDiscounts,
         nc_orders: rows.reduce((s, r) => s + (r.nc_orders || 0), 0),
-        nc_amount: rows.reduce((s, r) => s + parseFloat(r.nc_amount || 0), 0).toFixed(2),
-        due_amount: rows.reduce((s, r) => s + parseFloat(r.due_amount || 0), 0).toFixed(2),
-        paid_amount: rows.reduce((s, r) => s + parseFloat(r.paid_amount || 0), 0).toFixed(2),
+        nc_amount: r2(rows.reduce((s, r) => s + parseFloat(r.nc_amount || 0), 0)),
+        due_amount: r2(rows.reduce((s, r) => s + parseFloat(r.due_amount || 0), 0)),
+        paid_amount: r2(rows.reduce((s, r) => s + parseFloat(r.paid_amount || 0), 0)),
         adjustment_count: rows.reduce((s, r) => s + (r.adjustment_count || 0), 0),
-        adjustment_amount: rows.reduce((s, r) => s + parseFloat(r.adjustment_amount || 0), 0).toFixed(2),
-        total_tips: totalTips.toFixed(2),
-        average_per_staff: staff.length > 0 ? (totalSales / staff.length).toFixed(2) : '0.00',
+        adjustment_amount: r2(rows.reduce((s, r) => s + parseFloat(r.adjustment_amount || 0), 0)),
+        total_tips: totalTips,
+        average_per_staff: staff.length > 0 ? r2(totalSale / staff.length) : 0,
         top_performer: staff.length > 0 ? staff[0].user_name : null,
-        top_performer_sales: staff.length > 0 ? parseFloat(staff[0].total_sales).toFixed(2) : '0.00'
+        top_performer_sales: staff.length > 0 ? r2(staff[0].total_sale) : 0
       }
     };
   },
@@ -1296,7 +1343,7 @@ const reportsService = {
     const page = Math.max(1, parseInt(options.page) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(options.limit) || 50));
     const offset = (page - 1) * limit;
-    const sortBy = options.sortBy || 'net_sales';
+    const sortBy = options.sortBy || 'total_sale';
     const sortOrder = (options.sortOrder || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
     
     const ff = floorFilter(floorIds);
@@ -1318,8 +1365,8 @@ const reportsService = {
     }
 
     // Valid sort columns
-    const validSorts = ['net_sales', 'order_count', 'guest_count', 'floor_name', 'section_name'];
-    const orderCol = validSorts.includes(sortBy) ? sortBy : 'net_sales';
+    const validSorts = ['total_sale', 'order_count', 'guest_count', 'floor_name', 'section_name'];
+    const orderCol = validSorts.includes(sortBy) ? sortBy : 'total_sale';
 
     // Execute all 3 independent queries in parallel
     const [floorRowsRes, countResultRes, sectionRowsRes] = await Promise.all([
@@ -1329,17 +1376,19 @@ const reportsService = {
           f.name as floor_name,
           COUNT(*) as order_count,
           COALESCE(SUM(CAST(o.guest_count AS UNSIGNED)), 0) as guest_count,
-          COALESCE(SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END), 0) as net_sales,
-          SUM(CASE WHEN o.status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_orders,
+          COALESCE(SUM(o.total_amount), 0) as total_sale,
+          SUM(COALESCE(o.discount_amount, 0)) as discount_amount,
+          SUM(COALESCE(o.tax_amount, 0)) as tax_amount,
+          SUM(COALESCE(o.service_charge, 0)) as service_charge,
           COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
-          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
-          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
-          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount
+          SUM(COALESCE(o.nc_amount, 0)) as nc_amount,
+          SUM(COALESCE(o.due_amount, 0)) as due_amount,
+          SUM(COALESCE(o.paid_amount, 0)) as paid_amount
          FROM orders o
          INNER JOIN floors f ON o.floor_id = f.id
-         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.floor_id IS NOT NULL${ff.sql}${floorSearchSql}
+         WHERE o.outlet_id = ? AND o.status = 'completed' AND ${bdWhere('o.created_at')} AND o.floor_id IS NOT NULL${ff.sql}${floorSearchSql}
          GROUP BY o.floor_id, f.name
-         ORDER BY net_sales DESC`,
+         ORDER BY total_sale DESC`,
         [outletId, startDt, endDt, ...ff.params, ...floorSearchParams]
       ),
       pool.query(
@@ -1347,7 +1396,7 @@ const reportsService = {
          FROM orders o
          INNER JOIN floors f ON o.floor_id = f.id
          LEFT JOIN sections s ON o.section_id = s.id
-         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.floor_id IS NOT NULL${ff.sql}${sectionSearchSql}`,
+         WHERE o.outlet_id = ? AND o.status = 'completed' AND ${bdWhere('o.created_at')} AND o.floor_id IS NOT NULL${ff.sql}${sectionSearchSql}`,
         [outletId, startDt, endDt, ...ff.params, ...sectionSearchParams]
       ),
       pool.query(
@@ -1358,16 +1407,18 @@ const reportsService = {
           s.name as section_name,
           COUNT(*) as order_count,
           COALESCE(SUM(CAST(o.guest_count AS UNSIGNED)), 0) as guest_count,
-          COALESCE(SUM(CASE WHEN o.status != 'cancelled' THEN (o.subtotal - o.discount_amount) ELSE 0 END), 0) as net_sales,
-          SUM(CASE WHEN o.status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_orders,
+          COALESCE(SUM(o.total_amount), 0) as total_sale,
+          SUM(COALESCE(o.discount_amount, 0)) as discount_amount,
+          SUM(COALESCE(o.tax_amount, 0)) as tax_amount,
+          SUM(COALESCE(o.service_charge, 0)) as service_charge,
           COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
-          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
-          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.due_amount, 0) ELSE 0 END) as due_amount,
-          SUM(CASE WHEN o.status != 'cancelled' THEN COALESCE(o.paid_amount, 0) ELSE 0 END) as paid_amount
+          SUM(COALESCE(o.nc_amount, 0)) as nc_amount,
+          SUM(COALESCE(o.due_amount, 0)) as due_amount,
+          SUM(COALESCE(o.paid_amount, 0)) as paid_amount
          FROM orders o
          INNER JOIN floors f ON o.floor_id = f.id
          LEFT JOIN sections s ON o.section_id = s.id
-         WHERE o.outlet_id = ? AND ${bdWhere('o.created_at')} AND o.floor_id IS NOT NULL${ff.sql}${sectionSearchSql}
+         WHERE o.outlet_id = ? AND o.status = 'completed' AND ${bdWhere('o.created_at')} AND o.floor_id IS NOT NULL${ff.sql}${sectionSearchSql}
          GROUP BY o.floor_id, f.name, o.section_id, s.name
          ORDER BY ${orderCol} ${sortOrder}
          LIMIT ? OFFSET ?`,
@@ -1386,13 +1437,15 @@ const reportsService = {
       sectionName: r.section_name || 'No Section',
       orderCount: parseInt(r.order_count) || 0,
       guestCount: parseInt(r.guest_count) || 0,
-      netSales: parseFloat(r.net_sales) || 0,
-      cancelledOrders: parseInt(r.cancelled_orders) || 0,
+      totalSale: parseFloat(r.total_sale) || 0,
+      discountAmount: parseFloat(r.discount_amount) || 0,
+      taxAmount: parseFloat(r.tax_amount) || 0,
+      serviceCharge: parseFloat(r.service_charge) || 0,
       ncOrders: parseInt(r.nc_orders) || 0,
       ncAmount: parseFloat(r.nc_amount) || 0,
       dueAmount: parseFloat(r.due_amount) || 0,
       paidAmount: parseFloat(r.paid_amount) || 0,
-      avgOrderValue: r.order_count > 0 ? parseFloat((parseFloat(r.net_sales) / r.order_count).toFixed(2)) : 0
+      avgOrderValue: r.order_count > 0 ? parseFloat((parseFloat(r.total_sale) / r.order_count).toFixed(2)) : 0
     }));
 
     // Group sections by floor
@@ -1407,8 +1460,10 @@ const reportsService = {
         sectionName: section.sectionName,
         orderCount: section.orderCount,
         guestCount: section.guestCount,
-        netSales: section.netSales,
-        cancelledOrders: section.cancelledOrders,
+        totalSale: section.totalSale,
+        discountAmount: section.discountAmount,
+        taxAmount: section.taxAmount,
+        serviceCharge: section.serviceCharge,
         ncOrders: section.ncOrders,
         ncAmount: section.ncAmount,
         dueAmount: section.dueAmount,
@@ -1426,13 +1481,15 @@ const reportsService = {
         floorName: r.floor_name || 'Unassigned',
         orderCount: parseInt(r.order_count) || 0,
         guestCount: parseInt(r.guest_count) || 0,
-        netSales: parseFloat(r.net_sales) || 0,
-        cancelledOrders: parseInt(r.cancelled_orders) || 0,
+        totalSale: parseFloat(r.total_sale) || 0,
+        discountAmount: parseFloat(r.discount_amount) || 0,
+        taxAmount: parseFloat(r.tax_amount) || 0,
+        serviceCharge: parseFloat(r.service_charge) || 0,
         ncOrders: parseInt(r.nc_orders) || 0,
         ncAmount: parseFloat(r.nc_amount) || 0,
         dueAmount: parseFloat(r.due_amount) || 0,
         paidAmount: parseFloat(r.paid_amount) || 0,
-        avgOrderValue: r.order_count > 0 ? parseFloat((parseFloat(r.net_sales) / r.order_count).toFixed(2)) : 0,
+        avgOrderValue: r.order_count > 0 ? parseFloat((parseFloat(r.total_sale) / r.order_count).toFixed(2)) : 0,
         sections: floorSections
       };
     });
@@ -1440,15 +1497,17 @@ const reportsService = {
     // Calculate summary totals from floors (more accurate)
     const totalOrders = floors.reduce((s, r) => s + r.orderCount, 0);
     const totalGuests = floors.reduce((s, r) => s + r.guestCount, 0);
-    const totalSales = floors.reduce((s, r) => s + r.netSales, 0);
-    const cancelledOrders = floors.reduce((s, r) => s + r.cancelledOrders, 0);
+    const grandTotalSale = floors.reduce((s, r) => s + r.totalSale, 0);
+    const totalDiscount = floors.reduce((s, r) => s + r.discountAmount, 0);
+    const totalTax = floors.reduce((s, r) => s + r.taxAmount, 0);
+    const totalServiceCharge = floors.reduce((s, r) => s + r.serviceCharge, 0);
     const totalNCOrders = floors.reduce((s, r) => s + r.ncOrders, 0);
     const totalNCAmount = floors.reduce((s, r) => s + r.ncAmount, 0);
     const totalDueAmount = floors.reduce((s, r) => s + r.dueAmount, 0);
     const totalPaidAmount = floors.reduce((s, r) => s + r.paidAmount, 0);
 
     // Find top section by sales
-    const topSection = formattedSections.length > 0 ? formattedSections.reduce((a, b) => a.netSales > b.netSales ? a : b) : null;
+    const topSection = formattedSections.length > 0 ? formattedSections.reduce((a, b) => a.totalSale > b.totalSale ? a : b) : null;
 
     return {
       dateRange: { start, end },
@@ -1458,15 +1517,17 @@ const reportsService = {
         total_sections: total,
         total_orders: totalOrders,
         total_guests: totalGuests,
-        total_sales: totalSales.toFixed(2),
-        cancelled_orders: cancelledOrders,
+        total_sale: parseFloat(grandTotalSale.toFixed(2)),
+        discount_amount: parseFloat(totalDiscount.toFixed(2)),
+        tax_amount: parseFloat(totalTax.toFixed(2)),
+        service_charge: parseFloat(totalServiceCharge.toFixed(2)),
         nc_orders: totalNCOrders,
         nc_amount: parseFloat(totalNCAmount.toFixed(2)),
         due_amount: parseFloat(totalDueAmount.toFixed(2)),
         paid_amount: parseFloat(totalPaidAmount.toFixed(2)),
-        average_order_value: totalOrders > 0 ? (totalSales / totalOrders).toFixed(2) : '0.00',
+        average_order_value: totalOrders > 0 ? parseFloat((grandTotalSale / totalOrders).toFixed(2)) : 0,
         top_section: topSection?.sectionName || null,
-        top_section_sales: topSection ? topSection.netSales.toFixed(2) : '0.00'
+        top_section_sales: topSection ? parseFloat(topSection.totalSale.toFixed(2)) : 0
       },
       pagination: {
         page,
@@ -1503,7 +1564,7 @@ const reportsService = {
        LEFT JOIN kitchen_stations ks ON kt.station_id = ks.id AND ks.outlet_id = kt.outlet_id
        LEFT JOIN counters c ON kt.station_id = c.id AND c.outlet_id = kt.outlet_id 
          AND kt.station IN ('bar', 'main_bar', 'mocktail', 'live_counter')
-       JOIN orders o ON kt.order_id = o.id
+       JOIN orders o ON kt.order_id = o.id AND o.status = 'completed'
        WHERE kt.outlet_id = ? AND ${bdWhere('kt.created_at')}${ff.sql}
        GROUP BY kt.station, kt.station_id, ks.name, c.name, ks.station_type, c.counter_type
        ORDER BY ticket_count DESC`,
@@ -7278,7 +7339,7 @@ const reportsService = {
     const whereClause = 'WHERE ' + conditions.join(' AND ');
 
     // 1. Per-day order aggregation — ONLY completed
-    const [rowsRes, payRowsRes, splitRowsRes, costByDateRes, wastageByDateRes] = await Promise.all([
+    const [rowsRes, payRowsRes, splitRowsRes, costByDateRes, wastageByDateRes, floorBreakdownRes, floorPayRes, floorSplitPayRes] = await Promise.all([
       pool.query(
         `SELECT
           ${toISTDate('o.created_at')} as report_date,
@@ -7348,6 +7409,61 @@ const reportsService = {
          WHERE wl.outlet_id = ? AND wl.wastage_date BETWEEN ? AND ?
          GROUP BY wl.wastage_date`,
         [outletId, start, end]
+      ),
+      // 6. Floor-wise order breakdown (per date + floor)
+      pool.query(
+        `SELECT
+          ${toISTDate('o.created_at')} as report_date,
+          o.floor_id,
+          COALESCE(f.name, 'Takeaway / Delivery') as floor_name,
+          COUNT(*) as total_orders,
+          SUM(o.total_amount) as total_sale,
+          COUNT(CASE WHEN o.order_type = 'dine_in' THEN 1 END) as dine_in_orders,
+          COUNT(CASE WHEN o.order_type = 'takeaway' THEN 1 END) as takeaway_orders,
+          COUNT(CASE WHEN o.order_type = 'delivery' THEN 1 END) as delivery_orders,
+          SUM(COALESCE(o.discount_amount, 0)) as discount_amount,
+          SUM(COALESCE(o.tax_amount, 0)) as tax_amount,
+          SUM(COALESCE(o.service_charge, 0)) as service_charge,
+          SUM(COALESCE(o.guest_count, 0)) as total_guests,
+          COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
+          SUM(CASE WHEN o.is_nc = 1 THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
+          SUM(COALESCE(o.paid_amount, 0)) as paid_amount,
+          SUM(COALESCE(o.due_amount, 0)) as due_amount,
+          COUNT(CASE WHEN o.is_adjustment = 1 THEN 1 END) as adjustment_count,
+          SUM(CASE WHEN o.is_adjustment = 1 THEN COALESCE(o.adjustment_amount, 0) ELSE 0 END) as adjustment_amount
+         FROM orders o
+         LEFT JOIN floors f ON o.floor_id = f.id
+         ${whereClause}
+         GROUP BY ${toISTDate('o.created_at')}, o.floor_id, f.name
+         ORDER BY report_date DESC, o.floor_id`,
+        params
+      ),
+      // 7. Floor-wise payment breakdown (per date + floor)
+      pool.query(
+        `SELECT
+          ${toISTDate('o.created_at')} as report_date,
+          o.floor_id,
+          p.payment_mode,
+          SUM(p.total_amount) as amount
+         FROM payments p
+         JOIN orders o ON p.order_id = o.id
+         ${whereClause} AND p.status = 'completed'
+         GROUP BY ${toISTDate('o.created_at')}, o.floor_id, p.payment_mode`,
+        params
+      ),
+      // 8. Floor-wise split payment breakdown (per date + floor)
+      pool.query(
+        `SELECT
+          ${toISTDate('o.created_at')} as report_date,
+          o.floor_id,
+          sp.payment_mode,
+          SUM(sp.amount) as amount
+         FROM split_payments sp
+         JOIN payments p ON sp.payment_id = p.id
+         JOIN orders o ON p.order_id = o.id
+         ${whereClause} AND p.status = 'completed' AND p.payment_mode = 'split'
+         GROUP BY ${toISTDate('o.created_at')}, o.floor_id, sp.payment_mode`,
+        params
       )
     ]);
     const rows = rowsRes[0];
@@ -7355,6 +7471,9 @@ const reportsService = {
     const splitRows = splitRowsRes[0];
     const costByDate = costByDateRes[0];
     const wastageByDate = wastageByDateRes[0];
+    const floorRows = floorBreakdownRes[0];
+    const floorPayRows = floorPayRes[0];
+    const floorSplitPayRows = floorSplitPayRes[0];
 
     // Fetch outside collections for the date range
     const outsideCollData = await outsideCollectionService.getCollectionsForDateRange(outletId, start, end, floorIds);
@@ -7386,6 +7505,51 @@ const reportsService = {
       const dk = r.report_date instanceof Date ? r.report_date.toISOString().slice(0, 10) : r.report_date;
       wastageByDateMap[dk] = { wastage_count: parseInt(r.wastage_count) || 0, wastage_cost: parseFloat(r.wastage_cost) || 0 };
     });
+
+    // Build floor breakdown maps (keyed by date -> floorId)
+    const floorByDate = {};
+    for (const fr of floorRows) {
+      const dk = fr.report_date instanceof Date ? fr.report_date.toISOString().slice(0, 10) : fr.report_date;
+      const fk = fr.floor_id || 'takeaway_delivery';
+      if (!floorByDate[dk]) floorByDate[dk] = {};
+      floorByDate[dk][fk] = {
+        floor_id: fr.floor_id,
+        floor_name: fr.floor_name,
+        total_orders: parseInt(fr.total_orders) || 0,
+        total_sale: r2(fr.total_sale),
+        ordersByType: {
+          dine_in: parseInt(fr.dine_in_orders) || 0,
+          takeaway: parseInt(fr.takeaway_orders) || 0,
+          delivery: parseInt(fr.delivery_orders) || 0
+        },
+        discount_amount: r2(fr.discount_amount),
+        tax_amount: r2(fr.tax_amount),
+        service_charge: r2(fr.service_charge),
+        total_guests: parseInt(fr.total_guests) || 0,
+        nc_orders: parseInt(fr.nc_orders) || 0,
+        nc_amount: r2(fr.nc_amount),
+        paid_amount: r2(fr.paid_amount),
+        due_amount: r2(fr.due_amount),
+        adjustment_count: parseInt(fr.adjustment_count) || 0,
+        adjustment_amount: r2(fr.adjustment_amount),
+        paymentBreakdown: {}
+      };
+    }
+    // Merge floor-wise payments
+    for (const fp of floorPayRows) {
+      const dk = fp.report_date instanceof Date ? fp.report_date.toISOString().slice(0, 10) : fp.report_date;
+      const fk = fp.floor_id || 'takeaway_delivery';
+      if (floorByDate[dk] && floorByDate[dk][fk] && fp.payment_mode !== 'split') {
+        floorByDate[dk][fk].paymentBreakdown[fp.payment_mode] = (floorByDate[dk][fk].paymentBreakdown[fp.payment_mode] || 0) + (parseFloat(fp.amount) || 0);
+      }
+    }
+    for (const fsp of floorSplitPayRows) {
+      const dk = fsp.report_date instanceof Date ? fsp.report_date.toISOString().slice(0, 10) : fsp.report_date;
+      const fk = fsp.floor_id || 'takeaway_delivery';
+      if (floorByDate[dk] && floorByDate[dk][fk]) {
+        floorByDate[dk][fk].paymentBreakdown[fsp.payment_mode] = (floorByDate[dk][fk].paymentBreakdown[fsp.payment_mode] || 0) + (parseFloat(fsp.amount) || 0);
+      }
+    }
 
     // Build per-day summary
     const days = rows.map(r => {
@@ -7432,9 +7596,54 @@ const reportsService = {
         profit: cost.profit,
         foodCostPercentage: totalSaleVal > 0 ? r2((cost.making_cost / totalSaleVal) * 100) : 0,
         wastageCount: wst.wastage_count,
-        wastageCost: wst.wastage_cost
+        wastageCost: wst.wastage_cost,
+        floorBreakdown: Object.values(floorByDate[dateKey] || {}).map(fb => ({
+          ...fb,
+          paymentBreakdown: Object.fromEntries(Object.entries(fb.paymentBreakdown).map(([k, v]) => [k, r2(v)]))
+        }))
       };
     });
+
+    // Grand totals (floor breakdown aggregated across all days)
+    const grandFloorMap = {};
+    for (const d of days) {
+      for (const fb of d.floorBreakdown) {
+        const fk = fb.floor_id || 'takeaway_delivery';
+        if (!grandFloorMap[fk]) {
+          grandFloorMap[fk] = {
+            floor_id: fb.floor_id,
+            floor_name: fb.floor_name,
+            total_orders: 0, total_sale: 0,
+            ordersByType: { dine_in: 0, takeaway: 0, delivery: 0 },
+            discount_amount: 0, tax_amount: 0, service_charge: 0,
+            total_guests: 0, nc_orders: 0, nc_amount: 0,
+            paid_amount: 0, due_amount: 0,
+            adjustment_count: 0, adjustment_amount: 0,
+            paymentBreakdown: {}
+          };
+        }
+        const g = grandFloorMap[fk];
+        g.total_orders += fb.total_orders;
+        g.total_sale = r2(g.total_sale + fb.total_sale);
+        g.ordersByType.dine_in += fb.ordersByType.dine_in;
+        g.ordersByType.takeaway += fb.ordersByType.takeaway;
+        g.ordersByType.delivery += fb.ordersByType.delivery;
+        g.discount_amount = r2(g.discount_amount + fb.discount_amount);
+        g.tax_amount = r2(g.tax_amount + fb.tax_amount);
+        g.service_charge = r2(g.service_charge + fb.service_charge);
+        g.total_guests += fb.total_guests;
+        g.nc_orders += fb.nc_orders;
+        g.nc_amount = r2(g.nc_amount + fb.nc_amount);
+        g.paid_amount = r2(g.paid_amount + fb.paid_amount);
+        g.due_amount = r2(g.due_amount + fb.due_amount);
+        g.adjustment_count += fb.adjustment_count;
+        g.adjustment_amount = r2(g.adjustment_amount + fb.adjustment_amount);
+        for (const [mode, amt] of Object.entries(fb.paymentBreakdown)) {
+          g.paymentBreakdown[mode] = r2((g.paymentBreakdown[mode] || 0) + (parseFloat(amt) || 0));
+        }
+      }
+    }
+    const grandFloorBreakdown = Object.values(grandFloorMap);
 
     // Grand totals
     const grandSale = r2(days.reduce((s, d) => s + d.total_sale, 0));
@@ -7483,8 +7692,13 @@ const reportsService = {
       profit: r2(days.reduce((s, d) => s + d.profit, 0)),
       foodCostPercentage: grandSale > 0 ? r2((grandMakingCost / grandSale) * 100) : 0,
       wastageCount: days.reduce((s, d) => s + d.wastageCount, 0),
-      wastageCost: r2(days.reduce((s, d) => s + d.wastageCost, 0))
+      wastageCost: r2(days.reduce((s, d) => s + d.wastageCost, 0)),
+      floorBreakdown: grandFloorBreakdown
     };
+
+    // Cross-verify floor breakdown sums match grand totals
+    const floorSumSale = r2(grandFloorBreakdown.reduce((s, f) => s + f.total_sale, 0));
+    const floorSumOrders = grandFloorBreakdown.reduce((s, f) => s + f.total_orders, 0);
 
     return {
       dateRange: { start, end },
@@ -7507,7 +7721,11 @@ const reportsService = {
         day_sum_sale: r2(days.reduce((s, d) => s + d.total_sale, 0)),
         outside_collection: r2(outsideCollData.total),
         match: Math.abs(grandSale - r2(days.reduce((s, d) => s + d.total_sale, 0))) < 0.01,
-        note: 'total_sale = SUM(total_amount) of completed orders + outside_collections. total_collection = total_sale. No gross/net split.'
+        floor_sum_order_sale: floorSumSale,
+        floor_sum_orders: floorSumOrders,
+        floor_match_orders: floorSumOrders === grandOrders,
+        floor_match_sale: Math.abs(floorSumSale - r2(grandTotal.order_sale)) < 0.01,
+        note: 'total_sale = SUM(total_amount) of completed orders + outside_collections. total_collection = total_sale. floorBreakdown sums should match order_sale (excl. outside collections).'
       }
     };
   },
@@ -7537,100 +7755,107 @@ const reportsService = {
     const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
     const ff = floorFilter(floorIds);
 
-    // ────────────────────────────────────────────────
-    // QUERY 1: Aggregated summary — ONLY completed orders
-    // ────────────────────────────────────────────────
-    const [summaryRes] = await pool.query(
-      `SELECT
-        ${toISTDate('o.created_at')} as report_date,
-        /* ── Core total ── */
-        COUNT(*) as total_orders,
-        SUM(o.total_amount) as total_sale,
-
-        /* ── Order type breakdown ── */
-        COUNT(CASE WHEN o.order_type = 'dine_in' THEN 1 END) as dine_in_orders,
-        COUNT(CASE WHEN o.order_type = 'takeaway' THEN 1 END) as takeaway_orders,
-        COUNT(CASE WHEN o.order_type = 'delivery' THEN 1 END) as delivery_orders,
-
-        /* ── Bifurcation: Discount ── */
-        SUM(COALESCE(o.discount_amount, 0)) as total_discount,
-
-        /* ── Bifurcation: NC (Non-Chargeable) ── */
-        COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_order_count,
-        SUM(CASE WHEN o.is_nc = 1 THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
-
-        /* ── Adjustment info (included in total, not excluded) ── */
-        COUNT(CASE WHEN o.is_adjustment = 1 THEN 1 END) as adjustment_order_count,
-        SUM(COALESCE(o.adjustment_amount, 0)) as total_adjustment_amount,
-
-        /* ── Payment status breakdown (for cross-verification) ── */
-        COUNT(CASE WHEN o.payment_status = 'completed' THEN 1 END) as fully_paid_orders,
-        COUNT(CASE WHEN o.payment_status = 'partial' THEN 1 END) as partial_paid_orders,
-        COUNT(CASE WHEN o.payment_status IN ('pending', 'refunded') THEN 1 END) as unpaid_orders,
-        SUM(COALESCE(o.paid_amount, 0)) as total_paid_amount,
-        SUM(COALESCE(o.due_amount, 0)) as total_due_amount,
-
-        /* ── Sub-components (for information, NOT separated from total_sale) ── */
-        SUM(COALESCE(o.subtotal, 0)) as subtotal,
-        SUM(COALESCE(o.tax_amount, 0)) as tax_amount,
-        SUM(COALESCE(o.service_charge, 0)) as service_charge,
-        SUM(COALESCE(o.packaging_charge, 0)) as packaging_charge,
-        SUM(COALESCE(o.delivery_charge, 0)) as delivery_charge,
-        SUM(COALESCE(o.round_off, 0)) as round_off,
-        SUM(COALESCE(o.guest_count, 0)) as total_guests
-
-       FROM orders o
-       WHERE o.outlet_id = ?
-         AND o.status = 'completed'
-         AND ${bdWhere('o.created_at')}${ff.sql}
-       GROUP BY ${toISTDate('o.created_at')}
-       ORDER BY report_date DESC`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
-
-    // ────────────────────────────────────────────────
-    // QUERY 2: Order-level list for cross-verification
-    // ────────────────────────────────────────────────
-    const [orderListRes] = await pool.query(
-      `SELECT
-        o.id,
-        o.order_number,
-        o.order_type,
-        o.status,
-        o.payment_status,
-        o.total_amount,
-        o.subtotal,
-        o.tax_amount,
-        o.discount_amount,
-        o.service_charge,
-        o.packaging_charge,
-        o.delivery_charge,
-        o.round_off,
-        o.paid_amount,
-        o.due_amount,
-        o.is_nc,
-        o.nc_amount,
-        o.is_adjustment,
-        o.adjustment_amount,
-        o.customer_name,
-        o.guest_count,
-        o.created_at,
-        o.billed_at,
-        t.table_number,
-        f.name as floor_name,
-        u_cap.name as captain_name,
-        u_bill.name as biller_name
-       FROM orders o
-       LEFT JOIN tables t ON o.table_id = t.id
-       LEFT JOIN floors f ON o.floor_id = f.id
-       LEFT JOIN users u_cap ON o.created_by = u_cap.id
-       LEFT JOIN users u_bill ON o.billed_by = u_bill.id
-       WHERE o.outlet_id = ?
-         AND o.status = 'completed'
-         AND ${bdWhere('o.created_at')}${ff.sql}
-       ORDER BY o.created_at DESC`,
-      [outletId, startDt, endDt, ...ff.params]
-    );
+    // Execute all queries in parallel
+    const baseParams = [outletId, startDt, endDt, ...ff.params];
+    const [summaryResArr, orderListResArr, floorBreakdownResArr] = await Promise.all([
+      // QUERY 1: Aggregated summary — ONLY completed orders
+      pool.query(
+        `SELECT
+          ${toISTDate('o.created_at')} as report_date,
+          COUNT(*) as total_orders,
+          SUM(o.total_amount) as total_sale,
+          COUNT(CASE WHEN o.order_type = 'dine_in' THEN 1 END) as dine_in_orders,
+          COUNT(CASE WHEN o.order_type = 'takeaway' THEN 1 END) as takeaway_orders,
+          COUNT(CASE WHEN o.order_type = 'delivery' THEN 1 END) as delivery_orders,
+          SUM(COALESCE(o.discount_amount, 0)) as total_discount,
+          COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_order_count,
+          SUM(CASE WHEN o.is_nc = 1 THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
+          COUNT(CASE WHEN o.is_adjustment = 1 THEN 1 END) as adjustment_order_count,
+          SUM(COALESCE(o.adjustment_amount, 0)) as total_adjustment_amount,
+          COUNT(CASE WHEN o.payment_status = 'completed' THEN 1 END) as fully_paid_orders,
+          COUNT(CASE WHEN o.payment_status = 'partial' THEN 1 END) as partial_paid_orders,
+          COUNT(CASE WHEN o.payment_status IN ('pending', 'refunded') THEN 1 END) as unpaid_orders,
+          SUM(COALESCE(o.paid_amount, 0)) as total_paid_amount,
+          SUM(COALESCE(o.due_amount, 0)) as total_due_amount,
+          SUM(COALESCE(o.subtotal, 0)) as subtotal,
+          SUM(COALESCE(o.tax_amount, 0)) as tax_amount,
+          SUM(COALESCE(o.service_charge, 0)) as service_charge,
+          SUM(COALESCE(o.packaging_charge, 0)) as packaging_charge,
+          SUM(COALESCE(o.delivery_charge, 0)) as delivery_charge,
+          SUM(COALESCE(o.round_off, 0)) as round_off,
+          SUM(COALESCE(o.guest_count, 0)) as total_guests
+         FROM orders o
+         WHERE o.outlet_id = ?
+           AND o.status = 'completed'
+           AND ${bdWhere('o.created_at')}${ff.sql}
+         GROUP BY ${toISTDate('o.created_at')}
+         ORDER BY report_date DESC`,
+        baseParams
+      ),
+      // QUERY 2: Order-level list for cross-verification
+      pool.query(
+        `SELECT
+          o.id, o.order_number, o.order_type, o.status, o.payment_status,
+          o.total_amount, o.subtotal, o.tax_amount, o.discount_amount,
+          o.service_charge, o.packaging_charge, o.delivery_charge, o.round_off,
+          o.paid_amount, o.due_amount, o.is_nc, o.nc_amount,
+          o.is_adjustment, o.adjustment_amount,
+          o.customer_name, o.guest_count, o.created_at, o.billed_at,
+          o.floor_id,
+          t.table_number, f.name as floor_name,
+          u_cap.name as captain_name, u_bill.name as biller_name
+         FROM orders o
+         LEFT JOIN tables t ON o.table_id = t.id
+         LEFT JOIN floors f ON o.floor_id = f.id
+         LEFT JOIN users u_cap ON o.created_by = u_cap.id
+         LEFT JOIN users u_bill ON o.billed_by = u_bill.id
+         WHERE o.outlet_id = ?
+           AND o.status = 'completed'
+           AND ${bdWhere('o.created_at')}${ff.sql}
+         ORDER BY o.created_at DESC`,
+        baseParams
+      ),
+      // QUERY 3: Floor-wise breakdown (per date + floor)
+      pool.query(
+        `SELECT
+          ${toISTDate('o.created_at')} as report_date,
+          o.floor_id,
+          COALESCE(f.name, 'Takeaway / Delivery') as floor_name,
+          COUNT(*) as total_orders,
+          SUM(o.total_amount) as total_sale,
+          COUNT(CASE WHEN o.order_type = 'dine_in' THEN 1 END) as dine_in_orders,
+          COUNT(CASE WHEN o.order_type = 'takeaway' THEN 1 END) as takeaway_orders,
+          COUNT(CASE WHEN o.order_type = 'delivery' THEN 1 END) as delivery_orders,
+          SUM(COALESCE(o.discount_amount, 0)) as total_discount,
+          COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_order_count,
+          SUM(CASE WHEN o.is_nc = 1 THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
+          COUNT(CASE WHEN o.is_adjustment = 1 THEN 1 END) as adjustment_order_count,
+          SUM(COALESCE(o.adjustment_amount, 0)) as total_adjustment_amount,
+          COUNT(CASE WHEN o.payment_status = 'completed' THEN 1 END) as fully_paid_orders,
+          COUNT(CASE WHEN o.payment_status = 'partial' THEN 1 END) as partial_paid_orders,
+          COUNT(CASE WHEN o.payment_status IN ('pending', 'refunded') THEN 1 END) as unpaid_orders,
+          SUM(COALESCE(o.paid_amount, 0)) as total_paid_amount,
+          SUM(COALESCE(o.due_amount, 0)) as total_due_amount,
+          SUM(COALESCE(o.subtotal, 0)) as subtotal,
+          SUM(COALESCE(o.tax_amount, 0)) as tax_amount,
+          SUM(COALESCE(o.service_charge, 0)) as service_charge,
+          SUM(COALESCE(o.packaging_charge, 0)) as packaging_charge,
+          SUM(COALESCE(o.delivery_charge, 0)) as delivery_charge,
+          SUM(COALESCE(o.round_off, 0)) as round_off,
+          SUM(COALESCE(o.guest_count, 0)) as total_guests
+         FROM orders o
+         LEFT JOIN floors f ON o.floor_id = f.id
+         WHERE o.outlet_id = ?
+           AND o.status = 'completed'
+           AND ${bdWhere('o.created_at')}${ff.sql}
+         GROUP BY ${toISTDate('o.created_at')}, o.floor_id, f.name
+         ORDER BY report_date DESC, o.floor_id`,
+        baseParams
+      )
+    ]);
+    const summaryRes = summaryResArr[0];
+    const orderListRes = orderListResArr[0];
+    const floorBkRes = floorBreakdownResArr[0];
 
     // ────────────────────────────────────────────────
     // OUTSIDE COLLECTIONS
@@ -7642,6 +7867,42 @@ const reportsService = {
     // BUILD RESPONSE
     // ────────────────────────────────────────────────
     const r2 = (n) => parseFloat((parseFloat(n) || 0).toFixed(2));
+
+    // Build floor breakdown by date
+    const dsrFloorByDate = {};
+    for (const fr of floorBkRes) {
+      const dk = fr.report_date instanceof Date ? fr.report_date.toISOString().slice(0, 10) : fr.report_date;
+      const fk = fr.floor_id || 'takeaway_delivery';
+      if (!dsrFloorByDate[dk]) dsrFloorByDate[dk] = {};
+      dsrFloorByDate[dk][fk] = {
+        floor_id: fr.floor_id,
+        floor_name: fr.floor_name,
+        total_orders: parseInt(fr.total_orders) || 0,
+        total_sale: r2(fr.total_sale),
+        dine_in_orders: parseInt(fr.dine_in_orders) || 0,
+        takeaway_orders: parseInt(fr.takeaway_orders) || 0,
+        delivery_orders: parseInt(fr.delivery_orders) || 0,
+        discount_amount: r2(fr.total_discount),
+        nc_order_count: parseInt(fr.nc_order_count) || 0,
+        nc_amount: r2(fr.nc_amount),
+        adjustment_order_count: parseInt(fr.adjustment_order_count) || 0,
+        adjustment_amount: r2(fr.total_adjustment_amount),
+        fully_paid_orders: parseInt(fr.fully_paid_orders) || 0,
+        partial_paid_orders: parseInt(fr.partial_paid_orders) || 0,
+        unpaid_orders: parseInt(fr.unpaid_orders) || 0,
+        total_paid_amount: r2(fr.total_paid_amount),
+        total_due_amount: r2(fr.total_due_amount),
+        components: {
+          subtotal: r2(fr.subtotal),
+          tax_amount: r2(fr.tax_amount),
+          service_charge: r2(fr.service_charge),
+          packaging_charge: r2(fr.packaging_charge),
+          delivery_charge: r2(fr.delivery_charge),
+          round_off: r2(fr.round_off)
+        },
+        total_guests: parseInt(fr.total_guests) || 0
+      };
+    }
 
     // Per-day breakdown
     const daily = summaryRes.map(row => {
@@ -7683,7 +7944,8 @@ const reportsService = {
           delivery_charge: r2(row.delivery_charge),
           round_off: r2(row.round_off)
         },
-        total_guests: parseInt(row.total_guests) || 0
+        total_guests: parseInt(row.total_guests) || 0,
+        floorBreakdown: Object.values(dsrFloorByDate[dateKey] || {})
       };
     });
 
@@ -7706,6 +7968,52 @@ const reportsService = {
     const grandTakeaway = daily.reduce((s, d) => s + d.takeaway_orders, 0);
     const grandDelivery = daily.reduce((s, d) => s + d.delivery_orders, 0);
 
+    // Aggregate grand floor breakdown across all days
+    const dsrGrandFloorMap = {};
+    for (const d of daily) {
+      for (const fb of d.floorBreakdown) {
+        const fk = fb.floor_id || 'takeaway_delivery';
+        if (!dsrGrandFloorMap[fk]) {
+          dsrGrandFloorMap[fk] = {
+            floor_id: fb.floor_id,
+            floor_name: fb.floor_name,
+            total_orders: 0, total_sale: 0,
+            dine_in_orders: 0, takeaway_orders: 0, delivery_orders: 0,
+            discount_amount: 0, nc_order_count: 0, nc_amount: 0,
+            adjustment_order_count: 0, adjustment_amount: 0,
+            fully_paid_orders: 0, partial_paid_orders: 0, unpaid_orders: 0,
+            total_paid_amount: 0, total_due_amount: 0,
+            components: { subtotal: 0, tax_amount: 0, service_charge: 0, packaging_charge: 0, delivery_charge: 0, round_off: 0 },
+            total_guests: 0
+          };
+        }
+        const g = dsrGrandFloorMap[fk];
+        g.total_orders += fb.total_orders;
+        g.total_sale = r2(g.total_sale + fb.total_sale);
+        g.dine_in_orders += fb.dine_in_orders;
+        g.takeaway_orders += fb.takeaway_orders;
+        g.delivery_orders += fb.delivery_orders;
+        g.discount_amount = r2(g.discount_amount + fb.discount_amount);
+        g.nc_order_count += fb.nc_order_count;
+        g.nc_amount = r2(g.nc_amount + fb.nc_amount);
+        g.adjustment_order_count += fb.adjustment_order_count;
+        g.adjustment_amount = r2(g.adjustment_amount + fb.adjustment_amount);
+        g.fully_paid_orders += fb.fully_paid_orders;
+        g.partial_paid_orders += fb.partial_paid_orders;
+        g.unpaid_orders += fb.unpaid_orders;
+        g.total_paid_amount = r2(g.total_paid_amount + fb.total_paid_amount);
+        g.total_due_amount = r2(g.total_due_amount + fb.total_due_amount);
+        g.components.subtotal = r2(g.components.subtotal + fb.components.subtotal);
+        g.components.tax_amount = r2(g.components.tax_amount + fb.components.tax_amount);
+        g.components.service_charge = r2(g.components.service_charge + fb.components.service_charge);
+        g.components.packaging_charge = r2(g.components.packaging_charge + fb.components.packaging_charge);
+        g.components.delivery_charge = r2(g.components.delivery_charge + fb.components.delivery_charge);
+        g.components.round_off = r2(g.components.round_off + fb.components.round_off);
+        g.total_guests += fb.total_guests;
+      }
+    }
+    const dsrGrandFloorBreakdown = Object.values(dsrGrandFloorMap);
+
     // Format order list for verification
     const orders = orderListRes.map(o => ({
       id: o.id,
@@ -7723,7 +8031,8 @@ const reportsService = {
       customer_name: o.customer_name,
       guest_count: o.guest_count || 0,
       table_number: o.table_number,
-      floor_name: o.floor_name,
+      floor_id: o.floor_id,
+      floor_name: o.floor_name || 'Takeaway / Delivery',
       captain_name: o.captain_name,
       biller_name: o.biller_name,
       created_at: o.created_at,
@@ -7732,6 +8041,8 @@ const reportsService = {
 
     // Cross-verify: sum of order-level total_amount should equal total_sale
     const orderLevelTotal = orders.reduce((s, o) => s + o.total_amount, 0);
+    const dsrFloorSumSale = r2(dsrGrandFloorBreakdown.reduce((s, f) => s + f.total_sale, 0));
+    const dsrFloorSumOrders = dsrGrandFloorBreakdown.reduce((s, f) => s + f.total_orders, 0);
 
     return {
       dateRange: { start, end },
@@ -7760,7 +8071,8 @@ const reportsService = {
         total_due_amount: r2(grandDue),
         total_guests: grandGuests,
         average_order_value: grandTotalOrders > 0
-          ? r2(grandTotalSale / grandTotalOrders) : 0
+          ? r2(grandTotalSale / grandTotalOrders) : 0,
+        floorBreakdown: dsrGrandFloorBreakdown
       },
       daily,
       outsideCollections: {
@@ -7781,10 +8093,705 @@ const reportsService = {
         outside_collection: r2(outsideCollData.total),
         order_level_plus_outside: r2(orderLevelTotal + outsideCollData.total),
         match: Math.abs(grandTotalSale - (orderLevelTotal + outsideCollData.total)) < 0.01,
+        floor_sum_order_sale: dsrFloorSumSale,
+        floor_sum_orders: dsrFloorSumOrders,
+        floor_match_orders: dsrFloorSumOrders === grandTotalOrders,
+        floor_match_sale: Math.abs(dsrFloorSumSale - r2(grandOrderSale)) < 0.01,
         formula: 'total_sale = SUM(total_amount) of all completed orders + outside_collections',
-        note: 'total_collection equals total_sale. NC, discount, adjustment, due amounts are included in total_sale and NOT excluded. Outside collections added separately.'
+        note: 'total_collection equals total_sale. NC, discount, adjustment, due amounts are included in total_sale and NOT excluded. Outside collections added separately. floorBreakdown sums should match order_sale (excl. outside collections).'
       },
       orders
+    };
+  },
+
+  // ========================
+  // ACCURATE DAY-END SUMMARY — DETAIL (paginated order list with items/payments)
+  // ========================
+
+  /**
+   * Accurate Day End Summary Detail — paginated order list with full details
+   * Completed orders only, 4am-4am, with filters + search + items/payments/KOTs
+   */
+  async getAccurateDayEndSummaryDetail(outletId, startDate, endDate, options = {}) {
+    const pool = getPool();
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
+    const r2 = (n) => parseFloat((parseFloat(n) || 0).toFixed(2));
+    const {
+      floorIds = [], userId = null, isCashier = false,
+      page = 1, limit = 20, sortBy = 'created_at', sortOrder = 'DESC',
+      search = null, orderType = null, paymentStatus = null,
+      captainId = null, floorId = null, date = null
+    } = options;
+
+    // Build WHERE conditions
+    let conditions = ['o.outlet_id = ?', "o.status = 'completed'"];
+    let params = [outletId];
+
+    // Date filter: specific date or full range
+    if (date) {
+      const { startDt: dStart, endDt: dEnd } = businessDayRange(date, date);
+      conditions.push(`${bdWhere('o.created_at')}`);
+      params.push(dStart, dEnd);
+    } else {
+      conditions.push(`${bdWhere('o.created_at')}`);
+      params.push(startDt, endDt);
+    }
+
+    // Floor permission filter
+    if (floorIds.length > 0) {
+      conditions.push(`(o.floor_id IN (${floorIds.map(() => '?').join(',')}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway','delivery')))`);
+      params.push(...floorIds);
+    }
+    if (isCashier && userId) {
+      conditions.push('(o.billed_by = ? OR o.created_by = ?)');
+      params.push(userId, userId);
+    }
+
+    // User filters
+    if (floorId) {
+      conditions.push('o.floor_id = ?');
+      params.push(parseInt(floorId));
+    }
+    if (orderType && orderType !== 'all') {
+      conditions.push('o.order_type = ?');
+      params.push(orderType);
+    }
+    if (paymentStatus && paymentStatus !== 'all') {
+      conditions.push('o.payment_status = ?');
+      params.push(paymentStatus);
+    }
+    if (captainId) {
+      conditions.push('o.created_by = ?');
+      params.push(parseInt(captainId));
+    }
+    if (search) {
+      conditions.push(`(o.order_number LIKE ? OR o.customer_name LIKE ? OR o.customer_phone LIKE ? OR t.table_number LIKE ?)`);
+      const sp = `%${search}%`;
+      params.push(sp, sp, sp, sp);
+    }
+
+    const whereClause = 'WHERE ' + conditions.join(' AND ');
+
+    // Sort validation
+    const sortMap = {
+      created_at: 'o.created_at', total_amount: 'o.total_amount',
+      order_number: 'o.order_number', order_type: 'o.order_type'
+    };
+    const safeSort = sortMap[sortBy] || 'o.created_at';
+    const safeOrder = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+    const offset = (Math.max(1, parseInt(page)) - 1) * Math.min(100, parseInt(limit));
+    const safeLimit = Math.min(100, parseInt(limit));
+
+    // Run count + summary + paginated orders in parallel
+    const summaryParams = [...params]; // same conditions for summary
+    const [countRes, summaryRes, ordersRes] = await Promise.all([
+      pool.query(
+        `SELECT COUNT(*) as total FROM orders o LEFT JOIN tables t ON o.table_id = t.id ${whereClause}`,
+        params
+      ),
+      pool.query(
+        `SELECT
+          COUNT(*) as total_orders,
+          SUM(o.total_amount) as total_sale,
+          COUNT(CASE WHEN o.order_type = 'dine_in' THEN 1 END) as dine_in_orders,
+          COUNT(CASE WHEN o.order_type = 'takeaway' THEN 1 END) as takeaway_orders,
+          COUNT(CASE WHEN o.order_type = 'delivery' THEN 1 END) as delivery_orders,
+          SUM(COALESCE(o.discount_amount, 0)) as discount_amount,
+          SUM(COALESCE(o.tax_amount, 0)) as tax_amount,
+          SUM(COALESCE(o.service_charge, 0)) as service_charge,
+          SUM(COALESCE(o.guest_count, 0)) as total_guests,
+          COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
+          SUM(CASE WHEN o.is_nc = 1 THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
+          SUM(COALESCE(o.paid_amount, 0)) as paid_amount,
+          SUM(COALESCE(o.due_amount, 0)) as due_amount,
+          COUNT(CASE WHEN o.is_adjustment = 1 THEN 1 END) as adjustment_count,
+          SUM(CASE WHEN o.is_adjustment = 1 THEN COALESCE(o.adjustment_amount, 0) ELSE 0 END) as adjustment_amount,
+          COUNT(CASE WHEN o.payment_status = 'completed' THEN 1 END) as fully_paid_orders,
+          COUNT(CASE WHEN o.payment_status = 'partial' THEN 1 END) as partial_paid_orders,
+          COUNT(CASE WHEN o.payment_status IN ('pending', 'refunded') THEN 1 END) as unpaid_orders
+         FROM orders o
+         LEFT JOIN tables t ON o.table_id = t.id
+         ${whereClause}`,
+        summaryParams
+      ),
+      pool.query(
+        `SELECT
+          o.id, o.order_number, o.order_type, o.status, o.payment_status,
+          o.total_amount, o.subtotal, o.tax_amount, o.discount_amount,
+          o.service_charge, o.packaging_charge, o.delivery_charge, o.round_off,
+          o.paid_amount, o.due_amount, o.is_nc, o.nc_amount, o.nc_reason,
+          o.is_adjustment, o.adjustment_amount,
+          o.customer_name, o.customer_phone, o.guest_count,
+          o.floor_id, o.table_id, o.created_by, o.billed_by,
+          o.created_at, o.updated_at, o.billed_at,
+          t.table_number, f.name as floor_name,
+          u_cap.name as captain_name, u_bill.name as biller_name
+         FROM orders o
+         LEFT JOIN tables t ON o.table_id = t.id
+         LEFT JOIN floors f ON o.floor_id = f.id
+         LEFT JOIN users u_cap ON o.created_by = u_cap.id
+         LEFT JOIN users u_bill ON o.billed_by = u_bill.id
+         ${whereClause}
+         ORDER BY ${safeSort} ${safeOrder}
+         LIMIT ? OFFSET ?`,
+        [...params, safeLimit, offset]
+      )
+    ]);
+
+    const total = countRes[0][0].total;
+    const sr = summaryRes[0][0];
+    const orders = ordersRes[0];
+
+    // Batch-fetch items, payments, KOTs for returned orders
+    let itemsByOrder = {}, paymentsByOrder = {}, kotsByOrder = {};
+    if (orders.length > 0) {
+      const orderIds = orders.map(o => o.id);
+      const [itemsRes, paymentsRes, kotsRes] = await Promise.all([
+        pool.query(
+          `SELECT oi.order_id, oi.id as item_id, oi.item_name, oi.variant_name,
+            oi.quantity, oi.unit_price, oi.total_price, oi.discount_amount,
+            oi.tax_amount, oi.is_nc, oi.is_open_item, oi.status as item_status,
+            oi.cancel_reason, oi.cancelled_by
+           FROM order_items oi
+           WHERE oi.order_id IN (?)
+           ORDER BY oi.order_id, oi.id`,
+          [orderIds]
+        ),
+        pool.query(
+          `SELECT p.order_id, p.id as payment_id, p.payment_mode, p.total_amount,
+            p.tip_amount, p.status as payment_status, p.reference_number,
+            p.is_due_collection, p.is_adjustment, p.created_at as payment_date,
+            u.name as received_by_name
+           FROM payments p
+           LEFT JOIN users u ON p.received_by = u.id
+           WHERE p.order_id IN (?)
+           ORDER BY p.order_id, p.created_at`,
+          [orderIds]
+        ),
+        pool.query(
+          `SELECT k.order_id, k.id as kot_id, k.kot_number, k.status as kot_status,
+            k.created_at as kot_date,
+            (SELECT COUNT(*) FROM kot_items ki WHERE ki.kot_id = k.id) as item_count
+           FROM kot_tickets k
+           WHERE k.order_id IN (?)
+           ORDER BY k.order_id, k.created_at`,
+          [orderIds]
+        )
+      ]);
+
+      for (const item of itemsRes[0]) {
+        if (!itemsByOrder[item.order_id]) itemsByOrder[item.order_id] = [];
+        itemsByOrder[item.order_id].push({
+          id: item.item_id, itemName: item.item_name, variantName: item.variant_name,
+          quantity: item.quantity, unitPrice: r2(item.unit_price), totalPrice: r2(item.total_price),
+          discountAmount: r2(item.discount_amount), taxAmount: r2(item.tax_amount),
+          isNC: !!item.is_nc, isOpenItem: !!item.is_open_item,
+          status: item.item_status, isCancelled: item.item_status === 'cancelled', cancelReason: item.cancel_reason
+        });
+      }
+      for (const pay of paymentsRes[0]) {
+        if (!paymentsByOrder[pay.order_id]) paymentsByOrder[pay.order_id] = [];
+        paymentsByOrder[pay.order_id].push({
+          id: pay.payment_id, paymentMode: pay.payment_mode,
+          totalAmount: r2(pay.total_amount), tipAmount: r2(pay.tip_amount),
+          status: pay.payment_status, referenceNumber: pay.reference_number || null,
+          isDueCollection: !!pay.is_due_collection, isAdjustment: !!pay.is_adjustment,
+          receivedByName: pay.received_by_name, paymentDate: pay.payment_date
+        });
+      }
+      for (const kot of kotsRes[0]) {
+        if (!kotsByOrder[kot.order_id]) kotsByOrder[kot.order_id] = [];
+        kotsByOrder[kot.order_id].push({
+          id: kot.kot_id, kotNumber: kot.kot_number, status: kot.kot_status,
+          itemCount: kot.item_count, kotDate: kot.kot_date
+        });
+      }
+    }
+
+    // Format orders with details
+    const formattedOrders = orders.map(o => ({
+      id: o.id,
+      orderNumber: o.order_number,
+      orderType: o.order_type,
+      status: o.status,
+      paymentStatus: o.payment_status,
+      totalAmount: r2(o.total_amount),
+      subtotal: r2(o.subtotal),
+      taxAmount: r2(o.tax_amount),
+      discountAmount: r2(o.discount_amount),
+      serviceCharge: r2(o.service_charge),
+      packagingCharge: r2(o.packaging_charge),
+      deliveryCharge: r2(o.delivery_charge),
+      roundOff: r2(o.round_off),
+      paidAmount: r2(o.paid_amount),
+      dueAmount: r2(o.due_amount),
+      isNC: !!o.is_nc,
+      ncAmount: r2(o.nc_amount),
+      ncReason: o.nc_reason || null,
+      isAdjustment: !!o.is_adjustment,
+      adjustmentAmount: r2(o.adjustment_amount),
+      customerName: o.customer_name || null,
+      customerPhone: o.customer_phone || null,
+      guestCount: o.guest_count || 0,
+      floorId: o.floor_id,
+      floorName: o.floor_name || 'Takeaway / Delivery',
+      tableNumber: o.table_number || null,
+      captainName: o.captain_name || null,
+      billerName: o.biller_name || null,
+      createdAt: o.created_at,
+      billedAt: o.billed_at,
+      items: itemsByOrder[o.id] || [],
+      payments: paymentsByOrder[o.id] || [],
+      kots: kotsByOrder[o.id] || [],
+      itemCount: (itemsByOrder[o.id] || []).length,
+      paymentCount: (paymentsByOrder[o.id] || []).length,
+      kotCount: (kotsByOrder[o.id] || []).length
+    }));
+
+    // Outside collections
+    const outsideCollData = await outsideCollectionService.getCollectionsForDateRange(outletId, start, end, floorIds);
+    const orderSale = r2(sr.total_sale);
+    const totalSale = r2(orderSale + (outsideCollData.total || 0));
+
+    return {
+      dateRange: { start, end },
+      summary: {
+        total_orders: parseInt(sr.total_orders) || 0,
+        total_sale: totalSale,
+        order_sale: orderSale,
+        outside_collection: r2(outsideCollData.total),
+        outside_collection_count: outsideCollData.count || 0,
+        discount_amount: r2(sr.discount_amount),
+        tax_amount: r2(sr.tax_amount),
+        service_charge: r2(sr.service_charge),
+        total_guests: parseInt(sr.total_guests) || 0,
+        nc_orders: parseInt(sr.nc_orders) || 0,
+        nc_amount: r2(sr.nc_amount),
+        paid_amount: r2(sr.paid_amount),
+        due_amount: r2(sr.due_amount),
+        adjustment_count: parseInt(sr.adjustment_count) || 0,
+        adjustment_amount: r2(sr.adjustment_amount),
+        fully_paid_orders: parseInt(sr.fully_paid_orders) || 0,
+        partial_paid_orders: parseInt(sr.partial_paid_orders) || 0,
+        unpaid_orders: parseInt(sr.unpaid_orders) || 0,
+        dine_in_orders: parseInt(sr.dine_in_orders) || 0,
+        takeaway_orders: parseInt(sr.takeaway_orders) || 0,
+        delivery_orders: parseInt(sr.delivery_orders) || 0,
+        average_order_value: (parseInt(sr.total_orders) || 0) > 0 ? r2(orderSale / parseInt(sr.total_orders)) : 0,
+        paymentBreakdown: {
+          cash: r2(outsideCollData.cash),
+          card: r2(outsideCollData.card),
+          upi: r2(outsideCollData.upi),
+          other: r2(outsideCollData.other)
+        }
+      },
+      orders: formattedOrders,
+      pagination: {
+        page: Math.max(1, parseInt(page)),
+        limit: safeLimit,
+        total,
+        totalPages: Math.ceil(total / safeLimit)
+      },
+      crossVerification: {
+        summary_total_sale: totalSale,
+        order_sale: orderSale,
+        outside_collection: r2(outsideCollData.total),
+        page_order_sum: r2(formattedOrders.reduce((s, o) => s + o.totalAmount, 0)),
+        match: Math.abs(totalSale - (orderSale + (outsideCollData.total || 0))) < 0.01,
+        note: 'summary covers ALL filtered completed orders (not just current page). page_order_sum is only for current page.'
+      }
+    };
+  },
+
+  // ========================
+  // ACCURATE DSR — DETAIL (paginated order list with items/payments per day)
+  // ========================
+
+  /**
+   * Accurate DSR Detail — daily summary + paginated order list with full details
+   * Completed orders only, 4am-4am, with filters + search + items/payments/KOTs
+   */
+  async getAccurateDSRDetail(outletId, startDate, endDate, options = {}) {
+    const pool = getPool();
+    const { start, end, startDt, endDt } = this._dateRange(startDate, endDate);
+    const r2 = (n) => parseFloat((parseFloat(n) || 0).toFixed(2));
+    const {
+      floorIds = [],
+      page = 1, limit = 20, sortBy = 'created_at', sortOrder = 'DESC',
+      search = null, orderType = null, paymentStatus = null,
+      captainId = null, floorId = null, date = null
+    } = options;
+
+    // Build WHERE conditions
+    let conditions = ['o.outlet_id = ?', "o.status = 'completed'"];
+    let params = [outletId];
+
+    if (date) {
+      const { startDt: dStart, endDt: dEnd } = businessDayRange(date, date);
+      conditions.push(`${bdWhere('o.created_at')}`);
+      params.push(dStart, dEnd);
+    } else {
+      conditions.push(`${bdWhere('o.created_at')}`);
+      params.push(startDt, endDt);
+    }
+
+    if (floorIds.length > 0) {
+      conditions.push(`(o.floor_id IN (${floorIds.map(() => '?').join(',')}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway','delivery')))`);
+      params.push(...floorIds);
+    }
+    if (floorId) {
+      conditions.push('o.floor_id = ?');
+      params.push(parseInt(floorId));
+    }
+    if (orderType && orderType !== 'all') {
+      conditions.push('o.order_type = ?');
+      params.push(orderType);
+    }
+    if (paymentStatus && paymentStatus !== 'all') {
+      conditions.push('o.payment_status = ?');
+      params.push(paymentStatus);
+    }
+    if (captainId) {
+      conditions.push('o.created_by = ?');
+      params.push(parseInt(captainId));
+    }
+    if (search) {
+      conditions.push(`(o.order_number LIKE ? OR o.customer_name LIKE ? OR o.customer_phone LIKE ? OR t.table_number LIKE ?)`);
+      const sp = `%${search}%`;
+      params.push(sp, sp, sp, sp);
+    }
+
+    const whereClause = 'WHERE ' + conditions.join(' AND ');
+
+    const sortMap = {
+      created_at: 'o.created_at', total_amount: 'o.total_amount',
+      order_number: 'o.order_number', order_type: 'o.order_type'
+    };
+    const safeSort = sortMap[sortBy] || 'o.created_at';
+    const safeOrder = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+    const offset = (Math.max(1, parseInt(page)) - 1) * Math.min(100, parseInt(limit));
+    const safeLimit = Math.min(100, parseInt(limit));
+
+    // Run all queries in parallel: count, summary, daily, paginated orders, payment breakdown
+    const [countRes, summaryRes, dailyRes, ordersRes, payBreakdownRes, splitPayRes] = await Promise.all([
+      pool.query(
+        `SELECT COUNT(*) as total FROM orders o LEFT JOIN tables t ON o.table_id = t.id ${whereClause}`,
+        params
+      ),
+      pool.query(
+        `SELECT
+          COUNT(*) as total_orders,
+          SUM(o.total_amount) as total_sale,
+          COUNT(CASE WHEN o.order_type = 'dine_in' THEN 1 END) as dine_in_orders,
+          COUNT(CASE WHEN o.order_type = 'takeaway' THEN 1 END) as takeaway_orders,
+          COUNT(CASE WHEN o.order_type = 'delivery' THEN 1 END) as delivery_orders,
+          SUM(COALESCE(o.discount_amount, 0)) as discount_amount,
+          SUM(COALESCE(o.tax_amount, 0)) as tax_amount,
+          SUM(COALESCE(o.service_charge, 0)) as service_charge,
+          SUM(COALESCE(o.subtotal, 0)) as subtotal,
+          SUM(COALESCE(o.packaging_charge, 0)) as packaging_charge,
+          SUM(COALESCE(o.delivery_charge, 0)) as delivery_charge,
+          SUM(COALESCE(o.round_off, 0)) as round_off,
+          SUM(COALESCE(o.guest_count, 0)) as total_guests,
+          COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
+          SUM(CASE WHEN o.is_nc = 1 THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
+          SUM(COALESCE(o.paid_amount, 0)) as paid_amount,
+          SUM(COALESCE(o.due_amount, 0)) as due_amount,
+          COUNT(CASE WHEN o.is_adjustment = 1 THEN 1 END) as adjustment_count,
+          SUM(CASE WHEN o.is_adjustment = 1 THEN COALESCE(o.adjustment_amount, 0) ELSE 0 END) as adjustment_amount,
+          COUNT(CASE WHEN o.payment_status = 'completed' THEN 1 END) as fully_paid_orders,
+          COUNT(CASE WHEN o.payment_status = 'partial' THEN 1 END) as partial_paid_orders,
+          COUNT(CASE WHEN o.payment_status IN ('pending', 'refunded') THEN 1 END) as unpaid_orders
+         FROM orders o
+         LEFT JOIN tables t ON o.table_id = t.id
+         ${whereClause}`,
+        params
+      ),
+      // Daily breakdown
+      pool.query(
+        `SELECT
+          ${toISTDate('o.created_at')} as report_date,
+          COUNT(*) as total_orders,
+          SUM(o.total_amount) as total_sale,
+          COUNT(CASE WHEN o.order_type = 'dine_in' THEN 1 END) as dine_in_orders,
+          COUNT(CASE WHEN o.order_type = 'takeaway' THEN 1 END) as takeaway_orders,
+          COUNT(CASE WHEN o.order_type = 'delivery' THEN 1 END) as delivery_orders,
+          SUM(COALESCE(o.discount_amount, 0)) as discount_amount,
+          SUM(COALESCE(o.tax_amount, 0)) as tax_amount,
+          SUM(COALESCE(o.service_charge, 0)) as service_charge,
+          SUM(COALESCE(o.guest_count, 0)) as total_guests,
+          COUNT(CASE WHEN o.is_nc = 1 THEN 1 END) as nc_orders,
+          SUM(CASE WHEN o.is_nc = 1 THEN COALESCE(o.nc_amount, 0) ELSE 0 END) as nc_amount,
+          SUM(COALESCE(o.paid_amount, 0)) as paid_amount,
+          SUM(COALESCE(o.due_amount, 0)) as due_amount,
+          COUNT(CASE WHEN o.is_adjustment = 1 THEN 1 END) as adjustment_count,
+          SUM(CASE WHEN o.is_adjustment = 1 THEN COALESCE(o.adjustment_amount, 0) ELSE 0 END) as adjustment_amount
+         FROM orders o
+         LEFT JOIN tables t ON o.table_id = t.id
+         ${whereClause}
+         GROUP BY ${toISTDate('o.created_at')}
+         ORDER BY report_date DESC`,
+        params
+      ),
+      // Paginated orders
+      pool.query(
+        `SELECT
+          o.id, o.order_number, o.order_type, o.status, o.payment_status,
+          o.total_amount, o.subtotal, o.tax_amount, o.discount_amount,
+          o.service_charge, o.packaging_charge, o.delivery_charge, o.round_off,
+          o.paid_amount, o.due_amount, o.is_nc, o.nc_amount, o.nc_reason,
+          o.is_adjustment, o.adjustment_amount,
+          o.customer_name, o.customer_phone, o.guest_count,
+          o.floor_id, o.table_id, o.created_by, o.billed_by,
+          o.created_at, o.updated_at, o.billed_at,
+          ${toISTDate('o.created_at')} as business_date,
+          t.table_number, f.name as floor_name,
+          u_cap.name as captain_name, u_bill.name as biller_name
+         FROM orders o
+         LEFT JOIN tables t ON o.table_id = t.id
+         LEFT JOIN floors f ON o.floor_id = f.id
+         LEFT JOIN users u_cap ON o.created_by = u_cap.id
+         LEFT JOIN users u_bill ON o.billed_by = u_bill.id
+         ${whereClause}
+         ORDER BY ${safeSort} ${safeOrder}
+         LIMIT ? OFFSET ?`,
+        [...params, safeLimit, offset]
+      ),
+      // Payment breakdown for completed orders (whole range)
+      pool.query(
+        `SELECT p.payment_mode, SUM(p.total_amount) as amount, COUNT(*) as count
+         FROM payments p
+         JOIN orders o ON p.order_id = o.id
+         LEFT JOIN tables t ON o.table_id = t.id
+         ${whereClause} AND p.status = 'completed' AND p.payment_mode != 'split'
+         GROUP BY p.payment_mode`,
+        params
+      ),
+      pool.query(
+        `SELECT sp.payment_mode, SUM(sp.amount) as amount
+         FROM split_payments sp
+         JOIN payments p ON sp.payment_id = p.id
+         JOIN orders o ON p.order_id = o.id
+         LEFT JOIN tables t ON o.table_id = t.id
+         ${whereClause} AND p.status = 'completed' AND p.payment_mode = 'split'
+         GROUP BY sp.payment_mode`,
+        params
+      )
+    ]);
+
+    const total = countRes[0][0].total;
+    const sr = summaryRes[0][0];
+    const dailyRows = dailyRes[0];
+    const orders = ordersRes[0];
+
+    // Build payment breakdown
+    const payBreakdown = {};
+    for (const p of payBreakdownRes[0]) {
+      if (p.payment_mode !== 'split') payBreakdown[p.payment_mode] = r2(p.amount);
+    }
+    for (const sp of splitPayRes[0]) {
+      payBreakdown[sp.payment_mode] = r2((payBreakdown[sp.payment_mode] || 0) + parseFloat(sp.amount));
+    }
+
+    // Batch-fetch items, payments, KOTs
+    let itemsByOrder = {}, paymentsByOrder = {}, kotsByOrder = {};
+    if (orders.length > 0) {
+      const orderIds = orders.map(o => o.id);
+      const [itemsRes, paymentsRes, kotsRes] = await Promise.all([
+        pool.query(
+          `SELECT oi.order_id, oi.id as item_id, oi.item_name, oi.variant_name,
+            oi.quantity, oi.unit_price, oi.total_price, oi.discount_amount,
+            oi.tax_amount, oi.is_nc, oi.is_open_item, oi.status as item_status,
+            oi.cancel_reason, oi.cancelled_by
+           FROM order_items oi WHERE oi.order_id IN (?) ORDER BY oi.order_id, oi.id`,
+          [orderIds]
+        ),
+        pool.query(
+          `SELECT p.order_id, p.id as payment_id, p.payment_mode, p.total_amount,
+            p.tip_amount, p.status as payment_status, p.reference_number,
+            p.is_due_collection, p.is_adjustment, p.created_at as payment_date,
+            u.name as received_by_name
+           FROM payments p LEFT JOIN users u ON p.received_by = u.id
+           WHERE p.order_id IN (?) ORDER BY p.order_id, p.created_at`,
+          [orderIds]
+        ),
+        pool.query(
+          `SELECT k.order_id, k.id as kot_id, k.kot_number, k.status as kot_status,
+            k.created_at as kot_date,
+            (SELECT COUNT(*) FROM kot_items ki WHERE ki.kot_id = k.id) as item_count
+           FROM kot_tickets k WHERE k.order_id IN (?) ORDER BY k.order_id, k.created_at`,
+          [orderIds]
+        )
+      ]);
+
+      for (const item of itemsRes[0]) {
+        if (!itemsByOrder[item.order_id]) itemsByOrder[item.order_id] = [];
+        itemsByOrder[item.order_id].push({
+          id: item.item_id, itemName: item.item_name, variantName: item.variant_name,
+          quantity: item.quantity, unitPrice: r2(item.unit_price), totalPrice: r2(item.total_price),
+          discountAmount: r2(item.discount_amount), taxAmount: r2(item.tax_amount),
+          isNC: !!item.is_nc, isOpenItem: !!item.is_open_item,
+          status: item.item_status, isCancelled: item.item_status === 'cancelled', cancelReason: item.cancel_reason
+        });
+      }
+      for (const pay of paymentsRes[0]) {
+        if (!paymentsByOrder[pay.order_id]) paymentsByOrder[pay.order_id] = [];
+        paymentsByOrder[pay.order_id].push({
+          id: pay.payment_id, paymentMode: pay.payment_mode,
+          totalAmount: r2(pay.total_amount), tipAmount: r2(pay.tip_amount),
+          status: pay.payment_status, referenceNumber: pay.reference_number || null,
+          isDueCollection: !!pay.is_due_collection, isAdjustment: !!pay.is_adjustment,
+          receivedByName: pay.received_by_name, paymentDate: pay.payment_date
+        });
+      }
+      for (const kot of kotsRes[0]) {
+        if (!kotsByOrder[kot.order_id]) kotsByOrder[kot.order_id] = [];
+        kotsByOrder[kot.order_id].push({
+          id: kot.kot_id, kotNumber: kot.kot_number, status: kot.kot_status,
+          itemCount: kot.item_count, kotDate: kot.kot_date
+        });
+      }
+    }
+
+    // Format orders
+    const formattedOrders = orders.map(o => ({
+      id: o.id,
+      orderNumber: o.order_number,
+      businessDate: o.business_date instanceof Date ? o.business_date.toISOString().slice(0, 10) : o.business_date,
+      orderType: o.order_type,
+      status: o.status,
+      paymentStatus: o.payment_status,
+      totalAmount: r2(o.total_amount),
+      subtotal: r2(o.subtotal),
+      taxAmount: r2(o.tax_amount),
+      discountAmount: r2(o.discount_amount),
+      serviceCharge: r2(o.service_charge),
+      packagingCharge: r2(o.packaging_charge),
+      deliveryCharge: r2(o.delivery_charge),
+      roundOff: r2(o.round_off),
+      paidAmount: r2(o.paid_amount),
+      dueAmount: r2(o.due_amount),
+      isNC: !!o.is_nc,
+      ncAmount: r2(o.nc_amount),
+      ncReason: o.nc_reason || null,
+      isAdjustment: !!o.is_adjustment,
+      adjustmentAmount: r2(o.adjustment_amount),
+      customerName: o.customer_name || null,
+      customerPhone: o.customer_phone || null,
+      guestCount: o.guest_count || 0,
+      floorId: o.floor_id,
+      floorName: o.floor_name || 'Takeaway / Delivery',
+      tableNumber: o.table_number || null,
+      captainName: o.captain_name || null,
+      billerName: o.biller_name || null,
+      createdAt: o.created_at,
+      billedAt: o.billed_at,
+      items: itemsByOrder[o.id] || [],
+      payments: paymentsByOrder[o.id] || [],
+      kots: kotsByOrder[o.id] || [],
+      itemCount: (itemsByOrder[o.id] || []).length,
+      paymentCount: (paymentsByOrder[o.id] || []).length,
+      kotCount: (kotsByOrder[o.id] || []).length
+    }));
+
+    // Outside collections
+    const outsideCollData = await outsideCollectionService.getCollectionsForDateRange(outletId, start, end, floorIds);
+    const orderSale = r2(sr.total_sale);
+    const totalSale = r2(orderSale + (outsideCollData.total || 0));
+
+    // Daily breakdown with outside collections
+    const outsideByDate = outsideCollData.byDate || {};
+    const daily = dailyRows.map(row => {
+      const dateKey = row.report_date instanceof Date ? row.report_date.toISOString().slice(0, 10) : row.report_date;
+      const oc = outsideByDate[dateKey] || { total: 0, count: 0 };
+      return {
+        date: dateKey,
+        total_orders: parseInt(row.total_orders) || 0,
+        total_sale: r2(parseFloat(row.total_sale) + oc.total),
+        order_sale: r2(row.total_sale),
+        outside_collection: r2(oc.total),
+        dine_in_orders: parseInt(row.dine_in_orders) || 0,
+        takeaway_orders: parseInt(row.takeaway_orders) || 0,
+        delivery_orders: parseInt(row.delivery_orders) || 0,
+        discount_amount: r2(row.discount_amount),
+        tax_amount: r2(row.tax_amount),
+        service_charge: r2(row.service_charge),
+        total_guests: parseInt(row.total_guests) || 0,
+        nc_orders: parseInt(row.nc_orders) || 0,
+        nc_amount: r2(row.nc_amount),
+        paid_amount: r2(row.paid_amount),
+        due_amount: r2(row.due_amount),
+        adjustment_count: parseInt(row.adjustment_count) || 0,
+        adjustment_amount: r2(row.adjustment_amount),
+        average_order_value: (parseInt(row.total_orders) || 0) > 0 ? r2(parseFloat(row.total_sale) / parseInt(row.total_orders)) : 0
+      };
+    });
+
+    return {
+      dateRange: { start, end },
+      summary: {
+        total_orders: parseInt(sr.total_orders) || 0,
+        total_sale: totalSale,
+        order_sale: orderSale,
+        outside_collection: r2(outsideCollData.total),
+        outside_collection_count: outsideCollData.count || 0,
+        discount_amount: r2(sr.discount_amount),
+        tax_amount: r2(sr.tax_amount),
+        service_charge: r2(sr.service_charge),
+        total_guests: parseInt(sr.total_guests) || 0,
+        nc_orders: parseInt(sr.nc_orders) || 0,
+        nc_amount: r2(sr.nc_amount),
+        paid_amount: r2(sr.paid_amount),
+        due_amount: r2(sr.due_amount),
+        adjustment_count: parseInt(sr.adjustment_count) || 0,
+        adjustment_amount: r2(sr.adjustment_amount),
+        fully_paid_orders: parseInt(sr.fully_paid_orders) || 0,
+        partial_paid_orders: parseInt(sr.partial_paid_orders) || 0,
+        unpaid_orders: parseInt(sr.unpaid_orders) || 0,
+        dine_in_orders: parseInt(sr.dine_in_orders) || 0,
+        takeaway_orders: parseInt(sr.takeaway_orders) || 0,
+        delivery_orders: parseInt(sr.delivery_orders) || 0,
+        average_order_value: (parseInt(sr.total_orders) || 0) > 0 ? r2(orderSale / parseInt(sr.total_orders)) : 0,
+        components: {
+          subtotal: r2(sr.subtotal),
+          tax_amount: r2(sr.tax_amount),
+          service_charge: r2(sr.service_charge),
+          packaging_charge: r2(sr.packaging_charge),
+          delivery_charge: r2(sr.delivery_charge),
+          round_off: r2(sr.round_off)
+        },
+        paymentBreakdown: payBreakdown
+      },
+      daily,
+      outsideCollections: {
+        total: r2(outsideCollData.total),
+        count: outsideCollData.count,
+        byCashier: outsideCollData.byCashier || [],
+        paymentBreakdown: {
+          cash: r2(outsideCollData.cash),
+          card: r2(outsideCollData.card),
+          upi: r2(outsideCollData.upi),
+          other: r2(outsideCollData.other)
+        }
+      },
+      orders: formattedOrders,
+      pagination: {
+        page: Math.max(1, parseInt(page)),
+        limit: safeLimit,
+        total,
+        totalPages: Math.ceil(total / safeLimit)
+      },
+      crossVerification: {
+        summary_total_sale: totalSale,
+        order_sale: orderSale,
+        outside_collection: r2(outsideCollData.total),
+        page_order_sum: r2(formattedOrders.reduce((s, o) => s + o.totalAmount, 0)),
+        daily_sum_sale: r2(daily.reduce((s, d) => s + d.total_sale, 0)),
+        daily_match: Math.abs(totalSale - r2(daily.reduce((s, d) => s + d.total_sale, 0))) < 0.01,
+        match: Math.abs(totalSale - (orderSale + (outsideCollData.total || 0))) < 0.01,
+        formula: 'total_sale = SUM(total_amount) of all completed orders + outside_collections',
+        note: 'summary covers ALL filtered completed orders (not just current page). daily[] sums should match summary. page_order_sum is only for current page.'
+      }
     };
   }
 };

@@ -467,6 +467,13 @@ router.post('/outside-collections/:outletId', authorize('super_admin', 'admin', 
 router.get('/outside-collections/:outletId', authorize('super_admin', 'admin', 'manager', 'cashier'), orderController.getOutsideCollections);
 
 /**
+ * @route   GET /api/v1/orders/outside-collections/:outletId/export
+ * @desc    Export outside collections as CSV
+ * @access  Private (manager, admin)
+ */
+router.get('/outside-collections/:outletId/export', authorize('super_admin', 'admin', 'manager'), orderController.exportOutsideCollections);
+
+/**
  * @route   GET /api/v1/orders/outside-collections/:outletId/:id
  * @desc    Get single outside collection
  * @access  Private (cashier, manager, admin)

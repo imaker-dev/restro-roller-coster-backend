@@ -4384,7 +4384,9 @@ const paymentService = {
       }));
     }
 
-    // Get summary - calculated from actual orders (exclude cancelled)
+    // Get summary - calculated from actual orders (exclude cancelled), respects date filter
+    // Build a plain date filter (no alias) for the subquery
+    const plainDateFilter = orderDateFilter.replace(/o\./g, '');
     const [[summary]] = await pool.query(
       `SELECT 
         COUNT(DISTINCT c.id) as total_customers_with_due,
@@ -4394,14 +4396,14 @@ const paymentService = {
         MAX(od.actual_due) as max_due,
         COUNT(o.id) as total_orders_with_due
        FROM customers c
-       INNER JOIN orders o ON o.customer_id = c.id AND o.due_amount > 0 AND o.status != 'cancelled'
+       INNER JOIN orders o ON o.customer_id = c.id AND o.due_amount > 0 AND o.status != 'cancelled'${orderDateFilter}
        INNER JOIN (
          SELECT customer_id, SUM(due_amount) as actual_due
-         FROM orders WHERE due_amount > 0 AND status != 'cancelled'
+         FROM orders WHERE due_amount > 0 AND status != 'cancelled'${plainDateFilter}
          GROUP BY customer_id
        ) od ON od.customer_id = c.id
        WHERE c.outlet_id = ? AND c.is_active = 1`,
-      [outletId]
+      [...orderDateParams, ...orderDateParams, outletId]
     );
 
     return {

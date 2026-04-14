@@ -930,6 +930,148 @@ const getAccurateDSR = async (req, res, next) => {
   }
 };
 
+/**
+ * Export Accurate Day End Summary as CSV
+ * GET /api/v1/reports/accurate-day-end-summary/export
+ */
+const exportAccurateDayEndSummary = async (req, res, next) => {
+  try {
+    const { outletId, startDate, endDate } = req.query;
+    if (!outletId) {
+      return res.status(400).json({ success: false, message: 'outletId is required' });
+    }
+    const scope = await getUserDataScope(req.user, parseInt(outletId));
+    const result = await reportsService.getAccurateDayEndSummary(
+      parseInt(outletId),
+      startDate,
+      endDate,
+      {
+        floorIds: scope.floorIds,
+        userId: scope.userId,
+        isCashier: scope.isCashier
+      }
+    );
+
+    const csv = csvExport.accurateDayEndSummaryCSV(result, { startDate, endDate, outletId });
+    const filename = csvExport.generateFilename('accurate_day_end_summary', { startDate, endDate });
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(csv);
+  } catch (error) {
+    logger.error('Export Accurate Day End Summary failed:', error);
+    next(error);
+  }
+};
+
+/**
+ * Export Accurate DSR as CSV
+ * GET /api/v1/reports/accurate-dsr/export
+ */
+const exportAccurateDSR = async (req, res, next) => {
+  try {
+    const { outletId, startDate, endDate } = req.query;
+    if (!outletId) {
+      return res.status(400).json({ success: false, message: 'outletId is required' });
+    }
+    const scope = await getUserDataScope(req.user, parseInt(outletId));
+    const result = await reportsService.getAccurateDSR(
+      parseInt(outletId),
+      startDate,
+      endDate,
+      scope.floorIds
+    );
+
+    const csv = csvExport.accurateDSRCSV(result, { startDate, endDate, outletId });
+    const filename = csvExport.generateFilename('accurate_dsr', { startDate, endDate });
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(csv);
+  } catch (error) {
+    logger.error('Export Accurate DSR failed:', error);
+    next(error);
+  }
+};
+
+/**
+ * GET /api/v1/reports/accurate-day-end-summary/detail
+ * Accurate Day End Summary Detail — paginated order list with items/payments/KOTs
+ * Filters: search, orderType, paymentStatus, captainId, floorId, date, page, limit, sortBy, sortOrder
+ */
+const getAccurateDayEndSummaryDetail = async (req, res, next) => {
+  try {
+    const { outletId, startDate, endDate, search, orderType, paymentStatus, captainId, floorId, date, page, limit, sortBy, sortOrder } = req.query;
+    if (!outletId) {
+      return res.status(400).json({ success: false, message: 'outletId is required' });
+    }
+    const scope = await getUserDataScope(req.user, parseInt(outletId));
+    const result = await reportsService.getAccurateDayEndSummaryDetail(
+      parseInt(outletId), startDate, endDate,
+      {
+        floorIds: scope.floorIds, userId: scope.userId, isCashier: scope.isCashier,
+        page: page ? parseInt(page) : 1,
+        limit: limit ? parseInt(limit) : 20,
+        sortBy: sortBy || 'created_at',
+        sortOrder: sortOrder || 'DESC',
+        search: search || null,
+        orderType: orderType || null,
+        paymentStatus: paymentStatus || null,
+        captainId: captainId ? parseInt(captainId) : null,
+        floorId: floorId ? parseInt(floorId) : null,
+        date: date || null
+      }
+    );
+    res.status(200).json({
+      success: true,
+      data: result,
+      meta: { role: scope.roleSlug, isFiltered: !scope.isAdmin, floorRestricted: scope.floorIds.length > 0 }
+    });
+  } catch (error) {
+    logger.error('Get Accurate Day End Summary Detail failed:', error);
+    next(error);
+  }
+};
+
+/**
+ * GET /api/v1/reports/accurate-dsr/detail
+ * Accurate DSR Detail — daily summary + paginated order list with items/payments/KOTs
+ * Filters: search, orderType, paymentStatus, captainId, floorId, date, page, limit, sortBy, sortOrder
+ */
+const getAccurateDSRDetail = async (req, res, next) => {
+  try {
+    const { outletId, startDate, endDate, search, orderType, paymentStatus, captainId, floorId, date, page, limit, sortBy, sortOrder } = req.query;
+    if (!outletId) {
+      return res.status(400).json({ success: false, message: 'outletId is required' });
+    }
+    const scope = await getUserDataScope(req.user, parseInt(outletId));
+    const result = await reportsService.getAccurateDSRDetail(
+      parseInt(outletId), startDate, endDate,
+      {
+        floorIds: scope.floorIds,
+        page: page ? parseInt(page) : 1,
+        limit: limit ? parseInt(limit) : 20,
+        sortBy: sortBy || 'created_at',
+        sortOrder: sortOrder || 'DESC',
+        search: search || null,
+        orderType: orderType || null,
+        paymentStatus: paymentStatus || null,
+        captainId: captainId ? parseInt(captainId) : null,
+        floorId: floorId ? parseInt(floorId) : null,
+        date: date || null
+      }
+    );
+    res.status(200).json({
+      success: true,
+      data: result,
+      meta: { role: scope.roleSlug, isFiltered: !scope.isAdmin }
+    });
+  } catch (error) {
+    logger.error('Get Accurate DSR Detail failed:', error);
+    next(error);
+  }
+};
+
 module.exports = {
   getDayEndSummary,
   getDayEndSummaryDetail,
@@ -956,5 +1098,9 @@ module.exports = {
   getAccurateDSR,
   getAccurateDashboard,
   getAccurateRunningDashboard,
-  getAccurateDayEndSummary
+  getAccurateDayEndSummary,
+  exportAccurateDayEndSummary,
+  exportAccurateDSR,
+  getAccurateDayEndSummaryDetail,
+  getAccurateDSRDetail
 };

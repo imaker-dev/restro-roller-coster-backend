@@ -218,6 +218,58 @@ router.get('/accurate-day-end-summary', authorize(...REPORT_ROLES), reportCache(
  */
 router.get('/accurate-dsr', authorize(...REPORT_ROLES), reportCache('accurate-dsr', 60), reportsController.getAccurateDSR);
 
+/**
+ * @route   GET /api/v1/reports/accurate-day-end-summary/detail
+ * @desc    Accurate Day End Summary Detail — paginated orders with items/payments/KOTs
+ * @access  Private (admin, manager, cashier)
+ * @query   outletId - Required
+ * @query   startDate, endDate - Date range (YYYY-MM-DD)
+ * @query   date - Specific business day (YYYY-MM-DD, overrides startDate/endDate for order filter)
+ * @query   search - Search by order number, customer name/phone, table number
+ * @query   orderType - dine_in, takeaway, delivery, all
+ * @query   paymentStatus - completed, partial, pending, all
+ * @query   captainId - Filter by captain
+ * @query   floorId - Filter by floor
+ * @query   page, limit, sortBy, sortOrder - Pagination & sorting
+ */
+router.get('/accurate-day-end-summary/detail', authorize(...REPORT_ROLES), reportsController.getAccurateDayEndSummaryDetail);
+
+/**
+ * @route   GET /api/v1/reports/accurate-day-end-summary/export
+ * @desc    Export Accurate Day End Summary as CSV (with floor breakdown)
+ * @access  Private (admin, manager, cashier)
+ * @query   outletId - Required
+ * @query   startDate - Start date (YYYY-MM-DD)
+ * @query   endDate - End date (YYYY-MM-DD)
+ */
+router.get('/accurate-day-end-summary/export', authorize(...REPORT_ROLES), reportsController.exportAccurateDayEndSummary);
+
+/**
+ * @route   GET /api/v1/reports/accurate-dsr/detail
+ * @desc    Accurate DSR Detail — daily summary + paginated orders with items/payments/KOTs
+ * @access  Private (admin, manager, cashier)
+ * @query   outletId - Required
+ * @query   startDate, endDate - Date range (YYYY-MM-DD)
+ * @query   date - Specific business day (YYYY-MM-DD, overrides startDate/endDate for order filter)
+ * @query   search - Search by order number, customer name/phone, table number
+ * @query   orderType - dine_in, takeaway, delivery, all
+ * @query   paymentStatus - completed, partial, pending, all
+ * @query   captainId - Filter by captain
+ * @query   floorId - Filter by floor
+ * @query   page, limit, sortBy, sortOrder - Pagination & sorting
+ */
+router.get('/accurate-dsr/detail', authorize(...REPORT_ROLES), reportsController.getAccurateDSRDetail);
+
+/**
+ * @route   GET /api/v1/reports/accurate-dsr/export
+ * @desc    Export Accurate DSR as CSV (with floor breakdown + order list)
+ * @access  Private (admin, manager, cashier)
+ * @query   outletId - Required
+ * @query   startDate - Start date (YYYY-MM-DD)
+ * @query   endDate - End date (YYYY-MM-DD)
+ */
+router.get('/accurate-dsr/export', authorize(...REPORT_ROLES), reportsController.exportAccurateDSR);
+
 // ========================
 // CSV EXPORT ENDPOINTS
 // ========================
