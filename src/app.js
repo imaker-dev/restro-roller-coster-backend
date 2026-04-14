@@ -108,7 +108,9 @@ app.use('/api/v1', routes);
 app.get('/sentry-debug', function mainHandler(req, res) {
   throw new Error("Sentry test error - verification endpoint");
 });
-
+app.get('/test-hook', (req, res) => {
+ res.send('<h1>Test hook working</h1>');
+});
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({
