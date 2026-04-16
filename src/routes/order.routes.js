@@ -547,7 +547,7 @@ router.get('/reports/:outletId/item-sales', authorize('super_admin', 'admin', 'm
  * @query   startDate, endDate, limit
  * @access  Private (manager, admin, cashier)
  */
-router.get('/reports/:outletId/item-sales/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-item-sales-detail', 120), orderController.getItemSalesDetail);
+router.get('/reports/:outletId/item-sales/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-item-sales-detail', 30), orderController.getItemSalesDetail);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/staff

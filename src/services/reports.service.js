@@ -3475,6 +3475,8 @@ const reportsService = {
     const captainName = (options.captainName || '').trim();
     const cashierName = (options.cashierName || '').trim();
     const floorIds = options.floorIds || [];
+    const cashierId = options.cashierId || null;
+    const isCashierOnly = !!options.isCashierOnly;
 
     const allowedSort = ['total_quantity', 'gross_revenue', 'net_revenue', 'item_name', 'order_count'];
     const sortBy = allowedSort.includes(options.sortBy) ? options.sortBy : 'total_quantity';
@@ -3495,8 +3497,13 @@ const reportsService = {
        LEFT JOIN tax_groups tg ON oi.tax_group_id = tg.id
        LEFT JOIN order_item_costs oic ON oic.order_item_id = oi.id`;
 
-    let conditions = ['o.outlet_id = ?', `${bdWhere('o.created_at')}`];
+    let conditions = ['o.outlet_id = ?', "o.status = 'completed'", `${bdWhere('o.created_at')}`];
     let params = [outletId, startDt, endDt];
+
+    if (isCashierOnly && cashierId) {
+      conditions.push('o.billed_by = ?');
+      params.push(cashierId);
+    }
 
     if (floorIds.length > 0) {
       conditions.push(`(o.floor_id IN (${floorIds.map(() => '?').join(',')}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`);
@@ -3521,7 +3528,7 @@ const reportsService = {
     const [rows] = await pool.query(
       `SELECT 
         oi.id as order_item_id, oi.order_id, oi.item_id, oi.variant_id,
-        oi.item_name, oi.variant_name, oi.item_type,
+        oi.item_name, oi.variant_name, oi.item_type, oi.is_open_item,
         oi.quantity, oi.unit_price, oi.base_price,
         oi.discount_amount, oi.tax_amount, oi.total_price,
         oi.tax_group_id, oi.tax_details, oi.price_rule_applied,
@@ -3594,7 +3601,10 @@ const reportsService = {
     const globalTypeBreakdown = {};
 
     for (const r of rows) {
-      const key = `${r.item_id || 0}::${r.variant_name || ''}`;
+      const trimmedName = (r.item_name || '').trim();
+      const key = r.is_open_item
+        ? `open::${trimmedName.toLowerCase()}::${r.variant_name || ''}`
+        : `${r.item_id || 0}::${trimmedName}::${r.variant_name || ''}`;
       const isActive = r.item_status !== 'cancelled';
 
       let taxDetails = null;
@@ -3684,7 +3694,8 @@ const reportsService = {
       if (!itemMap[key]) {
         itemMap[key] = {
           itemId: r.item_id,
-          itemName: r.item_name,
+          itemName: trimmedName,
+          isOpenItem: !!r.is_open_item,
           variantId: r.variant_id || null,
           variantName: r.variant_name || null,
           itemType: r.item_type,
@@ -3787,6 +3798,7 @@ const reportsService = {
       return {
         itemId: item.itemId,
         itemName: item.itemName,
+        isOpenItem: item.isOpenItem,
         variantId: item.variantId,
         variantName: item.variantName,
         itemType: item.itemType,

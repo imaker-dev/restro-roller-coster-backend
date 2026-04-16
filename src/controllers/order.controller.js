@@ -915,6 +915,8 @@ const orderController = {
     try {
       const { outletId } = req.params;
       const floorIds = await getUserFloorIds(req.user.userId, outletId);
+      const userRoles = req.user.roles || [];
+      const isCashierOnly = userRoles.length > 0 && !userRoles.some(r => ['admin', 'super_admin', 'manager', 'owner'].includes(r));
       const options = {
         page: req.query.page,
         limit: req.query.limit,
@@ -929,7 +931,9 @@ const orderController = {
         cashierName: req.query.cashierName,
         sortBy: req.query.sortBy,
         sortOrder: req.query.sortOrder,
-        floorIds: floorIds.length > 0 ? floorIds : undefined
+        floorIds: floorIds.length > 0 ? floorIds : undefined,
+        cashierId: isCashierOnly ? req.user.userId : null,
+        isCashierOnly
       };
       const report = await reportsService.getItemSalesDetail(outletId, req.query.startDate, req.query.endDate, options);
       res.json({ success: true, data: report });
