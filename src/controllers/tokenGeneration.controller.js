@@ -8,7 +8,6 @@ const emailService = require('../services/email.service');
 
 // ─── Private key loader (only on the live server) ────────────────────────────
 let PRIVATE_KEY = null;
-
 const loadPrivateKey = () => {
   if (PRIVATE_KEY) return PRIVATE_KEY;
 

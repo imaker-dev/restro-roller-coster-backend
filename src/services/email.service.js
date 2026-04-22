@@ -5,7 +5,6 @@ let transporter = null;
 
 const getTransporter = () => {
   if (transporter) return transporter;
-
   const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS } = process.env;
 
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
