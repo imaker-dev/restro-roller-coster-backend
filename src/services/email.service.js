@@ -27,8 +27,7 @@ const getTransporter = () => {
 const sendMail = async (to, subject, html, text = '') => {
   const transport = getTransporter();
   if (!transport) {
-    logger.warn('[Email] Skipped: SMTP not configured (set SMTP_HOST, SMTP_USER, SMTP_PASS in .env)');
-    return;
+    throw new Error('SMTP not configured (set SMTP_HOST, SMTP_USER, SMTP_PASS in .env)');
   }
 
   const from = process.env.SMTP_FROM || process.env.SMTP_USER;
