@@ -44,53 +44,66 @@ const signPayload = (payload) => {
   return `${payloadB64}.${signature}`;
 };
 
-// ─── Helper: send token notifications (non-blocking) ────────────────────────
-const notifyActivation = (phone, email, data) => {
-  if (phone) {
-    const msg =
-      `🎉 Welcome to RestroPOS!\n\n` +
-      `Restaurant: ${data.restaurant}\n` +
-      `Plan: ${data.plan === 'pro' ? '🚀 Pro' : '🆓 Free'}\n` +
-      `License ID: ${data.licenseId}\n\n` +
-      `🔑 Activation Token:\n${data.token}\n\n` +
-      `📋 Login Details:\n` +
-      `• Email: ${data.adminEmail}\n` +
-      `• Password: ${data.adminPassword}\n\n` +
-      `Paste the token in the RestroPOS activation screen.\n` +
-      `⚠️ Keep this token confidential.`;
-    whatsappService.sendText(phone, msg)
-      .then(() => logger.info(`[TokenGen] WhatsApp activation notification sent to ${phone}`))
-      .catch(err => logger.warn(`[TokenGen] WhatsApp notification failed: ${err.message}`));
-  }
-
-  if (email) {
-    emailService.sendActivationTokenEmail(email, data)
-      .then(() => logger.info(`[TokenGen] Email activation notification sent to ${email}`))
-      .catch(err => logger.warn(`[TokenGen] Email notification failed: ${err.message}`));
+// ─── Helper: send token notifications — awaited, returns real status ─────────
+const _runNotification = async (label, fn) => {
+  try {
+    await fn();
+    logger.info(`[TokenGen] ${label} sent ✓`);
+    return { ok: true };
+  } catch (err) {
+    logger.warn(`[TokenGen] ${label} failed: ${err.message}`);
+    return { ok: false, error: err.message };
   }
 };
 
-const notifyUpgrade = (phone, email, data) => {
-  if (phone) {
-    const msg =
-      `🚀 Your RestroPOS Pro Upgrade Token is Ready!\n\n` +
-      `Restaurant: ${data.restaurant || '—'}\n` +
-      `New License ID: ${data.newLicenseId}\n` +
-      `Upgraded From: ${data.upgradesFrom}\n\n` +
-      `🔑 Upgrade Token:\n${data.token}\n\n` +
-      `Apply this token in Settings → License → Upgrade to Pro.\n` +
-      `⚠️ Keep this token confidential.`;
-    whatsappService.sendText(phone, msg)
-      .then(() => logger.info(`[TokenGen] WhatsApp upgrade notification sent to ${phone}`))
-      .catch(err => logger.warn(`[TokenGen] WhatsApp upgrade notification failed: ${err.message}`));
-  }
+const notifyActivation = async (phone, email, data) => {
+  const msg =
+    `🎉 Welcome to RestroPOS!\n\n` +
+    `Restaurant: ${data.restaurant}\n` +
+    `Plan: ${data.plan === 'pro' ? '🚀 Pro' : '🆓 Free'}\n` +
+    `License ID: ${data.licenseId}\n\n` +
+    `🔑 Activation Token:\n${data.token}\n\n` +
+    `📋 Login Details:\n` +
+    `• Email: ${data.adminEmail}\n` +
+    `• Password: ${data.adminPassword}\n\n` +
+    `Paste the token in the RestroPOS activation screen.\n` +
+    `⚠️ Keep this token confidential.`;
 
-  if (email) {
-    emailService.sendUpgradeTokenEmail(email, data)
-      .then(() => logger.info(`[TokenGen] Email upgrade notification sent to ${email}`))
-      .catch(err => logger.warn(`[TokenGen] Email upgrade notification failed: ${err.message}`));
-  }
+  const [waResult, emResult] = await Promise.all([
+    phone
+      ? _runNotification(`WhatsApp activation → ${phone}`, () => whatsappService.sendText(phone, msg))
+      : Promise.resolve({ ok: null, error: 'no phone provided' }),
+    email
+      ? _runNotification(`Email activation → ${email}`, () => emailService.sendActivationTokenEmail(email, data))
+      : Promise.resolve({ ok: null, error: 'no email provided' }),
+  ]);
+
+  return { whatsapp: waResult, email: emResult };
 };
+
+const notifyUpgrade = async (phone, email, data) => {
+  const msg =
+    `🚀 Your RestroPOS Pro Upgrade Token is Ready!\n\n` +
+    `Restaurant: ${data.restaurant || '—'}\n` +
+    `New License ID: ${data.newLicenseId}\n` +
+    `Upgraded From: ${data.upgradesFrom}\n\n` +
+    `🔑 Upgrade Token:\n${data.token}\n\n` +
+    `Apply this token in Settings → License → Upgrade to Pro.\n` +
+    `⚠️ Keep this token confidential.`;
+
+  const [waResult, emResult] = await Promise.all([
+    phone
+      ? _runNotification(`WhatsApp upgrade → ${phone}`, () => whatsappService.sendText(phone, msg))
+      : Promise.resolve({ ok: null, error: 'no phone provided' }),
+    email
+      ? _runNotification(`Email upgrade → ${email}`, () => emailService.sendUpgradeTokenEmail(email, data))
+      : Promise.resolve({ ok: null, error: 'no email provided' }),
+  ]);
+
+  return { whatsapp: waResult, email: emResult };
+};
+
+const _notifStatus = (r) => r.ok === true ? 'sent' : r.ok === false ? `failed: ${r.error}` : `skipped: ${r.error}`;
 
 /**
  * POST /api/v1/token-generation/activation
@@ -166,7 +179,7 @@ const generateActivationToken = async (req, res) => {
       adminEmail: email.trim().toLowerCase(), adminPassword: password.trim(),
       maxOutlets: payload.maxOutlets,
     };
-    notifyActivation(
+    const notifResult = await notifyActivation(
       notify_whatsapp !== false && phone?.trim() ? phone.trim() : null,
       notify_email !== false ? email.trim().toLowerCase() : null,
       notifData
@@ -183,9 +196,9 @@ const generateActivationToken = async (req, res) => {
         adminEmail: email.trim().toLowerCase(),
         adminPassword: password.trim(),
         maxOutlets: payload.maxOutlets,
-        notificationsSent: {
-          whatsapp: !!(notify_whatsapp !== false && phone?.trim()),
-          email: notify_email !== false,
+        notifications: {
+          whatsapp: _notifStatus(notifResult.whatsapp),
+          email: _notifStatus(notifResult.email),
         },
       },
     });
@@ -258,7 +271,7 @@ const generateUpgradeToken = async (req, res) => {
       token,
       upgradesFrom: licenseId.trim(),
     };
-    notifyUpgrade(
+    const upgradeNotifResult = await notifyUpgrade(
       notify_whatsapp !== false && phone?.trim() ? phone.trim() : null,
       notify_email !== false && email?.trim() ? email.trim().toLowerCase() : null,
       upgradeNotifData
@@ -276,9 +289,9 @@ const generateUpgradeToken = async (req, res) => {
         modules: payload.modules,
         maxOutlets: payload.maxOutlets,
         maxUsers: 'Unlimited',
-        notificationsSent: {
-          whatsapp: !!(notify_whatsapp !== false && phone?.trim()),
-          email: !!(notify_email !== false && email?.trim()),
+        notifications: {
+          whatsapp: _notifStatus(upgradeNotifResult.whatsapp),
+          email: _notifStatus(upgradeNotifResult.email),
         },
       },
     });
