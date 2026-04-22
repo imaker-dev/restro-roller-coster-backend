@@ -10,7 +10,6 @@ const getTransporter = () => {
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
     return null;
   }
-
   transporter = nodemailer.createTransport({
     host: SMTP_HOST,
     port: parseInt(SMTP_PORT) || 587,

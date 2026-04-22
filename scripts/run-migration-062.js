@@ -6,12 +6,10 @@ const { initializeDatabase, getPool } = require('../src/database');
 (async () => {
   await initializeDatabase();
   const pool = getPool();
-
   const sql = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'database', 'migrations', '062_add_phone_to_token_log.sql'),
     'utf8'
   );
-
   const cleaned = sql.split('\n').filter(line => !line.trim().startsWith('--')).join('\n');
   const statements = cleaned
     .split(';')

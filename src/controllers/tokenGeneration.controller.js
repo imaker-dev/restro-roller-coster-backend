@@ -10,7 +10,6 @@ const emailService = require('../services/email.service');
 let PRIVATE_KEY = null;
 const loadPrivateKey = () => {
   if (PRIVATE_KEY) return PRIVATE_KEY;
-
   const keyPaths = [
     path.join(__dirname, '..', '..', 'free-version', 'license', 'private.key'),
     path.join(process.cwd(), 'free-version', 'license', 'private.key'),
