@@ -5,7 +5,6 @@ let transporter = null;
 
 const getTransporter = () => {
   if (transporter) return transporter;
-
   const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS } = process.env;
 
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
@@ -25,7 +24,7 @@ const getTransporter = () => {
   return transporter;
 };
 
-const sendMail = async (to, subject, html) => {
+const sendMail = async (to, subject, html, text = '') => {
   const transport = getTransporter();
   if (!transport) {
     logger.warn('[Email] Skipped: SMTP not configured (set SMTP_HOST, SMTP_USER, SMTP_PASS in .env)');
@@ -33,13 +32,23 @@ const sendMail = async (to, subject, html) => {
   }
 
   const from = process.env.SMTP_FROM || process.env.SMTP_USER;
+  const domain = from.split('@')[1] || 'restropos.com';
+  const msgId = `<${Date.now()}.${Math.random().toString(36).slice(2)}@${domain}>`;
 
   await transport.sendMail({
     from: `"RestroPOS" <${from}>`,
     to,
+    replyTo: from,
     subject,
+    messageId: msgId,
+    headers: {
+      'X-Mailer': 'RestroPOS Notification System',
+      'X-Entity-Ref-ID': msgId,
+      'Precedence': 'transactional',
+      'List-Unsubscribe': `<mailto:support@${domain}>`,
+    },
     html,
-    text: html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
+    text: text || html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
   });
 
   logger.info(`[Email] Sent: "${subject}" → ${to}`);
@@ -86,7 +95,21 @@ const sendActivationTokenEmail = async (to, { restaurant, licenseId, token, plan
 </body>
 </html>`;
 
-  return sendMail(to, `🎉 Your RestroPOS Activation Token — ${restaurant}`, html);
+  const subject = `RestroPOS License Ready — ${restaurant}`;
+
+  const text =
+    `Welcome to RestroPOS!\n\n` +
+    `Restaurant : ${restaurant}\n` +
+    `Plan       : ${plan === 'pro' ? 'Pro' : 'Free'} — ${maxOutletsText}\n` +
+    `License ID : ${licenseId}\n` +
+    `Admin Email: ${adminEmail}\n` +
+    `Password   : ${adminPassword}\n\n` +
+    `--- ACTIVATION KEY ---\n${token}\n--- END ---\n\n` +
+    `Copy the key above and paste it in the RestroPOS Activation screen.\n` +
+    `Keep this email confidential.\n\n` +
+    `RestroPOS | Powered by iMaker`;
+
+  return sendMail(to, subject, html, text);
 };
 
 const sendUpgradeTokenEmail = async (to, { restaurant, newLicenseId, token, upgradesFrom }) => {
@@ -125,7 +148,19 @@ const sendUpgradeTokenEmail = async (to, { restaurant, newLicenseId, token, upgr
 </body>
 </html>`;
 
-  return sendMail(to, `🚀 Your RestroPOS Pro Upgrade Token — ${restaurant || 'RestroPOS'}`, html);
+  const subject = `RestroPOS Pro License Ready — ${restaurant || 'RestroPOS'}`;
+
+  const text =
+    `RestroPOS Pro Upgrade\n\n` +
+    `Restaurant  : ${restaurant || '—'}\n` +
+    `New License : ${newLicenseId}\n` +
+    `Upgraded From: ${upgradesFrom}\n\n` +
+    `--- PRO UPGRADE KEY ---\n${token}\n--- END ---\n\n` +
+    `Apply this key in RestroPOS under Settings > License > Upgrade to Pro.\n` +
+    `Keep this email confidential.\n\n` +
+    `RestroPOS | Powered by iMaker`;
+
+  return sendMail(to, subject, html, text);
 };
 
 module.exports = { sendMail, sendActivationTokenEmail, sendUpgradeTokenEmail };
