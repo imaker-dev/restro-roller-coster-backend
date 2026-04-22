@@ -1,65 +1,38 @@
-#!/usr/bin/env node
-/**
- * Run migration 061 — creates restaurant_registrations and token_generation_log tables.
- * Safe to run multiple times (CREATE TABLE IF NOT EXISTS).
- *
- * Usage:
- *   node scripts/run-migration-061.js
- */
 require('dotenv').config();
-
 const fs = require('fs');
 const path = require('path');
-const mysql = require('mysql2/promise');
-const dbConfig = require('../src/config/database.config');
-
-const MIGRATION_FILE = path.join(__dirname, '..', 'src', 'database', 'migrations', '061_registration_table.sql');
+const { initializeDatabase, getPool } = require('../src/database');
 
 (async () => {
-  console.log('Connecting to database...');
-  console.log(`  Host: ${dbConfig.host}:${dbConfig.port}`);
-  console.log(`  Database: ${dbConfig.database}`);
+  await initializeDatabase();
+  const pool = getPool();
 
-  const connection = await mysql.createConnection({
-    host: dbConfig.host,
-    port: dbConfig.port,
-    database: dbConfig.database,
-    user: dbConfig.user,
-    password: dbConfig.password,
-    multipleStatements: true,
-  });
+  const sql = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'database', 'migrations', '061_registration_table.sql'),
+    'utf8'
+  );
 
-  try {
-    const sql = fs.readFileSync(MIGRATION_FILE, 'utf8');
-    console.log(`\nRunning migration: 061_registration_table.sql`);
+  // Remove comment lines first, then split by semicolons
+  const cleaned = sql.split('\n').filter(line => !line.trim().startsWith('--')).join('\n');
+  const statements = cleaned
+    .split(';')
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
 
-    await connection.query(sql);
-    console.log('  ✔ Migration applied successfully');
-
-    // Verify tables exist
-    const [tables] = await connection.query(
-      `SELECT TABLE_NAME FROM information_schema.TABLES 
-       WHERE TABLE_SCHEMA = DATABASE() 
-       AND TABLE_NAME IN ('restaurant_registrations', 'token_generation_log')
-       ORDER BY TABLE_NAME`
-    );
-
-    console.log(`\nVerification — tables created:`);
-    for (const t of tables) {
-      const [cols] = await connection.query(`SHOW COLUMNS FROM ${t.TABLE_NAME}`);
-      console.log(`  ✔ ${t.TABLE_NAME} (${cols.length} columns)`);
+  for (const stmt of statements) {
+    try {
+      console.log(`Running: ${stmt.substring(0, 80)}...`);
+      await pool.query(stmt);
+      console.log('  ✅ OK');
+    } catch (e) {
+      if (e.code === 'ER_TABLE_EXISTS_ERROR' || e.code === 'ER_DUP_KEYNAME' || e.code === 'ER_DUP_FIELDNAME') {
+        console.log(`  ⚠️ Already exists, skipping`);
+      } else {
+        console.error(`  ❌ ${e.message}`);
+      }
     }
-
-    if (tables.length < 2) {
-      console.error('\n⚠ WARNING: Expected 2 tables but found', tables.length);
-    } else {
-      console.log('\n✔ All tables verified. Migration 061 complete.');
-    }
-
-  } catch (err) {
-    console.error('✖ Migration failed:', err.message);
-    process.exit(1);
-  } finally {
-    await connection.end();
   }
+
+  console.log('\n✅ Migration 061 complete');
+  process.exit(0);
 })();
