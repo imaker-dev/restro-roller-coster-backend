@@ -3,6 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const { getPool } = require('../database');
 const logger = require('../utils/logger');
+const whatsappService = require('../services/whatsapp.service');
+const emailService = require('../services/email.service');
 
 // ─── Private key loader (only on the live server) ────────────────────────────
 let PRIVATE_KEY = null;
@@ -42,15 +44,66 @@ const signPayload = (payload) => {
   return `${payloadB64}.${signature}`;
 };
 
+// ─── Helper: send token notifications (non-blocking) ────────────────────────
+const notifyActivation = (phone, email, data) => {
+  if (phone) {
+    const msg =
+      `🎉 Welcome to RestroPOS!\n\n` +
+      `Restaurant: ${data.restaurant}\n` +
+      `Plan: ${data.plan === 'pro' ? '🚀 Pro' : '🆓 Free'}\n` +
+      `License ID: ${data.licenseId}\n\n` +
+      `🔑 Activation Token:\n${data.token}\n\n` +
+      `📋 Login Details:\n` +
+      `• Email: ${data.adminEmail}\n` +
+      `• Password: ${data.adminPassword}\n\n` +
+      `Paste the token in the RestroPOS activation screen.\n` +
+      `⚠️ Keep this token confidential.`;
+    whatsappService.sendText(phone, msg)
+      .then(() => logger.info(`[TokenGen] WhatsApp activation notification sent to ${phone}`))
+      .catch(err => logger.warn(`[TokenGen] WhatsApp notification failed: ${err.message}`));
+  }
+
+  if (email) {
+    emailService.sendActivationTokenEmail(email, data)
+      .then(() => logger.info(`[TokenGen] Email activation notification sent to ${email}`))
+      .catch(err => logger.warn(`[TokenGen] Email notification failed: ${err.message}`));
+  }
+};
+
+const notifyUpgrade = (phone, email, data) => {
+  if (phone) {
+    const msg =
+      `🚀 Your RestroPOS Pro Upgrade Token is Ready!\n\n` +
+      `Restaurant: ${data.restaurant || '—'}\n` +
+      `New License ID: ${data.newLicenseId}\n` +
+      `Upgraded From: ${data.upgradesFrom}\n\n` +
+      `🔑 Upgrade Token:\n${data.token}\n\n` +
+      `Apply this token in Settings → License → Upgrade to Pro.\n` +
+      `⚠️ Keep this token confidential.`;
+    whatsappService.sendText(phone, msg)
+      .then(() => logger.info(`[TokenGen] WhatsApp upgrade notification sent to ${phone}`))
+      .catch(err => logger.warn(`[TokenGen] WhatsApp upgrade notification failed: ${err.message}`));
+  }
+
+  if (email) {
+    emailService.sendUpgradeTokenEmail(email, data)
+      .then(() => logger.info(`[TokenGen] Email upgrade notification sent to ${email}`))
+      .catch(err => logger.warn(`[TokenGen] Email upgrade notification failed: ${err.message}`));
+  }
+};
+
 /**
  * POST /api/v1/token-generation/activation
  * Admin — generate an activation token for a restaurant.
  *
  * Body: { email, password, restaurant, phone?, maxOutlets?, plan? }
+ *       notify_whatsapp: true|false (default true if phone provided)
+ *       notify_email: true|false (default true if email provided)
  */
 const generateActivationToken = async (req, res) => {
   try {
-    const { email, password, restaurant, phone, maxOutlets = 1, plan = 'free' } = req.body;
+    const { email, password, restaurant, phone, maxOutlets = 1, plan = 'free',
+          notify_whatsapp = true, notify_email = true } = req.body;
 
     // Validate required fields
     if (!email?.trim() || !password?.trim() || !restaurant?.trim()) {
@@ -108,6 +161,17 @@ const generateActivationToken = async (req, res) => {
 
     logger.info(`[TokenGen] Activation token generated: lid=${licenseId} restaurant=${restaurant} by user #${req.user?.userId}`);
 
+    const notifData = {
+      restaurant: restaurant.trim(), licenseId, token, plan,
+      adminEmail: email.trim().toLowerCase(), adminPassword: password.trim(),
+      maxOutlets: payload.maxOutlets,
+    };
+    notifyActivation(
+      notify_whatsapp !== false && phone?.trim() ? phone.trim() : null,
+      notify_email !== false ? email.trim().toLowerCase() : null,
+      notifData
+    );
+
     return res.json({
       success: true,
       message: 'Activation token generated successfully',
@@ -119,6 +183,10 @@ const generateActivationToken = async (req, res) => {
         adminEmail: email.trim().toLowerCase(),
         adminPassword: password.trim(),
         maxOutlets: payload.maxOutlets,
+        notificationsSent: {
+          whatsapp: !!(notify_whatsapp !== false && phone?.trim()),
+          email: notify_email !== false,
+        },
       },
     });
 
@@ -132,11 +200,14 @@ const generateActivationToken = async (req, res) => {
  * POST /api/v1/token-generation/upgrade
  * Admin — generate a Pro upgrade token for an existing Free restaurant.
  *
- * Body: { licenseId, restaurant?, maxOutlets? }
+ * Body: { licenseId, restaurant?, email?, phone?, maxOutlets? }
+ *        notify_whatsapp: true|false (default true if phone provided)
+ *        notify_email: true|false (default true if email provided)
  */
 const generateUpgradeToken = async (req, res) => {
   try {
-    const { licenseId, restaurant = '', maxOutlets = 3 } = req.body;
+    const { licenseId, restaurant = '', email, phone, maxOutlets = 3,
+            notify_whatsapp = true, notify_email = true } = req.body;
 
     if (!licenseId?.trim()) {
       return res.status(400).json({
@@ -181,6 +252,18 @@ const generateUpgradeToken = async (req, res) => {
 
     logger.info(`[TokenGen] Upgrade token generated: newLid=${newLicenseId} upgradeOf=${licenseId} by user #${req.user?.userId}`);
 
+    const upgradeNotifData = {
+      restaurant: restaurant.trim(),
+      newLicenseId,
+      token,
+      upgradesFrom: licenseId.trim(),
+    };
+    notifyUpgrade(
+      notify_whatsapp !== false && phone?.trim() ? phone.trim() : null,
+      notify_email !== false && email?.trim() ? email.trim().toLowerCase() : null,
+      upgradeNotifData
+    );
+
     return res.json({
       success: true,
       message: 'Pro upgrade token generated successfully',
@@ -193,6 +276,10 @@ const generateUpgradeToken = async (req, res) => {
         modules: payload.modules,
         maxOutlets: payload.maxOutlets,
         maxUsers: 'Unlimited',
+        notificationsSent: {
+          whatsapp: !!(notify_whatsapp !== false && phone?.trim()),
+          email: !!(notify_email !== false && email?.trim()),
+        },
       },
     });
 
