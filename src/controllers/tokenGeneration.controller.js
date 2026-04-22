@@ -10,7 +10,6 @@ const emailService = require('../services/email.service');
 let PRIVATE_KEY = null;
 const loadPrivateKey = () => {
   if (PRIVATE_KEY) return PRIVATE_KEY;
-
   const keyPaths = [
     path.join(__dirname, '..', '..', 'free-version', 'license', 'private.key'),
     path.join(process.cwd(), 'free-version', 'license', 'private.key'),
@@ -159,13 +158,14 @@ const generateActivationToken = async (req, res) => {
     const pool = getPool();
     await pool.query(
       `INSERT INTO token_generation_log
-        (license_id, token_type, plan, restaurant_name, email, generated_by_user_id, token_hash)
-       VALUES (?, 'activation', ?, ?, ?, ?, ?)`,
+        (license_id, token_type, plan, restaurant_name, email, phone, generated_by_user_id, token_hash)
+       VALUES (?, 'activation', ?, ?, ?, ?, ?, ?)`,
       [
         licenseId,
         plan,
         restaurant.trim(),
         email.trim().toLowerCase(),
+        phone?.trim() || null,
         req.user?.userId || null,
         crypto.createHash('sha256').update(token).digest('hex'),
       ]
@@ -218,8 +218,8 @@ const generateActivationToken = async (req, res) => {
  */
 const generateUpgradeToken = async (req, res) => {
   try {
-    const { licenseId, restaurant = '', email, phone, maxOutlets = 3,
-            notify_whatsapp = true, notify_email = true } = req.body;
+    const { licenseId, restaurant: bodyRestaurant = '', email: bodyEmail, phone: bodyPhone,
+            maxOutlets = 3, notify_whatsapp = true, notify_email = true } = req.body;
 
     if (!licenseId?.trim()) {
       return res.status(400).json({
@@ -227,6 +227,20 @@ const generateUpgradeToken = async (req, res) => {
         message: 'Missing required field: licenseId (the current Free license UUID)',
       });
     }
+
+    // Auto-lookup restaurant, email, phone from the original activation record
+    const pool = getPool();
+    const [logRows] = await pool.query(
+      `SELECT restaurant_name, email, phone FROM token_generation_log
+       WHERE license_id = ? AND token_type = 'activation'
+       ORDER BY created_at DESC LIMIT 1`,
+      [licenseId.trim()]
+    );
+
+    const dbRecord = logRows[0] || {};
+    const restaurant = bodyRestaurant?.trim() || dbRecord.restaurant_name || '';
+    const email = bodyEmail?.trim().toLowerCase() || dbRecord.email || null;
+    const phone = bodyPhone?.trim() || dbRecord.phone || null;
 
     const newLicenseId = crypto.randomUUID();
     const payload = {
@@ -248,14 +262,15 @@ const generateUpgradeToken = async (req, res) => {
 
     const token = signPayload(payload);
 
-    const pool = getPool();
     await pool.query(
       `INSERT INTO token_generation_log
-        (license_id, token_type, plan, restaurant_name, email, generated_by_user_id, token_hash, upgrade_from_license_id)
-       VALUES (?, 'upgrade', 'pro', ?, NULL, ?, ?, ?)`,
+        (license_id, token_type, plan, restaurant_name, email, phone, generated_by_user_id, token_hash, upgrade_from_license_id)
+       VALUES (?, 'upgrade', 'pro', ?, ?, ?, ?, ?, ?)`,
       [
         newLicenseId,
-        restaurant.trim(),
+        restaurant,
+        email,
+        phone,
         req.user?.userId || null,
         crypto.createHash('sha256').update(token).digest('hex'),
         licenseId.trim(),
