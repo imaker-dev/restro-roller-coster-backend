@@ -384,83 +384,53 @@ const getPricing = (req, res) => {
 
 /**
  * GET /api/v1/upgrade-payment/checkout-page
- * Serves an HTML page that auto-submits a Razorpay checkout form.
- * Uses callback_url (redirect) mode instead of modal overlay — this avoids
- * iframe rendering issues on Windows WebView2.
+ * Creates a Razorpay Payment Link and redirects (302) to its hosted page.
+ * No JS SDK, no iframe, no modal — fully hosted by Razorpay.
  * Query params: order_id, key_id, amount, restaurant, email, phone
  */
-const checkoutPage = (req, res) => {
-  const { order_id, key_id, amount, restaurant, email, phone } = req.query;
+const checkoutPage = async (req, res) => {
+  const { order_id, amount, restaurant, email, phone } = req.query;
 
-  if (!order_id || !key_id) {
-    return res.status(400).json({ success: false, message: 'Missing order_id or key_id' });
+  if (!order_id) {
+    return res.status(400).json({ success: false, message: 'Missing order_id' });
   }
 
-  const s = (v) => (v || '').replace(/[<>'"&]/g, (c) =>
-    ({ '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;', '&': '&amp;' }[c]));
+  try {
+    const razorpay = getRazorpay();
+    const callbackBase = `${req.protocol}://${req.get('host')}`;
+    const callbackUrl  = `${callbackBase}/api/v1/upgrade-payment/payment-callback`;
 
-  // Build the callback URL that Razorpay will redirect to after payment
-  const callbackBase = `${req.protocol}://${req.get('host')}`;
-  const callbackUrl  = `${callbackBase}/api/v1/upgrade-payment/payment-callback`;
-  const cancelUrl    = `${callbackBase}/api/v1/upgrade-payment/payment-callback?status=dismissed`;
-
-  const html = `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Secure Payment</title>
-  <style>
-    * { margin:0; padding:0; box-sizing:border-box; }
-    body {
-      background: linear-gradient(135deg, #1a1a3e 0%, #2d2d5e 100%);
-      display: flex; align-items: center; justify-content: center;
-      min-height: 100vh; font-family: -apple-system, sans-serif;
-    }
-    .loader { text-align:center; color:#fff; }
-    .spinner {
-      width:44px; height:44px; border:3px solid rgba(255,255,255,.2);
-      border-top-color:#fff; border-radius:50%;
-      animation: spin .8s linear infinite; margin:0 auto 16px;
-    }
-    @keyframes spin { to { transform:rotate(360deg); } }
-    p { font-size:14px; opacity:.7; }
-  </style>
-</head>
-<body>
-  <div class="loader">
-    <div class="spinner"></div>
-    <p>Redirecting to payment gateway&hellip;</p>
-  </div>
-  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-  <script>
-    var options = {
-      key:          '${s(key_id)}',
-      order_id:     '${s(order_id)}',
-      amount:       ${parseInt(amount) || 2499900},
+    const plink = await razorpay.paymentLink.create({
+      amount:       parseInt(amount) || UPGRADE_AMOUNT_PAISE(),
       currency:     'INR',
-      name:         'RestroPOS Pro Upgrade',
-      description:  'Lifetime Pro Plan',
-      image:        'https://imakerrestro.com/logo.png',
-      callback_url: '${callbackUrl}',
-      cancel_url:   '${cancelUrl}',
-      redirect:     true,
-      prefill: {
-        name:    '${s(restaurant)}',
-        email:   '${s(email)}',
-        contact: '${s(phone)}'
+      description:  `RestroPOS Pro Upgrade`,
+      reference_id: `${order_id}_${Date.now()}`,
+      customer: {
+        name:    restaurant || '',
+        email:   email      || '',
+        contact: phone      || '',
       },
-      theme: { color: '#1a1a3e' }
-    };
-    var rzp = new Razorpay(options);
-    // Auto-open immediately — Razorpay will redirect the entire page
-    setTimeout(function() { rzp.open(); }, 300);
-  </script>
-</body>
-</html>`;
+      notify:          { sms: false, email: false },
+      callback_url:    callbackUrl,
+      callback_method: 'get',
+      notes: {
+        order_id: order_id,
+        type:     'pro_upgrade',
+      },
+    });
 
-  res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.send(html);
+    const redirectUrl = plink.short_url;
+    logger.info(`[UpgradePayment] checkout-page redirect → ${redirectUrl}`);
+
+    // 302 redirect to Razorpay hosted page
+    return res.redirect(redirectUrl);
+  } catch (err) {
+    logger.error('[UpgradePayment] checkout-page Payment Link error:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to create payment link: ' + err.message,
+    });
+  }
 };
 
 /**
