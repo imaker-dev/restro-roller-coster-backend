@@ -435,37 +435,152 @@ const checkoutPage = async (req, res) => {
 
 /**
  * POST|GET /api/v1/upgrade-payment/payment-callback
- * Razorpay redirects here after payment success/failure/cancel.
- * Renders an HTML page that sends the result back to Flutter via JS bridge.
+ * Razorpay redirects here after Payment Link payment.
+ * Now processes the payment SERVER-SIDE (verify, upgrade, notify) and shows
+ * a success/failure page in the browser. Flutter app polls order-status to detect.
+ *
+ * Payment Link callback params:
+ *   razorpay_payment_id, razorpay_payment_link_id, razorpay_payment_link_reference_id,
+ *   razorpay_payment_link_status, razorpay_signature
  */
-const paymentCallback = (req, res) => {
-  // Razorpay POSTs on success, GETs on cancel
+const paymentCallback = async (req, res) => {
   const data = { ...req.query, ...req.body };
+  logger.info('[UpgradePayment] payment-callback received:', JSON.stringify(data));
 
-  // Check if this is a dismissal / cancel
-  if (data.status === 'dismissed' || (!data.razorpay_payment_id && !data.razorpay_order_id)) {
-    const html = _buildCallbackHtml({ status: 'dismissed' }, 'Payment Cancelled');
-    return res.setHeader('Content-Type', 'text/html; charset=utf-8').send(html);
+  const paymentId   = data.razorpay_payment_id || '';
+  const plinkId     = data.razorpay_payment_link_id || '';
+  const referenceId = data.razorpay_payment_link_reference_id || '';
+  const plinkStatus = data.razorpay_payment_link_status || '';
+  const signature   = data.razorpay_signature || '';
+
+  // No payment ID means cancelled/dismissed
+  if (!paymentId) {
+    return res.setHeader('Content-Type', 'text/html; charset=utf-8')
+      .send(_buildResultPage('cancelled', 'Payment Cancelled', 'You cancelled the payment. You can close this window and try again in the app.'));
   }
 
-  // Success data from Razorpay
-  const result = {
-    status:     'success',
-    payment_id: data.razorpay_payment_id  || '',
-    order_id:   data.razorpay_order_id    || '',
-    signature:  data.razorpay_signature   || '',
-  };
+  try {
+    // Verify Payment Link signature: payment_link_id|payment_link_reference_id|payment_link_status|payment_id
+    const secret = process.env.RAZORPAY_KEY_SECRET;
+    const body   = `${plinkId}|${referenceId}|${plinkStatus}|${paymentId}`;
+    const expectedSig = crypto.createHmac('sha256', secret).update(body).digest('hex');
 
-  const html = _buildCallbackHtml(result, 'Payment Successful');
-  res.setHeader('Content-Type', 'text/html; charset=utf-8').send(html);
+    if (expectedSig !== signature) {
+      logger.warn(`[UpgradePayment] Callback signature mismatch | plinkId=${plinkId} paymentId=${paymentId}`);
+      return res.setHeader('Content-Type', 'text/html; charset=utf-8')
+        .send(_buildResultPage('failed', 'Verification Failed', 'Payment signature could not be verified. If money was deducted, please contact support.'));
+    }
+
+    // referenceId = our razorpay_order_id (set as reference_id when creating payment link)
+    const orderId = referenceId;
+    const pool = getPool();
+
+    const [rows] = await pool.query(
+      'SELECT * FROM upgrade_payments WHERE razorpay_order_id = ? LIMIT 1',
+      [orderId]
+    );
+
+    if (!rows.length) {
+      logger.error(`[UpgradePayment] Callback: order not found in DB — orderId=${orderId}`);
+      return res.setHeader('Content-Type', 'text/html; charset=utf-8')
+        .send(_buildResultPage('failed', 'Order Not Found', 'Could not find order record. Please contact support with payment ID: ' + paymentId));
+    }
+
+    const payment = rows[0];
+
+    // Already processed — idempotent
+    if (payment.status === 'paid' && payment.upgrade_token) {
+      logger.info(`[UpgradePayment] Callback: already processed — orderId=${orderId}`);
+      return res.setHeader('Content-Type', 'text/html; charset=utf-8')
+        .send(_buildResultPage('success', 'Payment Already Processed', 'Your upgrade is ready! You can close this window — the app will update automatically.'));
+    }
+
+    // Generate Pro upgrade token
+    const { token, newLicenseId } = await internalGenerateUpgradeToken({
+      licenseId:   payment.license_id,
+      restaurant:  payment.restaurant_name || '',
+      email:       payment.email  || null,
+      phone:       payment.phone  || null,
+      maxOutlets:  3,
+    });
+
+    // Mark as paid
+    await pool.query(
+      `UPDATE upgrade_payments
+       SET status = 'paid',
+           razorpay_payment_id = ?,
+           razorpay_signature  = ?,
+           upgrade_token       = ?,
+           new_license_id      = ?
+       WHERE razorpay_order_id = ?`,
+      [paymentId, signature, token, newLicenseId, orderId]
+    );
+
+    // ── Notifications ─────────────────────────────────────────────────────
+    let emailSent = false;
+    let whatsappSent = false;
+
+    if (payment.email) {
+      const { sendUpgradeTokenEmail } = require('../services/email.service');
+      emailSent = await _tryNotify(
+        () => sendUpgradeTokenEmail(payment.email, {
+          restaurant: payment.restaurant_name || '',
+          token,
+          newLicenseId,
+          upgradesFrom: payment.license_id,
+        }),
+        'Email'
+      );
+    }
+
+    if (payment.phone) {
+      const whatsapp = require('../services/whatsapp.service');
+      const msg =
+        `\u{1F680} *RestroPOS Pro Upgrade Ready!*\n\n` +
+        `Restaurant: ${payment.restaurant_name || '—'}\n\n` +
+        `Your Pro upgrade key:\n\n` +
+        `\`${token}\`\n\n` +
+        `Apply it in RestroPOS → *Settings → License → Upgrade to Pro*.\n\n` +
+        `— iMaker Team`;
+      whatsappSent = await _tryNotify(
+        () => whatsapp.sendText(payment.phone, msg),
+        'WhatsApp'
+      );
+    }
+
+    await pool.query(
+      'UPDATE upgrade_payments SET notified_email = ?, notified_whatsapp = ? WHERE razorpay_order_id = ?',
+      [emailSent ? 1 : 0, whatsappSent ? 1 : 0, orderId]
+    );
+
+    logger.info(
+      `[UpgradePayment] Callback processed: order=${orderId} payment=${paymentId} ` +
+      `newLid=${newLicenseId} email=${emailSent} wa=${whatsappSent}`
+    );
+
+    return res.setHeader('Content-Type', 'text/html; charset=utf-8')
+      .send(_buildResultPage('success', 'Payment Successful!',
+        'Your Pro upgrade is ready! The app will update automatically. You can close this browser tab.'));
+
+  } catch (err) {
+    logger.error('[UpgradePayment] payment-callback error:', err);
+    return res.setHeader('Content-Type', 'text/html; charset=utf-8')
+      .send(_buildResultPage('failed', 'Processing Error',
+        'An error occurred while processing your payment. Please contact support. Error: ' + err.message));
+  }
 };
 
 /**
- * Helper — builds the HTML page shown after Razorpay redirect.
- * Sends the result to Flutter via window.flutter_inappwebview JS bridge.
+ * Helper — builds a user-facing result page shown in the browser after payment.
+ * No JS bridge needed — Flutter polls order-status instead.
  */
-function _buildCallbackHtml(resultObj, title) {
-  const jsonStr = JSON.stringify(resultObj).replace(/</g, '\\u003c');
+function _buildResultPage(status, title, message) {
+  const icon = status === 'success'
+    ? '<div style="width:60px;height:60px;border-radius:50%;background:#22c55e;display:flex;align-items:center;justify-content:center;margin:0 auto 16px"><svg width="32" height="32" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="8,16 14,22 24,12"/></svg></div>'
+    : status === 'cancelled'
+    ? '<div style="width:60px;height:60px;border-radius:50%;background:#f59e0b;display:flex;align-items:center;justify-content:center;margin:0 auto 16px"><span style="font-size:32px;color:#fff">✕</span></div>'
+    : '<div style="width:60px;height:60px;border-radius:50%;background:#ef4444;display:flex;align-items:center;justify-content:center;margin:0 auto 16px"><span style="font-size:32px;color:#fff">!</span></div>';
+
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -476,44 +591,34 @@ function _buildCallbackHtml(resultObj, title) {
     body {
       background: linear-gradient(135deg, #1a1a3e 0%, #2d2d5e 100%);
       display: flex; align-items: center; justify-content: center;
-      min-height: 100vh; font-family: -apple-system, sans-serif;
+      min-height: 100vh; font-family: -apple-system, 'Segoe UI', sans-serif;
     }
-    .msg { text-align:center; color:#fff; }
-    .spinner {
-      width:44px; height:44px; border:3px solid rgba(255,255,255,.2);
-      border-top-color:#fff; border-radius:50%;
-      animation: spin .8s linear infinite; margin:0 auto 16px;
+    .card {
+      background: rgba(255,255,255,.08); border-radius: 16px;
+      padding: 40px; max-width: 420px; text-align: center;
     }
-    @keyframes spin { to { transform:rotate(360deg); } }
-    p { font-size:14px; opacity:.7; }
+    h2 { color: #fff; font-size: 22px; margin-bottom: 12px; }
+    p { color: rgba(255,255,255,.65); font-size: 14px; line-height: 1.6; }
+    .hint { margin-top: 20px; font-size: 12px; color: rgba(255,255,255,.35); }
   </style>
 </head>
 <body>
-  <div class="msg">
-    <div class="spinner"></div>
-    <p>Processing&hellip;</p>
+  <div class="card">
+    ${icon}
+    <h2>${title}</h2>
+    <p>${message}</p>
+    <p class="hint">You can safely close this tab.</p>
   </div>
-  <script>
-    (function() {
-      var data = '${jsonStr}';
-      function send() {
-        if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
-          window.flutter_inappwebview.callHandler('paymentResult', data);
-        } else {
-          setTimeout(send, 200);
-        }
-      }
-      send();
-    })();
-  </script>
 </body>
 </html>`;
 }
 
 /**
  * GET /api/v1/upgrade-payment/order-status?order_id=xxx
- * Lightweight endpoint for Flutter to poll — checks Razorpay order status.
- * Returns { status: 'created'|'attempted'|'paid', payment_id, signature }
+ * Lightweight endpoint for Flutter to poll.
+ * Checks our DATABASE (not Razorpay API) because the payment-callback
+ * endpoint updates the DB when Razorpay redirects after payment.
+ * Returns { status, payment_id, token, new_license_id }
  */
 const orderStatus = async (req, res) => {
   const { order_id } = req.query;
@@ -522,34 +627,26 @@ const orderStatus = async (req, res) => {
   }
 
   try {
-    const razorpay = getRazorpay();
-    const order = await razorpay.orders.fetch(order_id);
+    const pool = getPool();
+    const [rows] = await pool.query(
+      'SELECT status, razorpay_payment_id, upgrade_token, new_license_id FROM upgrade_payments WHERE razorpay_order_id = ? LIMIT 1',
+      [order_id]
+    );
 
-    // If order is paid, fetch the payment details to get payment_id & signature
-    if (order.status === 'paid') {
-      try {
-        const payments = await razorpay.orders.fetchPayments(order_id);
-        const captured = payments.items?.find(p => p.status === 'captured') || payments.items?.[0];
-        return res.json({
-          success: true,
-          data: {
-            status:     'paid',
-            payment_id: captured?.id || '',
-            order_id:   order_id,
-            signature:  '', // Signature not available via fetch; verify endpoint handles this
-          },
-        });
-      } catch (_) {
-        return res.json({
-          success: true,
-          data: { status: 'paid', payment_id: '', order_id: order_id, signature: '' },
-        });
-      }
+    if (!rows.length) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
+    const row = rows[0];
     return res.json({
       success: true,
-      data: { status: order.status, payment_id: '', order_id: order_id, signature: '' },
+      data: {
+        status:         row.status,
+        payment_id:     row.razorpay_payment_id || '',
+        order_id:       order_id,
+        token:          row.upgrade_token || '',
+        new_license_id: row.new_license_id || '',
+      },
     });
   } catch (err) {
     logger.error('[UpgradePayment] orderStatus error:', err);
