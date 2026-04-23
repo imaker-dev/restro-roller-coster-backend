@@ -17,6 +17,9 @@ const submitRegistration = async (req, res) => {
       state,
       plan_interest = 'free',
       message,
+      gst_number,
+      fssai_number,
+      pan_number,
     } = req.body;
 
     // Basic required field validation
@@ -57,9 +60,12 @@ const submitRegistration = async (req, res) => {
     const cleanName  = restaurant_name.trim().substring(0, 255);
     const cleanPerson = contact_person.trim().substring(0, 255);
     const cleanPhone = phone.trim().substring(0, 20);
-    const cleanCity  = city?.trim()?.substring(0, 100) || null;
-    const cleanState = state?.trim()?.substring(0, 100) || null;
-    const cleanMsg   = message?.trim()?.substring(0, 2000) || null;
+    const cleanCity    = city?.trim()?.substring(0, 100) || null;
+    const cleanState   = state?.trim()?.substring(0, 100) || null;
+    const cleanMsg     = message?.trim()?.substring(0, 2000) || null;
+    const cleanGst     = gst_number?.trim()?.toUpperCase().substring(0, 20) || null;
+    const cleanFssai   = fssai_number?.trim()?.substring(0, 20) || null;
+    const cleanPan     = pan_number?.trim()?.toUpperCase().substring(0, 15) || null;
 
     // Prevent duplicate pending requests from the same email (uses idx_email index)
     const [existing] = await pool.execute(
@@ -77,9 +83,11 @@ const submitRegistration = async (req, res) => {
 
     const [result] = await pool.execute(
       `INSERT INTO restaurant_registrations
-        (restaurant_name, contact_person, email, phone, city, state, plan_interest, message, ip_address)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [cleanName, cleanPerson, cleanEmail, cleanPhone, cleanCity, cleanState, plan_interest, cleanMsg, ip]
+        (restaurant_name, contact_person, email, phone, city, state, plan_interest, message,
+         gst_number, fssai_number, pan_number, ip_address)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [cleanName, cleanPerson, cleanEmail, cleanPhone, cleanCity, cleanState, plan_interest, cleanMsg,
+       cleanGst, cleanFssai, cleanPan, ip]
     );
 
     logger.info(`[Registration] New request #${result.insertId} — ${cleanName} (${cleanEmail}) — plan: ${plan_interest}`);
@@ -127,8 +135,9 @@ const listRegistrations = async (req, res) => {
       pool.query(`SELECT COUNT(*) AS total FROM restaurant_registrations WHERE ${where}`, params),
       pool.query(
       `SELECT id, restaurant_name, contact_person, email, phone,
-              city, state, plan_interest, message, status, admin_notes,
-              ip_address, created_at, updated_at
+              city, state, plan_interest, message,
+              gst_number, fssai_number, pan_number,
+              status, admin_notes, ip_address, created_at, updated_at
        FROM restaurant_registrations
        WHERE ${where}
        ORDER BY

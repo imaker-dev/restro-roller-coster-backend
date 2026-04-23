@@ -366,8 +366,43 @@ const getTokenLog = async (req, res) => {
   }
 };
 
+/**
+ * Internal helper — generate a Pro upgrade token programmatically (no admin auth).
+ * Called by the upgrade payment controller after Razorpay payment is verified.
+ */
+const internalGenerateUpgradeToken = async ({ licenseId, restaurant = '', email = null, phone = null, maxOutlets = 3 }) => {
+  const newLicenseId = crypto.randomUUID();
+  const payload = {
+    v: 1,
+    lid: newLicenseId,
+    plan: 'pro',
+    restaurant: restaurant || '',
+    upgradeOf: licenseId,
+    modules: { captain: true, inventory: true, advancedReports: true },
+    maxOutlets: parseInt(maxOutlets) || 3,
+    maxUsers: -1,
+    createdAt: new Date().toISOString(),
+    expiresAt: null,
+  };
+
+  const token = signPayload(payload);
+
+  const pool = getPool();
+  await pool.query(
+    `INSERT INTO token_generation_log
+      (license_id, token_type, plan, restaurant_name, email, generated_by_user_id, token_hash, upgrade_from_license_id)
+     VALUES (?, 'upgrade', 'pro', ?, ?, NULL, ?, ?)`,
+    [newLicenseId, restaurant || '', email || null,
+     crypto.createHash('sha256').update(token).digest('hex'), licenseId]
+  );
+
+  logger.info(`[TokenGen] Internal upgrade token: newLid=${newLicenseId} upgradeOf=${licenseId}`);
+  return { token, newLicenseId };
+};
+
 module.exports = {
   generateActivationToken,
   generateUpgradeToken,
   getTokenLog,
+  internalGenerateUpgradeToken,
 };
