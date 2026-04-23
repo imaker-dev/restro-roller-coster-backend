@@ -510,4 +510,54 @@ function _buildCallbackHtml(resultObj, title) {
 </html>`;
 }
 
-module.exports = { createOrder, verifyAndUpgrade, cancelOrder, getPricing, checkoutPage, paymentCallback };
+/**
+ * GET /api/v1/upgrade-payment/order-status?order_id=xxx
+ * Lightweight endpoint for Flutter to poll — checks Razorpay order status.
+ * Returns { status: 'created'|'attempted'|'paid', payment_id, signature }
+ */
+const orderStatus = async (req, res) => {
+  const { order_id } = req.query;
+  if (!order_id) {
+    return res.status(400).json({ success: false, message: 'Missing order_id' });
+  }
+
+  try {
+    const razorpay = getRazorpay();
+    const order = await razorpay.orders.fetch(order_id);
+
+    // If order is paid, fetch the payment details to get payment_id & signature
+    if (order.status === 'paid') {
+      try {
+        const payments = await razorpay.orders.fetchPayments(order_id);
+        const captured = payments.items?.find(p => p.status === 'captured') || payments.items?.[0];
+        return res.json({
+          success: true,
+          data: {
+            status:     'paid',
+            payment_id: captured?.id || '',
+            order_id:   order_id,
+            signature:  '', // Signature not available via fetch; verify endpoint handles this
+          },
+        });
+      } catch (_) {
+        return res.json({
+          success: true,
+          data: { status: 'paid', payment_id: '', order_id: order_id, signature: '' },
+        });
+      }
+    }
+
+    return res.json({
+      success: true,
+      data: { status: order.status, payment_id: '', order_id: order_id, signature: '' },
+    });
+  } catch (err) {
+    logger.error('[UpgradePayment] orderStatus error:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to check order status: ' + err.message,
+    });
+  }
+};
+
+module.exports = { createOrder, verifyAndUpgrade, cancelOrder, getPricing, checkoutPage, paymentCallback, orderStatus };

@@ -1,7 +1,7 @@
 const express = require('express');
 const router  = express.Router();
 const { createRateLimiter } = require('../middlewares/rateLimiter');
-const { createOrder, verifyAndUpgrade, cancelOrder, getPricing, checkoutPage, paymentCallback } = require('../controllers/upgradePayment.controller');
+const { createOrder, verifyAndUpgrade, cancelOrder, getPricing, checkoutPage, paymentCallback, orderStatus } = require('../controllers/upgradePayment.controller');
 
 // 10 order attempts per IP per 15 min
 const orderLimiter = createRateLimiter({
@@ -39,6 +39,14 @@ router.get('/checkout-page', checkoutPage);
  */
 router.post('/payment-callback', paymentCallback);
 router.get('/payment-callback', paymentCallback);
+
+/**
+ * @route   GET  /api/v1/upgrade-payment/order-status
+ * @desc    Poll Razorpay order status (for browser-based payment flow)
+ * @access  Public
+ * @query   order_id
+ */
+router.get('/order-status', orderStatus);
 
 /**
  * @route   POST /api/v1/upgrade-payment/create-order
