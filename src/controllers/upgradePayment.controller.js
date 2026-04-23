@@ -348,4 +348,65 @@ const getPricing = (req, res) => {
   });
 };
 
-module.exports = { createOrder, verifyAndUpgrade, cancelOrder, getPricing };
+/**
+ * GET /api/v1/upgrade-payment/checkout-page
+ * Serves the Razorpay checkout HTML from a real HTTPS URL.
+ * Fixes WebView2 cross-origin iframe blank screen issue.
+ * Query params: order_id, key_id, amount, restaurant, email, phone
+ */
+const checkoutPage = (req, res) => {
+  const { order_id, key_id, amount, restaurant, email, phone } = req.query;
+
+  if (!order_id || !key_id) {
+    return res.status(400).json({ success: false, message: 'Missing order_id or key_id' });
+  }
+
+  const s = (v) => (v || '').replace(/[<>'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', "'": "\\'", '"': '\\"' }[c]));
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Secure Payment</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { background:linear-gradient(135deg,#1a1a3e 0%,#2d2d5e 100%); display:flex; align-items:center; justify-content:center; min-height:100vh; font-family:-apple-system,sans-serif; }
+    .loader { text-align:center; color:#fff; }
+    .spinner { width:44px; height:44px; border:3px solid rgba(255,255,255,.2); border-top-color:#fff; border-radius:50%; animation:spin .8s linear infinite; margin:0 auto 16px; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    p { font-size:14px; opacity:.7; }
+    .err { color:#ff6b6b; font-size:13px; margin-top:12px; }
+  </style>
+</head>
+<body>
+  <div class="loader"><div class="spinner"></div><p>Opening payment gateway&hellip;</p><p id="errMsg" class="err"></p></div>
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+  <script>
+    function sendResult(d) { if (window.flutter_inappwebview) window.flutter_inappwebview.callHandler('paymentResult', JSON.stringify(d)); }
+    function openRazorpay() {
+      var options = {
+        key: '${s(key_id)}', order_id: '${s(order_id)}', amount: ${parseInt(amount) || 2499900},
+        currency: 'INR', name: 'RestroPOS Pro Upgrade',
+        description: 'Lifetime Pro Plan \u2014 ${s(restaurant)}',
+        image: 'https://imakerrestro.com/logo.png',
+        theme: { color: '#1a1a3e' },
+        modal: { ondismiss: function() { sendResult({ status: 'dismissed' }); } },
+        handler: function(r) { sendResult({ status: 'success', payment_id: r.razorpay_payment_id, order_id: r.razorpay_order_id, signature: r.razorpay_signature }); },
+        prefill: { name: '${s(restaurant)}', email: '${s(email)}', contact: '${s(phone)}' }
+      };
+      try {
+        var rzp = new Razorpay(options);
+        rzp.on('payment.failed', function(r) { sendResult({ status: 'failed', error_code: r.error.code, description: r.error.description }); });
+        rzp.open();
+      } catch(e) { document.getElementById('errMsg').textContent = 'Error: '+e.message; sendResult({ status: 'failed', description: 'Checkout init failed: '+e.message }); }
+    }
+    window.onload = function() { setTimeout(openRazorpay, 600); };
+  </script>
+</body></html>`;
+
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
+};
+
+module.exports = { createOrder, verifyAndUpgrade, cancelOrder, getPricing, checkoutPage };

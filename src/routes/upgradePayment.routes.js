@@ -1,7 +1,7 @@
 const express = require('express');
 const router  = express.Router();
 const { createRateLimiter } = require('../middlewares/rateLimiter');
-const { createOrder, verifyAndUpgrade, cancelOrder, getPricing } = require('../controllers/upgradePayment.controller');
+const { createOrder, verifyAndUpgrade, cancelOrder, getPricing, checkoutPage } = require('../controllers/upgradePayment.controller');
 
 // 10 order attempts per IP per 15 min
 const orderLimiter = createRateLimiter({
@@ -23,6 +23,8 @@ const verifyLimiter = createRateLimiter({
  * @access  Public
  */
 router.get('/pricing', getPricing);
+
+router.get('/checkout-page', checkoutPage);
 
 /**
  * @route   POST /api/v1/upgrade-payment/create-order
