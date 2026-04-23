@@ -516,15 +516,24 @@ const paymentCallback = async (req, res) => {
       [paymentId, signature, token, newLicenseId, orderId]
     );
 
-    // ── Notifications ─────────────────────────────────────────────────────
+    // ── Notifications (Payment Invoice + Upgrade Key) ────────────────────
+    const amountPaise = payment.amount_paise || UPGRADE_AMOUNT_PAISE();
+    const amountStr = `₹${(amountPaise / 100).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
+    const dateStr = new Date().toLocaleString('en-IN', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Kolkata' });
+
     let emailSent = false;
     let whatsappSent = false;
 
     if (payment.email) {
-      const { sendUpgradeTokenEmail } = require('../services/email.service');
+      const { sendPaymentInvoiceEmail } = require('../services/email.service');
       emailSent = await _tryNotify(
-        () => sendUpgradeTokenEmail(payment.email, {
+        () => sendPaymentInvoiceEmail(payment.email, {
           restaurant: payment.restaurant_name || '',
+          paymentId,
+          orderId,
+          amount: amountPaise,
+          currency: payment.currency || 'INR',
+          date: dateStr,
           token,
           newLicenseId,
           upgradesFrom: payment.license_id,
@@ -536,11 +545,17 @@ const paymentCallback = async (req, res) => {
     if (payment.phone) {
       const whatsapp = require('../services/whatsapp.service');
       const msg =
-        `\u{1F680} *RestroPOS Pro Upgrade Ready!*\n\n` +
-        `Restaurant: ${payment.restaurant_name || '—'}\n\n` +
+        `✅ *Payment Successful — RestroPOS Pro Upgrade*\n\n` +
+        `Restaurant: ${payment.restaurant_name || '—'}\n` +
+        `Amount: *${amountStr}*\n` +
+        `Payment ID: ${paymentId}\n` +
+        `Date: ${dateStr}\n\n` +
+        `━━━━━━━━━━━━━━━━━\n` +
         `Your Pro upgrade key:\n\n` +
         `\`${token}\`\n\n` +
+        `━━━━━━━━━━━━━━━━━\n\n` +
         `Apply it in RestroPOS → *Settings → License → Upgrade to Pro*.\n\n` +
+        `This is your payment receipt. Keep it for your records.\n` +
         `— iMaker Team`;
       whatsappSent = await _tryNotify(
         () => whatsapp.sendText(payment.phone, msg),
