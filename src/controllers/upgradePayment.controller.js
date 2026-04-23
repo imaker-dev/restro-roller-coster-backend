@@ -116,6 +116,39 @@ const createOrder = async (req, res) => {
 
     const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || null;
 
+    // Build callback URL for Razorpay Payment Link redirect
+    const callbackBase = `${req.protocol}://${req.get('host')}`;
+    const callbackUrl  = `${callbackBase}/api/v1/upgrade-payment/payment-callback`;
+
+    // Create a Razorpay Payment Link — gives us a hosted checkout page URL
+    // that works in WebView without any iframe/modal issues.
+    let paymentLinkUrl = '';
+    try {
+      const plink = await razorpay.paymentLink.create({
+        amount,
+        currency: 'INR',
+        description: `RestroPOS Pro Upgrade — ${record.restaurant_name || license_id.trim()}`,
+        reference_id: order.id,
+        customer: {
+          name:    record.restaurant_name || '',
+          email:   record.email  || '',
+          contact: record.phone  || '',
+        },
+        notify: { sms: false, email: false },
+        callback_url: callbackUrl,
+        callback_method: 'get',
+        notes: {
+          license_id: license_id.trim(),
+          order_id:   order.id,
+          type:       'pro_upgrade',
+        },
+      });
+      paymentLinkUrl = plink.short_url || '';
+      logger.info(`[UpgradePayment] Payment Link created: ${plink.id} | url=${paymentLinkUrl}`);
+    } catch (plinkErr) {
+      logger.warn(`[UpgradePayment] Payment Link creation failed (falling back): ${plinkErr.message}`);
+    }
+
     await pool.query(
       `INSERT INTO upgrade_payments
          (license_id, restaurant_name, email, phone, razorpay_order_id, amount_paise, currency, status, ip_address)
@@ -143,6 +176,7 @@ const createOrder = async (req, res) => {
         restaurant: record.restaurant_name || '',
         email:      record.email  || '',
         phone:      record.phone  || '',
+        paymentUrl: paymentLinkUrl,
       },
     });
 
@@ -365,6 +399,7 @@ const checkoutPage = (req, res) => {
   const s = (v) => (v || '').replace(/[<>'"&]/g, (c) =>
     ({ '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;', '&': '&amp;' }[c]));
 
+  // Build the callback URL that Razorpay will redirect to after payment
   const callbackBase = `${req.protocol}://${req.get('host')}`;
   const callbackUrl  = `${callbackBase}/api/v1/upgrade-payment/payment-callback`;
   const cancelUrl    = `${callbackBase}/api/v1/upgrade-payment/payment-callback?status=dismissed`;
@@ -418,6 +453,7 @@ const checkoutPage = (req, res) => {
       theme: { color: '#1a1a3e' }
     };
     var rzp = new Razorpay(options);
+    // Auto-open immediately — Razorpay will redirect the entire page
     setTimeout(function() { rzp.open(); }, 300);
   </script>
 </body>
@@ -433,13 +469,16 @@ const checkoutPage = (req, res) => {
  * Renders an HTML page that sends the result back to Flutter via JS bridge.
  */
 const paymentCallback = (req, res) => {
+  // Razorpay POSTs on success, GETs on cancel
   const data = { ...req.query, ...req.body };
 
+  // Check if this is a dismissal / cancel
   if (data.status === 'dismissed' || (!data.razorpay_payment_id && !data.razorpay_order_id)) {
     const html = _buildCallbackHtml({ status: 'dismissed' }, 'Payment Cancelled');
     return res.setHeader('Content-Type', 'text/html; charset=utf-8').send(html);
   }
 
+  // Success data from Razorpay
   const result = {
     status:     'success',
     payment_id: data.razorpay_payment_id  || '',
@@ -451,6 +490,10 @@ const paymentCallback = (req, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8').send(html);
 };
 
+/**
+ * Helper — builds the HTML page shown after Razorpay redirect.
+ * Sends the result to Flutter via window.flutter_inappwebview JS bridge.
+ */
 function _buildCallbackHtml(resultObj, title) {
   const jsonStr = JSON.stringify(resultObj).replace(/</g, '\\u003c');
   return `<!DOCTYPE html>

@@ -24,8 +24,19 @@ const verifyLimiter = createRateLimiter({
  */
 router.get('/pricing', getPricing);
 
+/**
+ * @route   GET  /api/v1/upgrade-payment/checkout-page
+ * @desc    Serves the Razorpay checkout HTML from a real HTTPS URL (fixes WebView2 cross-origin iframe)
+ * @access  Public
+ * @query   order_id, key_id, amount, restaurant, email, phone
+ */
 router.get('/checkout-page', checkoutPage);
 
+/**
+ * @route   POST|GET  /api/v1/upgrade-payment/payment-callback
+ * @desc    Razorpay redirects here after payment; renders result page for Flutter JS bridge
+ * @access  Public
+ */
 router.post('/payment-callback', paymentCallback);
 router.get('/payment-callback', paymentCallback);
 
