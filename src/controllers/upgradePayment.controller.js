@@ -350,8 +350,9 @@ const getPricing = (req, res) => {
 
 /**
  * GET /api/v1/upgrade-payment/checkout-page
- * Serves the Razorpay checkout HTML from a real HTTPS URL.
- * Fixes WebView2 cross-origin iframe blank screen issue.
+ * Serves an HTML page that auto-submits a Razorpay checkout form.
+ * Uses callback_url (redirect) mode instead of modal overlay — this avoids
+ * iframe rendering issues on Windows WebView2.
  * Query params: order_id, key_id, amount, restaurant, email, phone
  */
 const checkoutPage = (req, res) => {
@@ -361,7 +362,12 @@ const checkoutPage = (req, res) => {
     return res.status(400).json({ success: false, message: 'Missing order_id or key_id' });
   }
 
-  const s = (v) => (v || '').replace(/[<>'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', "'": "\\'", '"': '\\"' }[c]));
+  const s = (v) => (v || '').replace(/[<>'"&]/g, (c) =>
+    ({ '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;', '&': '&amp;' }[c]));
+
+  const callbackBase = `${req.protocol}://${req.get('host')}`;
+  const callbackUrl  = `${callbackBase}/api/v1/upgrade-payment/payment-callback`;
+  const cancelUrl    = `${callbackBase}/api/v1/upgrade-payment/payment-callback?status=dismissed`;
 
   const html = `<!DOCTYPE html>
 <html>
@@ -371,42 +377,124 @@ const checkoutPage = (req, res) => {
   <title>Secure Payment</title>
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
-    body { background:linear-gradient(135deg,#1a1a3e 0%,#2d2d5e 100%); display:flex; align-items:center; justify-content:center; min-height:100vh; font-family:-apple-system,sans-serif; }
+    body {
+      background: linear-gradient(135deg, #1a1a3e 0%, #2d2d5e 100%);
+      display: flex; align-items: center; justify-content: center;
+      min-height: 100vh; font-family: -apple-system, sans-serif;
+    }
     .loader { text-align:center; color:#fff; }
-    .spinner { width:44px; height:44px; border:3px solid rgba(255,255,255,.2); border-top-color:#fff; border-radius:50%; animation:spin .8s linear infinite; margin:0 auto 16px; }
+    .spinner {
+      width:44px; height:44px; border:3px solid rgba(255,255,255,.2);
+      border-top-color:#fff; border-radius:50%;
+      animation: spin .8s linear infinite; margin:0 auto 16px;
+    }
     @keyframes spin { to { transform:rotate(360deg); } }
     p { font-size:14px; opacity:.7; }
-    .err { color:#ff6b6b; font-size:13px; margin-top:12px; }
   </style>
 </head>
 <body>
-  <div class="loader"><div class="spinner"></div><p>Opening payment gateway&hellip;</p><p id="errMsg" class="err"></p></div>
+  <div class="loader">
+    <div class="spinner"></div>
+    <p>Redirecting to payment gateway&hellip;</p>
+  </div>
   <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
   <script>
-    function sendResult(d) { if (window.flutter_inappwebview) window.flutter_inappwebview.callHandler('paymentResult', JSON.stringify(d)); }
-    function openRazorpay() {
-      var options = {
-        key: '${s(key_id)}', order_id: '${s(order_id)}', amount: ${parseInt(amount) || 2499900},
-        currency: 'INR', name: 'RestroPOS Pro Upgrade',
-        description: 'Lifetime Pro Plan \u2014 ${s(restaurant)}',
-        image: 'https://imakerrestro.com/logo.png',
-        theme: { color: '#1a1a3e' },
-        modal: { ondismiss: function() { sendResult({ status: 'dismissed' }); } },
-        handler: function(r) { sendResult({ status: 'success', payment_id: r.razorpay_payment_id, order_id: r.razorpay_order_id, signature: r.razorpay_signature }); },
-        prefill: { name: '${s(restaurant)}', email: '${s(email)}', contact: '${s(phone)}' }
-      };
-      try {
-        var rzp = new Razorpay(options);
-        rzp.on('payment.failed', function(r) { sendResult({ status: 'failed', error_code: r.error.code, description: r.error.description }); });
-        rzp.open();
-      } catch(e) { document.getElementById('errMsg').textContent = 'Error: '+e.message; sendResult({ status: 'failed', description: 'Checkout init failed: '+e.message }); }
-    }
-    window.onload = function() { setTimeout(openRazorpay, 600); };
+    var options = {
+      key:          '${s(key_id)}',
+      order_id:     '${s(order_id)}',
+      amount:       ${parseInt(amount) || 2499900},
+      currency:     'INR',
+      name:         'RestroPOS Pro Upgrade',
+      description:  'Lifetime Pro Plan',
+      image:        'https://imakerrestro.com/logo.png',
+      callback_url: '${callbackUrl}',
+      cancel_url:   '${cancelUrl}',
+      redirect:     true,
+      prefill: {
+        name:    '${s(restaurant)}',
+        email:   '${s(email)}',
+        contact: '${s(phone)}'
+      },
+      theme: { color: '#1a1a3e' }
+    };
+    var rzp = new Razorpay(options);
+    setTimeout(function() { rzp.open(); }, 300);
   </script>
-</body></html>`;
+</body>
+</html>`;
 
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
 };
 
-module.exports = { createOrder, verifyAndUpgrade, cancelOrder, getPricing, checkoutPage };
+/**
+ * POST|GET /api/v1/upgrade-payment/payment-callback
+ * Razorpay redirects here after payment success/failure/cancel.
+ * Renders an HTML page that sends the result back to Flutter via JS bridge.
+ */
+const paymentCallback = (req, res) => {
+  const data = { ...req.query, ...req.body };
+
+  if (data.status === 'dismissed' || (!data.razorpay_payment_id && !data.razorpay_order_id)) {
+    const html = _buildCallbackHtml({ status: 'dismissed' }, 'Payment Cancelled');
+    return res.setHeader('Content-Type', 'text/html; charset=utf-8').send(html);
+  }
+
+  const result = {
+    status:     'success',
+    payment_id: data.razorpay_payment_id  || '',
+    order_id:   data.razorpay_order_id    || '',
+    signature:  data.razorpay_signature   || '',
+  };
+
+  const html = _buildCallbackHtml(result, 'Payment Successful');
+  res.setHeader('Content-Type', 'text/html; charset=utf-8').send(html);
+};
+
+function _buildCallbackHtml(resultObj, title) {
+  const jsonStr = JSON.stringify(resultObj).replace(/</g, '\\u003c');
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>${title}</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body {
+      background: linear-gradient(135deg, #1a1a3e 0%, #2d2d5e 100%);
+      display: flex; align-items: center; justify-content: center;
+      min-height: 100vh; font-family: -apple-system, sans-serif;
+    }
+    .msg { text-align:center; color:#fff; }
+    .spinner {
+      width:44px; height:44px; border:3px solid rgba(255,255,255,.2);
+      border-top-color:#fff; border-radius:50%;
+      animation: spin .8s linear infinite; margin:0 auto 16px;
+    }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    p { font-size:14px; opacity:.7; }
+  </style>
+</head>
+<body>
+  <div class="msg">
+    <div class="spinner"></div>
+    <p>Processing&hellip;</p>
+  </div>
+  <script>
+    (function() {
+      var data = '${jsonStr}';
+      function send() {
+        if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
+          window.flutter_inappwebview.callHandler('paymentResult', data);
+        } else {
+          setTimeout(send, 200);
+        }
+      }
+      send();
+    })();
+  </script>
+</body>
+</html>`;
+}
+
+module.exports = { createOrder, verifyAndUpgrade, cancelOrder, getPricing, checkoutPage, paymentCallback };
