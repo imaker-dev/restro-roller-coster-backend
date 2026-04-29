@@ -10,6 +10,36 @@ const { getPool } = require('../database');
 const { cache, publishMessage } = require('../config/redis');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
+
+ let _selfOrderOrdersSchemaChecked = false;
+ let _selfOrderOrdersHasOrderSource = false;
+ let _selfOrderOrdersHasSessionId = false;
+
+ async function ensureSelfOrderOrdersSchema(pool) {
+   if (_selfOrderOrdersSchemaChecked) {
+     return {
+       hasOrderSource: _selfOrderOrdersHasOrderSource,
+       hasSessionId: _selfOrderOrdersHasSessionId,
+     };
+   }
+
+   const [cols] = await pool.query(
+     `SELECT COLUMN_NAME
+      FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'orders'
+        AND COLUMN_NAME IN ('order_source', 'self_order_session_id')`
+   );
+
+   const colSet = new Set((cols || []).map(c => c.COLUMN_NAME));
+   _selfOrderOrdersHasOrderSource = colSet.has('order_source');
+   _selfOrderOrdersHasSessionId = colSet.has('self_order_session_id');
+   _selfOrderOrdersSchemaChecked = true;
+
+   return {
+     hasOrderSource: _selfOrderOrdersHasOrderSource,
+     hasSessionId: _selfOrderOrdersHasSessionId,
+   };
+ }
 const { SELF_ORDER } = require('../constants');
 const settingsService = require('./settings.service');
 const menuEngineService = require('./menuEngine.service');
@@ -1523,6 +1553,11 @@ const selfOrderService = {
    */
   async getPendingSelfOrders(outletId, { status = 'pending', page = 1, limit = 20, search, fromDate, toDate } = {}) {
     const pool = getPool();
+
+     const schema = await ensureSelfOrderOrdersSchema(pool);
+     if (!schema.hasOrderSource) {
+       throw new Error('Self-order DB migration required: orders.order_source column missing. Please run migration 060 on the server.');
+     }
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const pageSize = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
