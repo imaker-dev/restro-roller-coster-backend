@@ -25,12 +25,13 @@ module.exports = {
   password: isProduction
     ? (process.env.PROD_DB_PASSWORD || '')
     : (process.env.DB_PASSWORD || ''),
-  connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT, 10) || 15,
+  connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT, 10) || 10,
   waitForConnections: true,
-  queueLimit: 200,
+  queueLimit: 100,
   enableKeepAlive: true,
   keepAliveInitialDelay: 10000,
-  idleTimeout: 60000,
+  idleTimeout: 30000,
+  connectTimeout: 10000,
   timezone: '+00:00',
   dateStrings: true,
   multipleStatements: false,

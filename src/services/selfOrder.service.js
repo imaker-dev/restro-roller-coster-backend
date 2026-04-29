@@ -2043,7 +2043,7 @@ const selfOrderService = {
     const fs = require('fs');
 
     const [[table]] = await pool.query(
-      `SELECT t.id, t.table_number, t.name, t.qr_token, t.qr_code, t.floor_id,
+      `SELECT t.id, t.table_number, t.name, t.qr_code, t.floor_id,
               f.name as floor_name
        FROM tables t
        LEFT JOIN floors f ON t.floor_id = f.id
@@ -2095,10 +2095,10 @@ const selfOrderService = {
       .png()
       .toFile(qrFilePath);
 
-    // Update table record
+    // Update table record — store both image path AND the URL encoded in the QR
     await pool.query(
-      `UPDATE tables SET qr_code = ? WHERE id = ?`,
-      [relativePath, tableId]
+      `UPDATE tables SET qr_code = ?, qr_url = ? WHERE id = ?`,
+      [relativePath, selfOrderUrl, tableId]
     );
 
     return {
@@ -2149,7 +2149,7 @@ const selfOrderService = {
 
     // Build query with optional floor filter — include ALL active tables
     let query = `
-      SELECT t.id, t.table_number, t.name, t.qr_code, t.status,
+      SELECT t.id, t.table_number, t.name, t.qr_code, t.qr_url, t.status,
              t.floor_id, f.name as floor_name, f.id as fid
       FROM tables t
       LEFT JOIN floors f ON t.floor_id = f.id
@@ -2186,13 +2186,17 @@ const selfOrderService = {
       const hasQr = !!t.qr_code;
       if (hasQr) tablesWithQrCount++;
 
+      // Use stored qr_url (actual URL encoded in QR image) — fallback to reconstruction
+      // if qr_url column not yet populated (e.g. QR generated before this migration)
+      const qrUrl = t.qr_url || (hasQr ? `${selfOrderAppUrl}/self-order?outlet=${outletId}&table=${t.id}` : null);
+
       floorMap.get(fId).tables.push({
         tableId: t.id,
         tableNumber: t.table_number,
         tableName: t.name,
         status: t.status,
         qrStatus: hasQr ? 'available' : 'unavailable',
-        qrUrl: hasQr ? `${selfOrderAppUrl}/self-order?outlet=${outletId}&table=${t.id}` : null,
+        qrUrl: hasQr ? qrUrl : null,
         qrImagePath: hasQr ? `${serverUrl}/${t.qr_code}` : null,
       });
     }

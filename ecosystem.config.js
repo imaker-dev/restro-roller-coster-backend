@@ -4,12 +4,15 @@
  * Scale target: 50+ restaurants, 1000+ tables at peak
  *
  * DB connection math (critical):
- *   6 API workers  × 15 conn =  90
- *   2 Queue workers ×  8 conn =  16
- *   Admin/monitoring/misc     =  10
- *   Total                     = 116  (well within MySQL max_connections 300)
+ *   6 API workers  × 10 conn =  60
+ *   2 Queue workers ×  5 conn =  10
+ *   MySQL internal/tools/misc =  10
+ *   Total                     =  80  (safe under MySQL max_connections=151)
  *
+ * MySQL MUST have: max_connections >= 151 (default) — increase to 300 if possible.
+ * MySQL SHOULD have: wait_timeout=600 to release stale connections from PM2 restarts.
  * Previous config had 8 × 100 = 800 connections — caused DB exhaustion at peak.
+ * Previous config had 6 × 15 = 90 + 2×8 = 16 = 106 — too close to 151 limit.
  *
  * UV_THREADPOOL_SIZE: Only used for fs, crypto, DNS lookups.
  *   MySQL queries use their own TCP sockets, NOT the UV thread pool.
@@ -30,13 +33,13 @@ module.exports = {
       env: {
         NODE_ENV: 'development',
         UV_THREADPOOL_SIZE: 8,
-        DB_CONNECTION_LIMIT: 15,
+        DB_CONNECTION_LIMIT: 10,
         LOG_LEVEL: 'debug',
       },
       env_production: {
         NODE_ENV: 'production',
         UV_THREADPOOL_SIZE: 8,
-        DB_CONNECTION_LIMIT: 15,
+        DB_CONNECTION_LIMIT: 10,
         LOG_LEVEL: 'warn',
       },
       error_file: './logs/pm2-error.log',
@@ -56,12 +59,12 @@ module.exports = {
       env: {
         NODE_ENV: 'development',
         UV_THREADPOOL_SIZE: 4,
-        DB_CONNECTION_LIMIT: 8,
+        DB_CONNECTION_LIMIT: 5,
       },
       env_production: {
         NODE_ENV: 'production',
         UV_THREADPOOL_SIZE: 4,
-        DB_CONNECTION_LIMIT: 8,
+        DB_CONNECTION_LIMIT: 5,
       },
     },
   ],
