@@ -2485,7 +2485,13 @@ const paymentService = {
     };
 
     // Calculate real-time values for each shift based on shift time range
-    const formattedShifts = await Promise.all(shifts.map(async (shift) => {
+    // Process in small batches to avoid exhausting the connection pool.
+    // Default limit=20 × 7 queries/shift = 140 concurrent connections > pool(10) + queue(100).
+    const SHIFT_BATCH_SIZE = 3;
+    const formattedShifts = [];
+    for (let _bi = 0; _bi < shifts.length; _bi += SHIFT_BATCH_SIZE) {
+      const _batch = shifts.slice(_bi, _bi + SHIFT_BATCH_SIZE);
+      const _batchResults = await Promise.all(_batch.map(async (shift) => {
       // Use opening_time directly (it's stored as DATETIME in DB)
       // For cross-day shifts, closing_time will have the correct date (next day)
       const shiftStartTime = formatDateTimeForQuery(shift.opening_time);
@@ -2685,7 +2691,9 @@ const paymentService = {
         createdAt: shift.created_at,
         updatedAt: shift.updated_at
       };
-    }));
+      }));
+      formattedShifts.push(..._batchResults);
+    }
 
     return {
       shifts: formattedShifts,

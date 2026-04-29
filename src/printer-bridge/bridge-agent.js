@@ -27,7 +27,7 @@ const BINARY_CONTENT_PREFIX = 'b64:';
 const CONFIG = {
   // Cloud server URL (your backend API)
   // CLOUD_URL: process.env.CLOUD_URL || 'http://localhost:3005',
-  CLOUD_URL: process.env.CLOUD_URL || 'https://demo.imakerrestro.com',
+  CLOUD_URL: process.env.CLOUD_URL || 'https://caroline-regulations-arrived-remembered.trycloudflare.com',
   
   // Outlet ID from your system
   OUTLET_ID: process.env.OUTLET_ID || '43',
