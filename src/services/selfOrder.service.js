@@ -2149,7 +2149,7 @@ const selfOrderService = {
 
     // Build query with optional floor filter — include ALL active tables
     let query = `
-      SELECT t.id, t.table_number, t.name, t.qr_token, t.qr_code, t.status,
+      SELECT t.id, t.table_number, t.name, t.qr_code, t.status,
              t.floor_id, f.name as floor_name, f.id as fid
       FROM tables t
       LEFT JOIN floors f ON t.floor_id = f.id
