@@ -2135,8 +2135,8 @@ const selfOrderService = {
 
   /**
    * Get all table QR URLs for an outlet, grouped by floor.
-   * Auto-generates QR image for any table that doesn't have one yet.
-   * baseUrl must be the customer-facing frontend URL (SELF_ORDER_URL env var).
+   * Returns ALL tables — tables without a generated QR have qrStatus: 'unavailable'.
+   * qrImagePath is prefixed with APP_URL so the client can render it directly.
    */
   async getTableQrUrls(outletId, { baseUrl, floorId } = {}) {
     const pool = getPool();
@@ -2147,10 +2147,10 @@ const selfOrderService = {
     );
     if (!outlet) throw new Error('Outlet not found');
 
-    // Build query with optional floor filter
+    // Build query with optional floor filter — include ALL active tables
     let query = `
       SELECT t.id, t.table_number, t.name, t.qr_token, t.qr_code, t.status,
-             t.floor_id, f.name as floor_name
+             t.floor_id, f.name as floor_name, f.id as fid
       FROM tables t
       LEFT JOIN floors f ON t.floor_id = f.id
       WHERE t.outlet_id = ? AND t.is_active = 1`;
@@ -2164,33 +2164,36 @@ const selfOrderService = {
 
     const [tables] = await pool.query(query, params);
 
-    // SELF_ORDER_URL must be the customer-facing frontend, never the backend APP_URL
-    const appUrl = baseUrl || process.env.SELF_ORDER_URL || 'http://localhost:3000';
+    // Self-order URL for QR content (customer-facing frontend)
+    const selfOrderAppUrl = baseUrl || process.env.SELF_ORDER_URL || 'http://localhost:3000';
+    // Backend APP_URL prefix for serving QR image files
+    const serverUrl = (process.env.APP_URL || 'http://localhost:3005').replace(/\/$/, '');
 
-    // Only include tables that already have a QR image generated
-    const tablesWithQr = tables.filter(t => t.qr_code);
+    let tablesWithQrCount = 0;
 
-    // Group by floor
+    // Group ALL tables by floor — mark unavailable if QR not yet generated
     const floorMap = new Map();
-    for (const t of tablesWithQr) {
+    for (const t of tables) {
       const fId = t.floor_id || 0;
       if (!floorMap.has(fId)) {
         floorMap.set(fId, {
-          floorId: t.floor_id,
+          floorId: t.floor_id || null,
           floorName: t.floor_name || 'No Floor',
           tables: [],
         });
       }
 
-      const qrUrl = `${appUrl}/self-order?outlet=${outletId}&table=${t.id}`;
+      const hasQr = !!t.qr_code;
+      if (hasQr) tablesWithQrCount++;
 
       floorMap.get(fId).tables.push({
         tableId: t.id,
         tableNumber: t.table_number,
         tableName: t.name,
         status: t.status,
-        qrUrl,
-        qrImagePath: t.qr_code,
+        qrStatus: hasQr ? 'available' : 'unavailable',
+        qrUrl: hasQr ? `${selfOrderAppUrl}/self-order?outlet=${outletId}&table=${t.id}` : null,
+        qrImagePath: hasQr ? `${serverUrl}/${t.qr_code}` : null,
       });
     }
 
@@ -2198,8 +2201,8 @@ const selfOrderService = {
       outlet: { id: outlet.id, name: outlet.name },
       floors: Array.from(floorMap.values()),
       totalTables: tables.length,
-      tablesWithQr: tablesWithQr.length,
-      tablesMissingQr: tables.length - tablesWithQr.length,
+      tablesWithQr: tablesWithQrCount,
+      tablesMissingQr: tables.length - tablesWithQrCount,
     };
   },
 
