@@ -10,7 +10,7 @@ const csvExport = require('../utils/csv-export');
  * - cashier: Only their own billed/created orders
  * - captain/waiter: Data for assigned floors only
  */
-const ADMIN_ROLES = ['super_admin', 'admin'];
+const ADMIN_ROLES = ['master', 'super_admin', 'admin'];
 const MANAGER_ROLES = ['manager'];
 const CASHIER_ROLES = ['cashier'];
 const STAFF_ROLES = ['captain', 'waiter', 'bartender', 'kitchen'];

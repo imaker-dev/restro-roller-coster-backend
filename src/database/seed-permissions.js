@@ -224,6 +224,30 @@ const ROLE_PERMISSIONS = {
     'FLOOR_VIEW', 'SECTION_VIEW',
   ],
   
+  // POS User — identical to Cashier
+  pos_user: [
+    // Tables (same as captain)
+    'TABLE_VIEW', 'TABLE_MERGE', 'TABLE_TRANSFER',
+    // Orders (captain + cancel)
+    'ORDER_VIEW', 'ORDER_CREATE', 'ORDER_MODIFY', 'ORDER_CANCEL',
+    // KOT (same as captain)
+    'KOT_SEND', 'KOT_MODIFY', 'KOT_REPRINT',
+    // Billing (full)
+    'BILL_VIEW', 'BILL_GENERATE', 'BILL_REPRINT', 'BILL_CANCEL',
+    // Payment (full collection)
+    'PAYMENT_COLLECT', 'PAYMENT_SPLIT',
+    // Discounts (full)
+    'DISCOUNT_APPLY', 'DISCOUNT_REMOVE', 'DISCOUNT_CUSTOM', 'TIP_ADD',
+    // Items
+    'ITEM_VIEW', 'ITEM_CANCEL', 'ITEM_AVAILABILITY',
+    // Categories
+    'CATEGORY_VIEW',
+    // Reports (full view — day/week/month/hourly/tax/payment/staff/floor/cancellations)
+    'REPORT_VIEW', 'REPORT_SALES', 'REPORT_STAFF',
+    // Layout (floor & section scope)
+    'FLOOR_VIEW', 'SECTION_VIEW',
+  ],
+
   // Inventory
   inventory: [
     'ITEM_VIEW',

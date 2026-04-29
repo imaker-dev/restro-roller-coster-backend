@@ -480,6 +480,23 @@ const paymentService = {
            WHERE order_id = ? AND status NOT IN ('served', 'cancelled')`,
           [orderId]
         );
+
+        // Auto-complete self-order sessions + rotate QR when self-order is paid
+        if (order.order_source === 'self_order') {
+          await connection.query(
+            `UPDATE self_order_sessions SET status = 'completed', updated_at = NOW()
+             WHERE order_id = ? AND status IN ('active', 'ordering')`,
+            [orderId]
+          );
+          // Clear self-order cart
+          await connection.query(
+            `DELETE FROM self_order_cart WHERE session_id IN (
+              SELECT id FROM self_order_sessions WHERE order_id = ?
+            )`,
+            [orderId]
+          );
+          // QR codes are static/permanent — no rotation needed
+        }
       }
 
       await connection.commit();
@@ -568,6 +585,26 @@ const paymentService = {
         event: 'session_ended',
         timestamp: new Date().toISOString()
       });
+    }
+
+    // Emit self-order session completed event for real-time staff UI update
+    if (orderStatus === 'completed' && order.order_source === 'self_order') {
+      await publishMessage('selforder:update', {
+        type: 'selforder:completed',
+        outletId,
+        orderId,
+        orderNumber: order.order_number,
+        tableId,
+        tableNumber: order.table_number,
+        action: 'order_completed',
+        timestamp: new Date().toISOString()
+      });
+
+      // Mark self-order session as order-completed (triggers expiry buffer)
+      const selfOrderService = require('./selfOrder.service');
+      selfOrderService.markSessionOrderCompleted(orderId).catch(err =>
+        logger.warn('Failed to mark self-order session completed:', err.message)
+      );
     }
 
     // Emit KOT served events for real-time kitchen display - remove from all stations (on any payment including 0 payment)
@@ -904,6 +941,22 @@ const paymentService = {
            WHERE order_id = ? AND status NOT IN ('served', 'cancelled')`,
           [orderId]
         );
+
+        // Auto-complete self-order sessions + rotate QR when self-order is paid
+        if (order.order_source === 'self_order') {
+          await connection.query(
+            `UPDATE self_order_sessions SET status = 'completed', updated_at = NOW()
+             WHERE order_id = ? AND status IN ('active', 'ordering')`,
+            [orderId]
+          );
+          await connection.query(
+            `DELETE FROM self_order_cart WHERE session_id IN (
+              SELECT id FROM self_order_sessions WHERE order_id = ?
+            )`,
+            [orderId]
+          );
+          // QR codes are static/permanent — no rotation needed
+        }
       }
 
       await connection.commit();
@@ -956,6 +1009,26 @@ const paymentService = {
         event: 'session_ended',
         timestamp: new Date().toISOString()
       });
+    }
+
+    // Emit self-order session completed event for real-time staff UI update
+    if (orderStatus === 'completed' && order.order_source === 'self_order') {
+      await publishMessage('selforder:update', {
+        type: 'selforder:completed',
+        outletId,
+        orderId,
+        orderNumber: order.order_number,
+        tableId,
+        tableNumber: order.table_number,
+        action: 'order_completed',
+        timestamp: new Date().toISOString()
+      });
+
+      // Mark self-order session as order-completed (triggers expiry buffer)
+      const selfOrderService = require('./selfOrder.service');
+      selfOrderService.markSessionOrderCompleted(orderId).catch(err =>
+        logger.warn('Failed to mark self-order session completed:', err.message)
+      );
     }
 
     // Emit KOT served events - remove from all stations on any payment
@@ -1308,10 +1381,11 @@ const paymentService = {
     const pool = getPool();
     const today = getLocalDate();
     console.log(notes);
-    // If floorId not provided, get from user's assigned floor
+    // If floorId not provided, get from user's assigned floor (primary first)
     if (!floorId) {
       const [userFloors] = await pool.query(
-        `SELECT uf.floor_id FROM user_floors uf
+        `SELECT uf.floor_id, f.name as floor_name FROM user_floors uf
+         LEFT JOIN floors f ON uf.floor_id = f.id
          WHERE uf.user_id = ? AND uf.outlet_id = ? AND uf.is_active = 1
          ORDER BY uf.is_primary DESC LIMIT 1`,
         [userId, outletId]
@@ -1321,16 +1395,19 @@ const paymentService = {
       }
     }
 
+    // Floor is required - cannot open outlet-wide shift
+    if (!floorId) {
+      throw new Error('You are not assigned to any floor. Please contact admin to assign you to a floor before opening a shift.');
+    }
+
     // Validate cashier is assigned to this floor
-    if (floorId) {
-      const [floorAssignment] = await pool.query(
-        `SELECT uf.id FROM user_floors uf
-         WHERE uf.user_id = ? AND uf.floor_id = ? AND uf.outlet_id = ? AND uf.is_active = 1`,
-        [userId, floorId, outletId]
-      );
-      if (floorAssignment.length === 0) {
-        throw new Error('You are not assigned to this floor');
-      }
+    const [floorAssignment] = await pool.query(
+      `SELECT uf.id FROM user_floors uf
+       WHERE uf.user_id = ? AND uf.floor_id = ? AND uf.outlet_id = ? AND uf.is_active = 1`,
+      [userId, floorId, outletId]
+    );
+    if (floorAssignment.length === 0) {
+      throw new Error('You are not assigned to this floor');
     }
 
     // Check if there's already an OPEN session for this floor (regardless of date)
@@ -1898,7 +1975,7 @@ const paymentService = {
     // Fetch outside collections for this shift
     // Cashiers only see their own collections; managers/admins see all
     const isCashierOnly = userRoles.length > 0 && 
-      !userRoles.some(r => ['admin', 'super_admin', 'manager', 'owner'].includes(r));
+      !userRoles.some(r => ['master', 'admin', 'super_admin', 'manager', 'owner'].includes(r));
     const outsideCollData = await outsideCollectionService.getCollectionsForShift(
       outletId, shiftStartTime, shiftEndTime, floorId,
       { cashierId: userId, isCashierOnly }

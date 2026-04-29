@@ -6,12 +6,68 @@ const { CACHE_KEYS } = require('../constants');
 const { v4: uuidv4 } = require('uuid');
 
 // Roles that only admin can manage (manager cannot create/update/delete these)
-const ADMIN_ONLY_ROLES = ['super_admin', 'admin', 'manager'];
+const ADMIN_ONLY_ROLES = ['master', 'super_admin', 'admin', 'manager'];
 
 // Staff roles that manager can manage
-const STAFF_ROLES = ['captain', 'waiter', 'bartender', 'kitchen', 'cashier', 'inventory'];
+const STAFF_ROLES = ['captain', 'waiter', 'bartender', 'kitchen', 'cashier', 'pos_user', 'inventory'];
 
 class UserService {
+  /**
+   * Check if user has the master role
+   */
+  async isMaster(userId) {
+    const pool = getPool();
+    const [roles] = await pool.query(
+      `SELECT r.slug FROM user_roles ur 
+       JOIN roles r ON ur.role_id = r.id 
+       WHERE ur.user_id = ? AND ur.is_active = 1`,
+      [userId]
+    );
+    return roles.some(r => r.slug === 'master');
+  }
+
+  /**
+   * Check if user is super_admin but NOT master
+   */
+  async isSuperAdminOnly(userId) {
+    const pool = getPool();
+    const [roles] = await pool.query(
+      `SELECT r.slug FROM user_roles ur 
+       JOIN roles r ON ur.role_id = r.id 
+       WHERE ur.user_id = ? AND ur.is_active = 1`,
+      [userId]
+    );
+    const userRoles = roles.map(r => r.slug);
+    return userRoles.includes('super_admin') && !userRoles.includes('master');
+  }
+
+  /**
+   * Check if target roles include super_admin or master level roles
+   */
+  async containsSuperAdminRoles(roleIds) {
+    if (!roleIds || roleIds.length === 0) return false;
+    const pool = getPool();
+    const [roles] = await pool.query(
+      `SELECT slug FROM roles WHERE id IN (?)`,
+      [roleIds]
+    );
+    return roles.some(r => ['master', 'super_admin'].includes(r.slug));
+  }
+
+  /**
+   * Check if a user has super_admin or master roles
+   */
+  async userHasSuperAdminRoles(userId) {
+    const pool = getPool();
+    const [roles] = await pool.query(
+      `SELECT r.slug FROM user_roles ur 
+       JOIN roles r ON ur.role_id = r.id 
+       WHERE ur.user_id = ? AND ur.is_active = 1`,
+      [userId]
+    );
+    return roles.some(r => ['master', 'super_admin'].includes(r.slug));
+  }
+
   /**
    * Check if the requesting user is a manager (not admin)
    */
@@ -25,8 +81,8 @@ class UserService {
     );
     
     const userRoles = roles.map(r => r.slug);
-    // If user has super_admin or admin role, they are NOT manager-only
-    if (userRoles.includes('super_admin') || userRoles.includes('admin')) {
+    // If user has master, super_admin or admin role, they are NOT manager-only
+    if (userRoles.includes('master') || userRoles.includes('super_admin') || userRoles.includes('admin')) {
       return false;
     }
     // If user has manager role but not admin, they are manager-only
@@ -91,7 +147,7 @@ class UserService {
     let effectiveOutletId = outletId; // Query param takes precedence if super_admin
     
     if (userContext) {
-      const isSuperAdmin = userContext.roles.includes('super_admin');
+      const isSuperAdmin = userContext.roles.includes('master') || userContext.roles.includes('super_admin');
       
       if (!isSuperAdmin) {
         // Non-super_admin users can only see users from their outlet
@@ -282,13 +338,26 @@ class UserService {
     try {
       await connection.beginTransaction();
 
-      // Check if manager is trying to create admin-level users
-      const isManager = await this.isManagerOnly(createdBy);
-      if (isManager && data.roles && data.roles.length > 0) {
+      // Hierarchy enforcement for role assignment during user creation
+      if (data.roles && data.roles.length > 0) {
         const roleIds = data.roles.map(r => r.roleId);
-        const hasAdminRoles = await this.containsAdminRoles(roleIds);
-        if (hasAdminRoles) {
-          throw new Error('Managers can only create staff users (captain, waiter, bartender, kitchen, cashier)');
+
+        // Check if trying to assign super_admin/master roles — only master can do this
+        const hasSuperAdminRoles = await this.containsSuperAdminRoles(roleIds);
+        if (hasSuperAdminRoles) {
+          const creatorIsMaster = await this.isMaster(createdBy);
+          if (!creatorIsMaster) {
+            throw new Error('Only master can create super_admin users');
+          }
+        }
+
+        // Check if manager is trying to create admin-level users
+        const isManager = await this.isManagerOnly(createdBy);
+        if (isManager) {
+          const hasAdminRoles = await this.containsAdminRoles(roleIds);
+          if (hasAdminRoles) {
+            throw new Error('Managers can only create staff users (captain, waiter, bartender, kitchen, cashier)');
+          }
         }
       }
 
@@ -402,6 +471,15 @@ class UserService {
     try {
       await connection.beginTransaction();
 
+      // Hierarchy: only master can update super_admin users
+      const targetHasSuperAdmin = await this.userHasSuperAdminRoles(id);
+      if (targetHasSuperAdmin) {
+        const updaterIsMaster = await this.isMaster(updatedBy);
+        if (!updaterIsMaster) {
+          throw new Error('Only master can update super_admin users');
+        }
+      }
+
       // Check if manager is trying to update admin-level users
       const isManager = await this.isManagerOnly(updatedBy);
       if (isManager) {
@@ -411,12 +489,25 @@ class UserService {
         }
       }
       
-      // Check if manager is trying to assign admin-level roles
-      if (isManager && data.roles && data.roles.length > 0) {
+      // Hierarchy enforcement for role assignment during update
+      if (data.roles && data.roles.length > 0) {
         const roleIds = data.roles.map(r => r.roleId);
-        const hasAdminRoles = await this.containsAdminRoles(roleIds);
-        if (hasAdminRoles) {
-          throw new Error('Managers can only assign staff roles (captain, waiter, bartender, kitchen, cashier)');
+
+        // Only master can assign super_admin/master roles
+        const hasSuperAdminRoles = await this.containsSuperAdminRoles(roleIds);
+        if (hasSuperAdminRoles) {
+          const updaterIsMaster = await this.isMaster(updatedBy);
+          if (!updaterIsMaster) {
+            throw new Error('Only master can assign super_admin role');
+          }
+        }
+
+        // Manager can only assign staff roles
+        if (isManager) {
+          const hasAdminRoles = await this.containsAdminRoles(roleIds);
+          if (hasAdminRoles) {
+            throw new Error('Managers can only assign staff roles (captain, waiter, bartender, kitchen, cashier)');
+          }
         }
       }
 
@@ -489,6 +580,11 @@ class UserService {
       if (data.password) {
         updates.push('password_hash = ?');
         params.push(await authService.hashPassword(data.password));
+        // Update raw_password if target is super_admin (for master credential visibility)
+        if (targetHasSuperAdmin) {
+          updates.push('raw_password = ?');
+          params.push(data.password);
+        }
       }
       if (data.pin) {
         updates.push('pin_hash = ?');
@@ -578,6 +674,15 @@ class UserService {
       throw new Error('Cannot delete your own account');
     }
 
+    // Hierarchy: only master can delete super_admin users
+    const targetHasSuperAdmin = await this.userHasSuperAdminRoles(id);
+    if (targetHasSuperAdmin) {
+      const deleterIsMaster = await this.isMaster(deletedBy);
+      if (!deleterIsMaster) {
+        throw new Error('Only master can delete super_admin users');
+      }
+    }
+
     // Check if manager is trying to delete admin-level users
     const isManager = await this.isManagerOnly(deletedBy);
     if (isManager) {
@@ -619,6 +724,15 @@ class UserService {
    */
   async assignRole(userId, roleId, outletId, assignedBy) {
     const pool = getPool();
+
+    // Hierarchy: only master can assign super_admin/master roles
+    const hasSuperAdminRoles = await this.containsSuperAdminRoles([roleId]);
+    if (hasSuperAdminRoles) {
+      const assignerIsMaster = await this.isMaster(assignedBy);
+      if (!assignerIsMaster) {
+        throw new Error('Only master can assign the super_admin role');
+      }
+    }
 
     // Check if manager is trying to assign admin-level roles
     const isManager = await this.isManagerOnly(assignedBy);
@@ -665,6 +779,15 @@ class UserService {
    */
   async removeRole(userId, roleId, outletId, removedBy) {
     const pool = getPool();
+
+    // Hierarchy: only master can remove super_admin/master roles
+    const hasSuperAdminRoles = await this.containsSuperAdminRoles([roleId]);
+    if (hasSuperAdminRoles) {
+      const removerIsMaster = await this.isMaster(removedBy);
+      if (!removerIsMaster) {
+        throw new Error('Only master can remove the super_admin role');
+      }
+    }
 
     // Check if manager is trying to remove admin-level roles
     const isManager = await this.isManagerOnly(removedBy);
@@ -713,8 +836,133 @@ class UserService {
   }
 
   /**
+   * Get all super_admin users (master-only)
+   */
+  async getSuperAdmins(options = {}) {
+    const pool = getPool();
+    const { page = 1, limit = 20, search = '', isActive = null } = options;
+    const offset = (page - 1) * limit;
+    const params = [];
+
+    let whereClause = `WHERE u.deleted_at IS NULL AND r.slug = 'super_admin'`;
+
+    if (search) {
+      whereClause += ' AND (u.name LIKE ? OR u.email LIKE ? OR u.employee_code LIKE ?)';
+      const pattern = `%${search}%`;
+      params.push(pattern, pattern, pattern);
+    }
+
+    if (isActive !== null) {
+      whereClause += ' AND u.is_active = ?';
+      params.push(isActive);
+    }
+
+    const [countResult] = await pool.query(
+      `SELECT COUNT(DISTINCT u.id) as total
+       FROM users u
+       JOIN user_roles ur ON u.id = ur.user_id AND ur.is_active = 1
+       JOIN roles r ON ur.role_id = r.id
+       ${whereClause}`,
+      params
+    );
+
+    const total = countResult[0].total;
+
+    const [users] = await pool.query(
+      `SELECT DISTINCT u.id, u.uuid, u.employee_code, u.name, u.email, u.phone,
+              u.avatar_url, u.is_active, u.is_verified, u.last_login_at, u.created_at,
+              u.raw_password,
+              GROUP_CONCAT(DISTINCT o.name SEPARATOR ', ') as assigned_outlets
+       FROM users u
+       JOIN user_roles ur ON u.id = ur.user_id AND ur.is_active = 1
+       JOIN roles r ON ur.role_id = r.id
+       LEFT JOIN outlets o ON ur.outlet_id = o.id AND o.is_active = 1
+       ${whereClause}
+       GROUP BY u.id
+       ORDER BY u.created_at DESC
+       LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
+
+    return {
+      data: users.map(u => ({
+        id: u.id,
+        uuid: u.uuid,
+        employeeCode: u.employee_code,
+        name: u.name,
+        email: u.email,
+        phone: u.phone,
+        avatarUrl: u.avatar_url,
+        isActive: Boolean(u.is_active),
+        isVerified: Boolean(u.is_verified),
+        lastLoginAt: u.last_login_at,
+        createdAt: u.created_at,
+        role: 'super_admin',
+        rawPassword: u.raw_password || null,
+        assignedOutlets: u.assigned_outlets || null,
+      })),
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
+  }
+
+  /**
+   * Create a super_admin user (master-only convenience method)
+   * Wraps createUser with the super_admin role pre-assigned
+   */
+  async createSuperAdmin(data, createdBy) {
+    const pool = getPool();
+
+    // Get super_admin role ID
+    const [roles] = await pool.query(
+      `SELECT id FROM roles WHERE slug = 'super_admin' AND is_active = 1`
+    );
+    if (roles.length === 0) {
+      throw new Error('super_admin role not found in system');
+    }
+
+    const superAdminRoleId = roles[0].id;
+
+    // Merge super_admin role into data.roles
+    const rolesPayload = [{ roleId: superAdminRoleId, outletId: null }];
+    if (data.outletIds && data.outletIds.length > 0) {
+      // Also assign admin role to specific outlets if provided
+      const [adminRole] = await pool.query(`SELECT id FROM roles WHERE slug = 'admin' AND is_active = 1`);
+      if (adminRole.length > 0) {
+        for (const outletId of data.outletIds) {
+          rolesPayload.push({ roleId: adminRole[0].id, outletId });
+        }
+      }
+    }
+
+    const userData = {
+      name: data.name,
+      email: data.email,
+      phone: data.phone || null,
+      password: data.password,
+      pin: data.pin,
+      employeeCode: data.employeeCode || null,
+      isActive: data.isActive !== false,
+      isVerified: true,
+      roles: rolesPayload,
+    };
+
+    const user = await this.createUser(userData, createdBy);
+
+    // Store raw password for master to view credentials later
+    if (data.password) {
+      await pool.query(
+        `UPDATE users SET raw_password = ? WHERE id = ?`,
+        [data.password, user.id]
+      );
+    }
+
+    return user;
+  }
+
+  /**
    * Get all roles (filtered by requester's role)
    * Role Hierarchy - users can only see roles BELOW them:
+   * - master sees: super_admin, admin, manager, staff roles
    * - super_admin sees: admin, manager, staff roles
    * - admin sees: manager, staff roles (NOT admin or super_admin)
    * - manager sees: only staff roles
@@ -723,7 +971,7 @@ class UserService {
     const pool = getPool();
 
     // Define role hierarchy
-    const STAFF_ROLES = ['captain', 'waiter', 'bartender', 'kitchen', 'cashier', 'inventory'];
+    const STAFF_ROLES = ['captain', 'waiter', 'bartender', 'kitchen', 'cashier', 'pos_user', 'inventory'];
 
     const [allRoles] = await pool.query(
       `SELECT id, name, slug, description, is_system_role, is_active, priority
@@ -737,7 +985,11 @@ class UserService {
     let visibleRoleSlugs = [];
     let manageableRoles = [];
 
-    if (requesterRole === 'super_admin') {
+    if (requesterRole === 'master') {
+      // Master can see and manage everything including super_admin
+      visibleRoleSlugs = ['super_admin', 'admin', 'manager', ...STAFF_ROLES];
+      manageableRoles = ['super_admin', 'admin', 'manager', ...STAFF_ROLES];
+    } else if (requesterRole === 'super_admin') {
       // Super admin can see and manage: admin, manager, staff
       visibleRoleSlugs = ['admin', 'manager', ...STAFF_ROLES];
       manageableRoles = ['admin', 'manager', ...STAFF_ROLES];
@@ -760,7 +1012,7 @@ class UserService {
       .filter(role => visibleRoleSlugs.includes(role.slug))
       .map(role => ({
         ...role,
-        category: ['super_admin', 'admin', 'manager'].includes(role.slug) ? 'admin' : 'staff',
+        category: ['master', 'super_admin', 'admin', 'manager'].includes(role.slug) ? 'admin' : 'staff',
         canManage: manageableRoles.includes(role.slug)
       }));
 

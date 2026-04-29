@@ -16,7 +16,7 @@ router.use(authenticate);
  * @desc    Create a new customer
  * @access  Private (admin, manager, cashier)
  */
-router.post('/:outletId', authorize('super_admin', 'admin', 'manager', 'cashier'), customerController.create);
+router.post('/:outletId', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), customerController.create);
 
 /**
  * @route   GET /api/v1/customers/:outletId/search
@@ -25,7 +25,7 @@ router.post('/:outletId', authorize('super_admin', 'admin', 'manager', 'cashier'
  * @query   q - Search query (min 2 chars)
  * @query   limit - Max results (default 20)
  */
-router.get('/:outletId/search', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), customerController.search);
+router.get('/:outletId/search', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), customerController.search);
 
 /**
  * @route   GET /api/v1/customers/:outletId/by-phone
@@ -33,7 +33,7 @@ router.get('/:outletId/search', authorize('super_admin', 'admin', 'manager', 'ca
  * @access  Private (admin, manager, cashier)
  * @query   phone - Phone number
  */
-router.get('/:outletId/by-phone', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), customerController.getByPhone);
+router.get('/:outletId/by-phone', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), customerController.getByPhone);
 
 /**
  * @route   GET /api/v1/customers/:outletId/list
@@ -41,7 +41,7 @@ router.get('/:outletId/by-phone', authorize('super_admin', 'admin', 'manager', '
  * @access  Private (admin, manager, cashier)
  * @query   page, limit, gstOnly, sortBy, sortOrder
  */
-router.get('/:outletId/list', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), customerController.list);
+router.get('/:outletId/list', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), customerController.list);
 
 /**
  * @route   GET /api/v1/customers/:outletId/details/:customerId
@@ -50,21 +50,21 @@ router.get('/:outletId/list', authorize('super_admin', 'admin', 'manager', 'cash
  * @query   includeOrders, includeItems, includePayments, includeCancelledOrders, paginate, page, limit
  * @query   search, status, paymentStatus, orderType, fromDate, toDate, minAmount, maxAmount, sortBy, sortOrder
  */
-router.get('/:outletId/details/:customerId', authorize('super_admin', 'admin', 'manager', 'cashier'), customerController.getDetails);
+router.get('/:outletId/details/:customerId', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), customerController.getDetails);
 
 /**
  * @route   GET /api/v1/customers/:id
  * @desc    Get customer by ID
  * @access  Private (admin, manager, cashier)
  */
-router.get('/:id', authorize('super_admin', 'admin', 'manager', 'cashier'), customerController.getById);
+router.get('/:id', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), customerController.getById);
 
 /**
  * @route   PUT /api/v1/customers/:id
  * @desc    Update customer
  * @access  Private (admin, manager, cashier)
  */
-router.put('/:id', authorize('super_admin', 'admin', 'manager', 'cashier'), customerController.update);
+router.put('/:id', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), customerController.update);
 
 /**
  * @route   GET /api/v1/customers/:id/orders
@@ -72,21 +72,21 @@ router.put('/:id', authorize('super_admin', 'admin', 'manager', 'cashier'), cust
  * @access  Private (admin, manager, cashier)
  * @query   page, limit
  */
-router.get('/:id/orders', authorize('super_admin', 'admin', 'manager', 'cashier'), customerController.getOrderHistory);
+router.get('/:id/orders', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), customerController.getOrderHistory);
 
 /**
  * @route   POST /api/v1/customers/link-order/:orderId
  * @desc    Link customer to an order (create if not exists)
  * @access  Private (admin, manager, cashier)
  */
-router.post('/link-order/:orderId', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), customerController.linkToOrder);
+router.post('/link-order/:orderId', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), customerController.linkToOrder);
 
 /**
  * @route   PUT /api/v1/customers/order-gst/:orderId
  * @desc    Update order with customer GST details
  * @access  Private (admin, manager, cashier)
  */
-router.put('/order-gst/:orderId', authorize('super_admin', 'admin', 'manager', 'cashier'), customerController.updateOrderGst);
+router.put('/order-gst/:orderId', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), customerController.updateOrderGst);
 
 // ========================
 // DUE PAYMENT MANAGEMENT
@@ -97,7 +97,7 @@ router.put('/order-gst/:orderId', authorize('super_admin', 'admin', 'manager', '
  * @desc    Get customer due balance and pending orders
  * @access  Private (admin, manager, cashier)
  */
-router.get('/:outletId/due/:customerId', authorize('super_admin', 'admin', 'manager', 'cashier'), customerController.getDueBalance);
+router.get('/:outletId/due/:customerId', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), customerController.getDueBalance);
 
 /**
  * @route   GET /api/v1/customers/:outletId/due/:customerId/transactions
@@ -105,7 +105,7 @@ router.get('/:outletId/due/:customerId', authorize('super_admin', 'admin', 'mana
  * @access  Private (admin, manager, cashier)
  * @query   page, limit, type (due_created, due_collected, due_waived)
  */
-router.get('/:outletId/due/:customerId/transactions', authorize('super_admin', 'admin', 'manager', 'cashier'), customerController.getDueTransactions);
+router.get('/:outletId/due/:customerId/transactions', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), customerController.getDueTransactions);
 
 /**
  * @route   POST /api/v1/customers/:outletId/due/:customerId/collect
@@ -113,7 +113,7 @@ router.get('/:outletId/due/:customerId/transactions', authorize('super_admin', '
  * @access  Private (admin, manager, cashier)
  * @body    { amount, paymentMode, transactionId?, referenceNumber?, orderId?, invoiceId?, notes? }
  */
-router.post('/:outletId/due/:customerId/collect', authorize('super_admin', 'admin', 'manager', 'cashier'), customerController.collectDue);
+router.post('/:outletId/due/:customerId/collect', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), customerController.collectDue);
 
 /**
  * @route   POST /api/v1/customers/:outletId/due/:customerId/waive
@@ -129,6 +129,6 @@ router.post('/:outletId/due/:customerId/waive', authorize('super_admin', 'admin'
  * @access  Private (admin, manager, cashier)
  * @query   page, limit, minDue, sortBy, sortOrder
  */
-router.get('/:outletId/due-list', authorize('super_admin', 'admin', 'manager', 'cashier'), customerController.listWithDue);
+router.get('/:outletId/due-list', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), customerController.listWithDue);
 
 module.exports = router;

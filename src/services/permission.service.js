@@ -16,10 +16,10 @@ const { cache } = require('../config/redis');
 const { CACHE_KEYS } = require('../constants');
 
 // Superuser roles that have all permissions
-const SUPERUSER_ROLES = ['super_admin', 'admin'];
+const SUPERUSER_ROLES = ['master', 'super_admin', 'admin'];
 
 // Admin-only manageable roles
-const ADMIN_ONLY_ROLES = ['super_admin', 'admin', 'manager'];
+const ADMIN_ONLY_ROLES = ['master', 'super_admin', 'admin', 'manager'];
 
 class PermissionService {
   

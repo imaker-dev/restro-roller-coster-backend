@@ -63,6 +63,21 @@ const initializeCronJobs = () => {
   // Dyno client pushes orders to POST /api/v1/dyno/orders
   // No polling needed - orders come via webhook
 
+  // Self-order session cleanup - every 10 minutes
+  const selfOrderCleanup = cron.schedule(
+    '*/10 * * * *',
+    async () => {
+      try {
+        const selfOrderService = require('../services/selfOrder.service');
+        await selfOrderService.expireStaleSessions();
+      } catch (error) {
+        logger.error('Self-order session cleanup cron failed:', error);
+      }
+    },
+    { scheduled: false }
+  );
+  jobs.push(selfOrderCleanup);
+
   // Start all jobs
   jobs.forEach((job) => job.start());
   logger.info(`Started ${jobs.length} cron jobs`);

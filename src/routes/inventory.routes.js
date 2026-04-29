@@ -15,7 +15,7 @@ const { authenticate, authorize } = require('../middlewares/auth.middleware');
 
 router.use(authenticate);
 
-const admin = authorize('super_admin', 'admin', 'manager','cashier');
+const admin = authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user');
 
 // ======================== MODULE 1: UNITS ========================
 

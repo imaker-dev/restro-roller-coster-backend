@@ -9,6 +9,33 @@ const userValidation = require('../validations/user.validation');
 // All routes require authentication
 router.use(authenticate);
 
+// =====================================================
+// MASTER-ONLY ROUTES (must be before parameterized routes)
+// =====================================================
+
+/**
+ * @route   GET /api/v1/users/super-admins
+ * @desc    List all super_admin users
+ * @access  Private (master only)
+ */
+router.get('/super-admins', authorize('master'), userController.getSuperAdmins);
+
+/**
+ * @route   POST /api/v1/users/super-admins
+ * @desc    Create a new super_admin user
+ * @access  Private (master only)
+ */
+router.post('/super-admins', authorize('master'), userController.createSuperAdmin);
+
+/**
+ * @route   PATCH /api/v1/users/super-admins/:id/toggle-active
+ * @desc    Activate or deactivate a super_admin user
+ * @access  Private (master only)
+ */
+router.patch('/super-admins/:id/toggle-active', authorize('master'), userController.toggleSuperAdminActive);
+
+// =====================================================
+
 /**
  * @route   GET /api/v1/users/roles
  * @desc    Get all available roles

@@ -7,7 +7,18 @@ const { validate } = require('../middlewares');
 const menuValidation = require('../validations/menu.validation');
 const { reportCache } = require('../middleware/reportCache');
 
-// All routes require authentication
+// ========================
+// PUBLIC MENU ENDPOINT (no auth — for self-order QR customers)
+// ========================
+
+/**
+ * @route   GET /api/v1/menu/:outletId/captain
+ * @desc    Get simplified captain menu (public for self-order)
+ * @access  Public
+ */
+router.get('/:outletId/captain', reportCache('menu-captain', 1800), menuController.getCaptainMenu);
+
+// All remaining routes require authentication
 router.use(authenticate);
 
 // ========================
@@ -20,13 +31,6 @@ router.use(authenticate);
  * @access  Private
  */
 router.get('/:outletId', menuController.getMenu);
-
-/**
- * @route   GET /api/v1/menu/:outletId/captain
- * @desc    Get simplified captain menu
- * @access  Private
- */
-router.get('/:outletId/captain', reportCache('menu-captain', 1800), menuController.getCaptainMenu);
 
 /**
  * @route   GET /api/v1/menu/:outletId/preview

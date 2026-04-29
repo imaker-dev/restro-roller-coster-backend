@@ -83,6 +83,8 @@ function formatKot(kot) {
     cancelledAt: kot.cancelled_at || null,
     cancelReason: kot.cancel_reason || null,
     createdBy: kot.created_by,
+    createdByName: kot.created_by_name || null,
+    orderSource: kot.order_source || null,
     createdAt: kot.created_at,
     items: (kot.items || []).map(formatKotItem)
   };
@@ -356,7 +358,7 @@ const kotService = {
                 addonsText: i.addonsText,
                 instructions: i.specialInstructions
               })),
-              captainName: order.created_by_name || 'Staff'
+              captainName: order.order_source === 'self_order' ? 'SELF ORDER' : (order.created_by_name || 'Staff')
             };
             return printerService.printKot(kotPrintData, createdBy)
               .catch(err => logger.error(`Failed to queue KOT ${ticket.kotNumber}:`, err.message));
@@ -789,10 +791,12 @@ const kotService = {
     // Run KOT ticket + items queries in parallel
     const [[rows], [items]] = await Promise.all([
       pool.query(
-        `SELECT kt.*, o.order_number, o.table_id, t.table_number
+        `SELECT kt.*, o.order_number, o.table_id, o.order_source, t.table_number,
+                u.name as created_by_name
          FROM kot_tickets kt
          LEFT JOIN orders o ON kt.order_id = o.id
          LEFT JOIN tables t ON o.table_id = t.id
+         LEFT JOIN users u ON kt.created_by = u.id
          WHERE kt.id = ?`,
         [id]
       ),
@@ -1165,7 +1169,7 @@ const kotService = {
           addonsText: i.addonsText,
           instructions: i.specialInstructions
         })),
-        captainName: kot.createdBy || 'Staff'
+        captainName: kot.orderSource === 'self_order' ? 'SELF ORDER' : (kot.createdByName || 'Staff')
       };
       await printerService.printKot(kotPrintData, userId);
       logger.info(`KOT ${kot.kotNumber} reprinted to all station printers`);

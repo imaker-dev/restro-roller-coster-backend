@@ -19,6 +19,7 @@ const seedRoles = async (connection) => {
   console.log('→ Seeding roles...');
   
   const roles = [
+    { name: 'Master', slug: 'master', description: 'Organization-level access, manages everything including super admins', is_system_role: true, priority: 200 },
     { name: 'Super Admin', slug: 'super_admin', description: 'Full system access', is_system_role: true, priority: 100 },
     { name: 'Admin', slug: 'admin', description: 'Outlet admin access', is_system_role: true, priority: 100 },
     { name: 'Manager', slug: 'manager', description: 'Manager level access', is_system_role: true, priority: 100 },
@@ -26,6 +27,7 @@ const seedRoles = async (connection) => {
     { name: 'Cashier', slug: 'cashier', description: 'Cashier access', is_system_role: true, priority: 100 },
     { name: 'Kitchen', slug: 'kitchen', description: 'Kitchen display access', is_system_role: true, priority: 100 },
     { name: 'Bartender', slug: 'bartender', description: 'Bar access', is_system_role: true, priority: 100 },
+    { name: 'POS User', slug: 'pos_user', description: 'POS User access — same as Cashier', is_system_role: true, priority: 100 },
     { name: 'Inventory', slug: 'inventory', description: 'Inventory management', is_system_role: true, priority: 100 },
   ];
 
@@ -177,6 +179,33 @@ const seedCancelReasons = async (connection) => {
   }
   
   console.log('  ✓ Cancel reasons seeded');
+};
+
+const seedDefaultMaster = async (connection) => {
+  console.log('→ Seeding default master user...');
+  
+  const passwordHash = await bcrypt.hash('Master@123', 10);
+  const pinHash = await bcrypt.hash('1234', 10);
+  const uuid = uuidv4();
+  
+  await connection.query(
+    `INSERT IGNORE INTO users (uuid, employee_code, name, email, password_hash, pin_hash, is_active, is_verified) 
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [uuid, 'MASTER001', 'iMaker Admin', 'imaker@restropos.com', passwordHash, pinHash, true, true]
+  );
+  
+  // Assign master role
+  const [users] = await connection.query(`SELECT id FROM users WHERE email = 'imaker@restropos.com'`);
+  const [roles] = await connection.query(`SELECT id FROM roles WHERE slug = 'master'`);
+  
+  if (users.length > 0 && roles.length > 0) {
+    await connection.query(
+      `INSERT IGNORE INTO user_roles (user_id, role_id, is_active) VALUES (?, ?, ?)`,
+      [users[0].id, roles[0].id, true]
+    );
+  }
+  
+  console.log('  ✓ Default master seeded (email: imaker@restropos.com, password: Master@123, pin: 1234)');
 };
 
 const seedDefaultAdmin = async (connection) => {
@@ -363,6 +392,7 @@ const runSeeders = async () => {
     await seedTaxTypes(connection);
     await seedTaxComponents(connection);
     await seedCancelReasons(connection);
+    await seedDefaultMaster(connection);
     await seedDefaultAdmin(connection);
     await seedSystemSettings(connection);
     

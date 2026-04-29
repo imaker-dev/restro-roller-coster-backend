@@ -381,6 +381,94 @@ const getStationPrinter = async (req, res, next) => {
   }
 };
 
+// =====================================================
+// MASTER-ONLY: Super Admin Management
+// =====================================================
+
+/**
+ * GET /api/v1/users/super-admins
+ * List all super_admin users (master only)
+ */
+const getSuperAdmins = async (req, res, next) => {
+  try {
+    const result = await userService.getSuperAdmins(req.query);
+
+    res.status(200).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    logger.error('Get super admins failed:', error);
+    next(error);
+  }
+};
+
+/**
+ * POST /api/v1/users/super-admins
+ * Create a new super_admin user (master only)
+ */
+const createSuperAdmin = async (req, res, next) => {
+  try {
+    const user = await userService.createSuperAdmin(req.body, req.user.userId);
+
+    res.status(201).json({
+      success: true,
+      message: 'Super Admin created successfully',
+      data: user,
+    });
+  } catch (error) {
+    if (error.message.includes('already exists')) {
+      return res.status(409).json({
+        success: false,
+        message: error.message,
+      });
+    }
+    if (error.message.includes('Only master')) {
+      return res.status(403).json({
+        success: false,
+        message: error.message,
+      });
+    }
+    logger.error('Create super admin failed:', error);
+    next(error);
+  }
+};
+
+/**
+ * PATCH /api/v1/users/super-admins/:id/toggle-active
+ * Enable or disable a super_admin user (master only)
+ */
+const toggleSuperAdminActive = async (req, res, next) => {
+  try {
+    const targetId = parseInt(req.params.id, 10);
+    const { isActive } = req.body;
+
+    if (typeof isActive !== 'boolean') {
+      return res.status(400).json({
+        success: false,
+        message: 'isActive (boolean) is required',
+      });
+    }
+
+    const user = await userService.updateUser(targetId, { isActive }, req.user.userId);
+
+    res.status(200).json({
+      success: true,
+      message: `Super Admin ${isActive ? 'activated' : 'deactivated'} successfully`,
+      data: user,
+    });
+  } catch (error) {
+    if (error.message.includes('Only master')) {
+      return res.status(403).json({
+        success: false,
+        message: error.message,
+      });
+    }
+    logger.error('Toggle super admin active failed:', error);
+    next(error);
+  }
+};
+
 module.exports = {
   getUsers,
   getUserById,
@@ -396,4 +484,7 @@ module.exports = {
   assignStation,
   removeStation,
   getStationPrinter,
+  getSuperAdmins,
+  createSuperAdmin,
+  toggleSuperAdminActive,
 };

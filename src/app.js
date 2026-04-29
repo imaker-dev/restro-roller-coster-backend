@@ -124,6 +124,16 @@ Sentry.setupExpressErrorHandler(app);
 
 // Global error handler
 app.use((err, req, res, next) => {
+  // Handle JSON parse errors (malformed request body)
+  if (err.type === 'entity.parse.failed' || (err instanceof SyntaxError && err.status === 400)) {
+    logger.warn('Invalid JSON in request body:', err.message);
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid JSON in request body. Check for trailing commas, missing quotes, or syntax errors.',
+      error: err.message,
+    });
+  }
+
   logger.error('Unhandled error:', err);
   
   res.status(err.statusCode || 500).json({

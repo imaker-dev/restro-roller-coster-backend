@@ -107,7 +107,7 @@ const taxController = {
       let effectiveOutletId = outletId ? parseInt(outletId) : null;
       
       if (req.user) {
-        const isSuperAdmin = req.user.roles?.includes('super_admin');
+        const isSuperAdmin = req.user.roles?.includes('master') || req.user.roles?.includes('super_admin');
         
         if (!isSuperAdmin) {
           // Non-super_admin users can only see their outlet's tax groups

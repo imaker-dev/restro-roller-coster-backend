@@ -79,8 +79,8 @@ const outletService = {
   async getAll(filters = {}, userId = null, userRoles = []) {
     const pool = getPool();
     
-    // Check if user is super_admin
-    const isSuperAdmin = userRoles && userRoles.includes('super_admin');
+    // Check if user is master or super_admin
+    const isSuperAdmin = userRoles && (userRoles.includes('master') || userRoles.includes('super_admin'));
     
     let query = `
       SELECT o.*, 

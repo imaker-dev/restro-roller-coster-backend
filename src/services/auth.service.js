@@ -72,8 +72,8 @@ class AuthService {
     // Get user's outlets
     const { outlets, outletId, outletName } = await this._getUserOutlets(user.id);
 
-    // Check if user has any outlets assigned (unless super_admin)
-    const isSuperAdmin = user.role_slugs && user.role_slugs.includes('super_admin');
+    // Check if user has any outlets assigned (unless master/super_admin)
+    const isSuperAdmin = user.role_slugs && (user.role_slugs.includes('master') || user.role_slugs.includes('super_admin'));
     if (outlets.length === 0 && !isSuperAdmin) {
       await this.logAuthActivity(user.id, 'login_failed', deviceInfo, { reason: 'no_outlet_assigned' });
       throw new Error('No outlet assigned to this user. Contact administrator');
@@ -670,11 +670,11 @@ class AuthService {
   async _getUserOutlets(userId) {
     const pool = getPool();
 
-    // Check if user has super_admin role
+    // Check if user has master or super_admin role
     const [superAdminCheck] = await pool.query(
       `SELECT 1 FROM user_roles ur
        JOIN roles r ON ur.role_id = r.id
-       WHERE ur.user_id = ? AND ur.is_active = 1 AND r.slug = 'super_admin'
+       WHERE ur.user_id = ? AND ur.is_active = 1 AND r.slug IN ('master', 'super_admin')
        LIMIT 1`,
       [userId]
     );

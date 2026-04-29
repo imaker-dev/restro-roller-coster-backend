@@ -16,7 +16,8 @@ class SettingsService {
     INVENTORY: 'inventory',
     ORDER: 'order',
     NOTIFICATION: 'notification',
-    DISPLAY: 'display'
+    DISPLAY: 'display',
+    SELF_ORDER: 'self_order'
   };
 
   // Default settings with categories
@@ -101,7 +102,18 @@ class SettingsService {
     { key: 'display_option_1', value: 'false', type: 'boolean', category: 'display', description: 'Display option 1' },
     { key: 'display_option_2', value: 'false', type: 'boolean', category: 'display', description: 'Display option 2' },
     { key: 'display_option_3', value: 'false', type: 'boolean', category: 'display', description: 'Display option 3' },
-    { key: 'display_option_4', value: 'false', type: 'boolean', category: 'display', description: 'Display option 4' }
+    { key: 'display_option_4', value: 'false', type: 'boolean', category: 'display', description: 'Display option 4' },
+    
+    // Self Order Settings (QR Table Ordering)
+    { key: 'self_order_enabled', value: 'false', type: 'boolean', category: 'self_order', description: 'Enable QR self-ordering for customers' },
+    { key: 'self_order_accept_mode', value: 'manual', type: 'string', category: 'self_order', description: 'Order accept mode: auto (instant KOT) or manual (staff approval)' },
+    { key: 'self_order_session_timeout_minutes', value: '120', type: 'number', category: 'self_order', description: 'Session expiry in minutes after QR scan' },
+    { key: 'self_order_require_phone', value: 'true', type: 'boolean', category: 'self_order', description: 'Require phone number before placing order' },
+    { key: 'self_order_require_name', value: 'true', type: 'boolean', category: 'self_order', description: 'Require customer name before placing order' },
+    { key: 'self_order_max_sessions_per_table', value: '1', type: 'number', category: 'self_order', description: 'Max active self-order sessions per table (0 = unlimited)' },
+    { key: 'self_order_allow_reorder', value: 'true', type: 'boolean', category: 'self_order', description: 'Allow adding items to existing order from same session' },
+    { key: 'self_order_idle_timeout_minutes', value: '10', type: 'number', category: 'self_order', description: 'Minutes before a session with no order placed is expired (idle timeout)' },
+    { key: 'self_order_completion_buffer_minutes', value: '1', type: 'number', category: 'self_order', description: 'Minutes after order completion before session is expired' }
   ];
 
   /**

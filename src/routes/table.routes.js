@@ -70,7 +70,7 @@ router.delete('/:id', authorize('super_admin', 'admin'), tableController.deleteT
  * @desc    Update table status
  * @access  Private (captain, waiter, manager)
  */
-router.patch('/:id/status', authorize('super_admin', 'admin', 'manager', 'captain', 'cashier', 'waiter'), validate(outletValidation.updateTableStatus), tableController.updateTableStatus);
+router.patch('/:id/status', authorize('super_admin', 'admin', 'manager', 'captain', 'cashier', 'pos_user', 'waiter'), validate(outletValidation.updateTableStatus), tableController.updateTableStatus);
 
 // ========================
 // Table Session Routes
@@ -81,14 +81,14 @@ router.patch('/:id/status', authorize('super_admin', 'admin', 'manager', 'captai
  * @desc    Start table session (occupy table)
  * @access  Private (captain, waiter, manager)
  */
-router.post('/:id/session', authorize('super_admin', 'admin', 'manager', 'captain', 'cashier', 'waiter'), validate(outletValidation.startSession), tableController.startSession);
+router.post('/:id/session', authorize('super_admin', 'admin', 'manager', 'captain', 'cashier', 'pos_user', 'waiter'), validate(outletValidation.startSession), tableController.startSession);
 
 /**
  * @route   DELETE /api/v1/tables/:id/session
  * @desc    End table session
  * @access  Private (captain, waiter, manager, cashier)
  */
-router.delete('/:id/session', authorize('super_admin', 'admin', 'manager', 'captain', 'waiter', 'cashier'), tableController.endSession);
+router.delete('/:id/session', authorize('super_admin', 'admin', 'manager', 'captain', 'waiter', 'cashier', 'pos_user'), tableController.endSession);
 
 /**
  * @route   GET /api/v1/tables/:id/session
@@ -115,7 +115,7 @@ router.post('/:id/session/transfer', authorize('super_admin', 'admin', 'manager'
  *          Source table becomes available, target table gets the session
  * @access  Private (cashier, captain, manager, admin, super_admin)
  */
-router.post('/:id/transfer', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), tableController.transferTable);
+router.post('/:id/transfer', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), tableController.transferTable);
 
 // ========================
 // Table Merge Routes
@@ -126,14 +126,14 @@ router.post('/:id/transfer', authorize('super_admin', 'admin', 'manager', 'cashi
  * @desc    Merge tables
  * @access  Private (captain, manager)
  */
-router.post('/:id/merge', authorize('super_admin', 'admin', 'manager', 'captain', 'cashier'), validate(outletValidation.mergeTables), tableController.mergeTables);
+router.post('/:id/merge', authorize('super_admin', 'admin', 'manager', 'captain', 'cashier', 'pos_user'), validate(outletValidation.mergeTables), tableController.mergeTables);
 
 /**
  * @route   DELETE /api/v1/tables/:id/merge
  * @desc    Unmerge tables
  * @access  Private (captain, manager)
  */
-router.delete('/:id/merge', authorize('super_admin', 'admin', 'manager', 'captain', 'cashier'), tableController.unmergeTables);
+router.delete('/:id/merge', authorize('super_admin', 'admin', 'manager', 'captain', 'cashier', 'pos_user'), tableController.unmergeTables);
 
 /**
  * @route   GET /api/v1/tables/:id/merged

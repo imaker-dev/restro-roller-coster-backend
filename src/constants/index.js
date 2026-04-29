@@ -67,10 +67,13 @@ const DISCOUNT_TYPE = {
 };
 
 const USER_TYPE = {
+  MASTER: 'master',
+  SUPER_ADMIN: 'super_admin',
   ADMIN: 'admin',
   MANAGER: 'manager',
   CAPTAIN: 'captain',
   CASHIER: 'cashier',
+  POS_USER: 'pos_user',
   KITCHEN: 'kitchen',
   BARTENDER: 'bartender',
   WAITER: 'waiter',
@@ -231,6 +234,41 @@ const MEAL_SLOTS = {
   LATE_NIGHT: { name: 'late_night', start: '23:00', end: '06:00' },
 };
 
+// ========================
+// SELF ORDER SYSTEM
+// ========================
+const SELF_ORDER = {
+  SESSION_STATUS: {
+    ACTIVE: 'active',
+    ORDERING: 'ordering',
+    COMPLETED: 'completed',
+    EXPIRED: 'expired',
+  },
+  ORDER_SOURCE: {
+    POS: 'pos',
+    SELF_ORDER: 'self_order',
+    ONLINE: 'online',
+    QR: 'qr',
+  },
+  ACCEPT_MODE: {
+    AUTO: 'auto',
+    MANUAL: 'manual',
+  },
+  SYSTEM_USER_EMAIL: 'selforder@system.local',
+  SESSION_TTL_MINUTES: 120,
+  SETTINGS_KEYS: {
+    ENABLED: 'self_order_enabled',
+    ACCEPT_MODE: 'self_order_accept_mode',
+    SESSION_TIMEOUT: 'self_order_session_timeout_minutes',
+    REQUIRE_PHONE: 'self_order_require_phone',
+    REQUIRE_NAME: 'self_order_require_name',
+    MAX_SESSIONS_PER_TABLE: 'self_order_max_sessions_per_table',
+    ALLOW_REORDER: 'self_order_allow_reorder',
+    IDLE_TIMEOUT: 'self_order_idle_timeout_minutes',           // Session expires if no order placed (default: 10)
+    COMPLETION_BUFFER: 'self_order_completion_buffer_minutes', // Session expires after order completion (default: 1)
+  },
+};
+
 module.exports = {
   ORDER_STATUS,
   KOT_STATUS,
@@ -256,4 +294,5 @@ module.exports = {
   REPORT_TYPE,
   DAY_NAMES,
   MEAL_SLOTS,
+  SELF_ORDER,
 };

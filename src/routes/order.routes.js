@@ -34,12 +34,12 @@ router.get('/active/:outletId', orderController.getActiveOrders);
 /**
  * @route   GET /api/v1/orders/captain/bills/:outletId
  * @desc    Get captain's own bills (pending/completed/all)
- * @access  Private (captain, waiter)
+ * @access  Private (captain, waiter, cashier, pos_user)
  * @query   status - 'pending' (default) | 'completed' | 'all'
  * @query   search - Search by table number, order number, invoice number
  * @query   page, limit, sortBy, sortOrder
  */
-router.get('/captain/bills/:outletId', orderController.getCaptainBills);
+router.get('/captain/bills/:outletId', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain', 'waiter'), orderController.getCaptainBills);
 
 // ========================
 // CAPTAIN ORDER HISTORY
@@ -48,7 +48,7 @@ router.get('/captain/bills/:outletId', orderController.getCaptainBills);
 /**
  * @route   GET /api/v1/orders/captain/history/:outletId
  * @desc    Get captain's own order history with filters
- * @access  Private (captain, waiter)
+ * @access  Private (captain, waiter, cashier, pos_user)
  * @query   status - 'running' | 'completed' | 'cancelled' | 'all'
  * @query   search - Search by order number, table number, customer name
  * @query   startDate - Filter from date (YYYY-MM-DD)
@@ -58,40 +58,40 @@ router.get('/captain/bills/:outletId', orderController.getCaptainBills);
  * @query   sortBy - Sort column (created_at, order_number, total_amount)
  * @query   sortOrder - ASC or DESC (default: DESC)
  */
-router.get('/captain/history/:outletId', orderController.getCaptainOrderHistory);
+router.get('/captain/history/:outletId', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain', 'waiter'), orderController.getCaptainOrderHistory);
 
 /**
  * @route   GET /api/v1/orders/captain/stats/:outletId
  * @desc    Get captain's order statistics
- * @access  Private (captain, waiter)
+ * @access  Private (captain, waiter, cashier, pos_user)
  * @query   startDate - Filter from date (YYYY-MM-DD)
  * @query   endDate - Filter to date (YYYY-MM-DD)
  */
-router.get('/captain/stats/:outletId', orderController.getCaptainOrderStats);
+router.get('/captain/stats/:outletId', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain', 'waiter'), orderController.getCaptainOrderStats);
 
 /**
  * @route   GET /api/v1/orders/captain/detail/:orderId
  * @desc    Get detailed order view with time logs (captain's own orders only)
- * @access  Private (captain, waiter)
+ * @access  Private (captain, waiter, cashier, pos_user)
  */
-router.get('/captain/detail/:orderId', orderController.getCaptainOrderDetail);
+router.get('/captain/detail/:orderId', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain', 'waiter'), orderController.getCaptainOrderDetail);
 
 /**
  * @route   GET /api/v1/orders/takeaway/pending/:outletId
  * @desc    Get pending takeaway orders for cashier
- * @access  Private (cashier, manager, admin)
+ * @access  Private (cashier, pos_user, manager, admin)
  * @query   status - 'pending' (default) | 'completed' | 'cancelled' | 'all'
  * @query   search - Search by order number, customer name, phone
  * @query   page, limit, sortBy, sortOrder
  */
-router.get('/takeaway/pending/:outletId', orderController.getPendingTakeawayOrders);
+router.get('/takeaway/pending/:outletId', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), orderController.getPendingTakeawayOrders);
 
 /**
  * @route   GET /api/v1/orders/takeaway/detail/:id
  * @desc    Get detailed takeaway order — items, KOTs, discounts, payments, invoice
- * @access  Private (cashier, manager, admin)
+ * @access  Private (cashier, pos_user, manager, admin)
  */
-router.get('/takeaway/detail/:id', orderController.getTakeawayOrderDetail);
+router.get('/takeaway/detail/:id', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), orderController.getTakeawayOrderDetail);
 
 /**
  * @route   GET /api/v1/orders/table/:tableId
@@ -112,7 +112,7 @@ router.get('/cancel-reasons/:outletId', reportCache('order-cancel-reasons', 300)
  * @desc    Get open item templates for outlet (cashier/manager/admin)
  * @access  Private (cashier, manager, admin)
  */
-router.get('/open-item-templates/:outletId', authorize('super_admin', 'admin', 'manager', 'cashier'), orderController.getOpenItemTemplates);
+router.get('/open-item-templates/:outletId', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), orderController.getOpenItemTemplates);
 
 /**
  * @route   GET /api/v1/orders/open-item-ingredients/:outletId
@@ -120,7 +120,7 @@ router.get('/open-item-templates/:outletId', authorize('super_admin', 'admin', '
  * @access  Private (cashier, manager, admin)
  * @query   search - Filter by ingredient name
  */
-router.get('/open-item-ingredients/:outletId', authorize('super_admin', 'admin', 'manager', 'cashier'), orderController.getIngredientsForOpenItem);
+router.get('/open-item-ingredients/:outletId', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), orderController.getIngredientsForOpenItem);
 
 // ========================
 // PAYMENTS (before :id routes to prevent conflict)
@@ -317,9 +317,9 @@ router.get('/station/:outletId/:station', orderController.getStationDashboard);
 /**
  * @route   GET /api/v1/orders/bills/pending/:outletId
  * @desc    Get all pending (unpaid) bills for cashier real-time view
- * @access  Private (cashier, manager, admin)
+ * @access  Private (cashier, pos_user, manager, admin)
  */
-router.get('/bills/pending/:outletId', orderController.getPendingBills);
+router.get('/bills/pending/:outletId', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), orderController.getPendingBills);
 
 /**
  * @route   POST /api/v1/orders/:id/bill
@@ -383,7 +383,7 @@ router.post('/:id/split-bill', validate(orderValidation.splitBill), orderControl
  * @desc    Cancel invoice
  * @access  Private (manager, admin)
  */
-router.post('/invoice/:id/cancel', authorize('super_admin', 'admin', 'manager', 'cashier'), orderController.cancelInvoice);
+router.post('/invoice/:id/cancel', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), orderController.cancelInvoice);
 
 /**
  * @route   GET /api/v1/orders/:id/discounts
@@ -427,24 +427,24 @@ router.get('/:orderId/payments', orderController.getPaymentsByOrder);
 /**
  * @route   POST /api/v1/orders/cash-drawer/:outletId/open
  * @desc    Open cash drawer (day start)
- * @access  Private (cashier, manager)
+ * @access  Private (cashier, pos_user, manager)
  */
-router.post('/cash-drawer/:outletId/open', validate(orderValidation.openCashDrawer), orderController.openCashDrawer);
+router.post('/cash-drawer/:outletId/open', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), validate(orderValidation.openCashDrawer), orderController.openCashDrawer);
 
 /**
  * @route   POST /api/v1/orders/cash-drawer/:outletId/close
  * @desc    Close cash drawer (day end)
- * @access  Private (cashier, manager)
+ * @access  Private (cashier, pos_user, manager)
  */
-router.post('/cash-drawer/:outletId/close', validate(orderValidation.closeCashDrawer), orderController.closeCashDrawer);
+router.post('/cash-drawer/:outletId/close', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), validate(orderValidation.closeCashDrawer), orderController.closeCashDrawer);
 
 /**
  * @route   GET /api/v1/orders/cash-drawer/:outletId/status
  * @desc    Get cash drawer status for user's assigned floor
- * @access  Private
+ * @access  Private (cashier, pos_user, manager)
  * @query   floorId - Optional floor ID (defaults to user's assigned floor)
  */
-router.get('/cash-drawer/:outletId/status', orderController.getCashDrawerStatus);
+router.get('/cash-drawer/:outletId/status', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), orderController.getCashDrawerStatus);
 
 // ========================
 // OUTSIDE COLLECTIONS
@@ -456,7 +456,7 @@ router.get('/cash-drawer/:outletId/status', orderController.getCashDrawerStatus)
  * @access  Private (cashier, manager, admin)
  * @body    amount, paymentMode, reason, description, collectionDate, floorId
  */
-router.post('/outside-collections/:outletId', authorize('super_admin', 'admin', 'manager', 'cashier'), orderController.addOutsideCollection);
+router.post('/outside-collections/:outletId', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), orderController.addOutsideCollection);
 
 /**
  * @route   GET /api/v1/orders/outside-collections/:outletId
@@ -464,7 +464,7 @@ router.post('/outside-collections/:outletId', authorize('super_admin', 'admin', 
  * @access  Private (cashier, manager, admin)
  * @query   startDate, endDate, floorId, collectedBy, status, page, limit
  */
-router.get('/outside-collections/:outletId', authorize('super_admin', 'admin', 'manager', 'cashier'), orderController.getOutsideCollections);
+router.get('/outside-collections/:outletId', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), orderController.getOutsideCollections);
 
 /**
  * @route   GET /api/v1/orders/outside-collections/:outletId/export
@@ -478,7 +478,7 @@ router.get('/outside-collections/:outletId/export', authorize('super_admin', 'ad
  * @desc    Get single outside collection
  * @access  Private (cashier, manager, admin)
  */
-router.get('/outside-collections/:outletId/:id', authorize('super_admin', 'admin', 'manager', 'cashier'), orderController.getOutsideCollectionById);
+router.get('/outside-collections/:outletId/:id', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), orderController.getOutsideCollectionById);
 
 /**
  * @route   PUT /api/v1/orders/outside-collections/:outletId/:id
@@ -499,7 +499,7 @@ router.delete('/outside-collections/:outletId/:id', authorize('super_admin', 'ad
  * @desc    Get all floor shifts status for an outlet
  * @access  Private (cashier, manager, admin)
  */
-router.get('/shifts/:outletId/floors', authorize('super_admin', 'admin', 'manager', 'cashier'), orderController.getAllFloorShiftsStatus);
+router.get('/shifts/:outletId/floors', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), orderController.getAllFloorShiftsStatus);
 
 /**
  * @route   GET /api/v1/orders/shifts/:outletId/floor/:floorId/status
@@ -524,7 +524,7 @@ router.get('/reports/:outletId/dashboard', reportCache('order-dashboard', 30), o
  * @desc    Get daily sales report
  * @access  Private (manager, admin)
  */
-router.get('/reports/:outletId/daily-sales', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-daily-sales', 30), orderController.getDailySalesReport);
+router.get('/reports/:outletId/daily-sales', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), reportCache('order-daily-sales', 30), orderController.getDailySalesReport);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/daily-sales/detail
@@ -532,14 +532,14 @@ router.get('/reports/:outletId/daily-sales', authorize('super_admin', 'admin', '
  * @query   startDate, endDate
  * @access  Private (manager, admin, cashier)
  */
-router.get('/reports/:outletId/daily-sales/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-daily-sales-detail', 30), orderController.getDailySalesDetail);
+router.get('/reports/:outletId/daily-sales/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), reportCache('order-daily-sales-detail', 30), orderController.getDailySalesDetail);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/item-sales
  * @desc    Get item sales report
  * @access  Private (manager, admin)
  */
-router.get('/reports/:outletId/item-sales', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-item-sales', 30), orderController.getItemSalesReport);
+router.get('/reports/:outletId/item-sales', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), reportCache('order-item-sales', 30), orderController.getItemSalesReport);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/item-sales/detail
@@ -547,21 +547,21 @@ router.get('/reports/:outletId/item-sales', authorize('super_admin', 'admin', 'm
  * @query   startDate, endDate, limit
  * @access  Private (manager, admin, cashier)
  */
-router.get('/reports/:outletId/item-sales/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-item-sales-detail', 30), orderController.getItemSalesDetail);
+router.get('/reports/:outletId/item-sales/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), reportCache('order-item-sales-detail', 30), orderController.getItemSalesDetail);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/staff
  * @desc    Get staff performance report
  * @access  Private (manager, admin)
  */
-router.get('/reports/:outletId/staff', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-staff', 120), orderController.getStaffReport);
+router.get('/reports/:outletId/staff', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), reportCache('order-staff', 120), orderController.getStaffReport);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/category-sales
  * @desc    Get category sales report
  * @access  Private (manager, admin)
  */
-router.get('/reports/:outletId/category-sales', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-category-sales', 120), orderController.getCategorySalesReport);
+router.get('/reports/:outletId/category-sales', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), reportCache('order-category-sales', 120), orderController.getCategorySalesReport);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/category-sales/detail
@@ -569,14 +569,14 @@ router.get('/reports/:outletId/category-sales', authorize('super_admin', 'admin'
  * @query   startDate, endDate
  * @access  Private (manager, admin, cashier)
  */
-router.get('/reports/:outletId/category-sales/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-category-sales-detail', 120), orderController.getCategorySalesDetail);
+router.get('/reports/:outletId/category-sales/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), reportCache('order-category-sales-detail', 120), orderController.getCategorySalesDetail);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/payment-modes
  * @desc    Get payment mode report
  * @access  Private (manager, admin)
  */
-router.get('/reports/:outletId/payment-modes', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-payment-modes', 120), orderController.getPaymentModeReport);
+router.get('/reports/:outletId/payment-modes', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), reportCache('order-payment-modes', 120), orderController.getPaymentModeReport);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/payment-modes/detail
@@ -584,14 +584,14 @@ router.get('/reports/:outletId/payment-modes', authorize('super_admin', 'admin',
  * @query   startDate, endDate
  * @access  Private (manager, admin, cashier)
  */
-router.get('/reports/:outletId/payment-modes/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-payment-modes-detail', 120), orderController.getPaymentModeDetail);
+router.get('/reports/:outletId/payment-modes/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), reportCache('order-payment-modes-detail', 120), orderController.getPaymentModeDetail);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/tax
  * @desc    Get tax report
  * @access  Private (manager, admin)
  */
-router.get('/reports/:outletId/tax', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-tax', 120), orderController.getTaxReport);
+router.get('/reports/:outletId/tax', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), reportCache('order-tax', 120), orderController.getTaxReport);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/tax/detail
@@ -599,28 +599,28 @@ router.get('/reports/:outletId/tax', authorize('super_admin', 'admin', 'manager'
  * @query   startDate, endDate
  * @access  Private (manager, admin, cashier)
  */
-router.get('/reports/:outletId/tax/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-tax-detail', 120), orderController.getTaxDetail);
+router.get('/reports/:outletId/tax/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), reportCache('order-tax-detail', 120), orderController.getTaxDetail);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/hourly
  * @desc    Get hourly sales report
  * @access  Private (manager, admin)
  */
-router.get('/reports/:outletId/hourly', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-hourly', 120), orderController.getHourlySalesReport);
+router.get('/reports/:outletId/hourly', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), reportCache('order-hourly', 120), orderController.getHourlySalesReport);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/floor-section
  * @desc    Get floor/section sales report
  * @access  Private (manager, admin)
  */
-router.get('/reports/:outletId/floor-section', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-floor-section', 120), orderController.getFloorSectionReport);
+router.get('/reports/:outletId/floor-section', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), reportCache('order-floor-section', 120), orderController.getFloorSectionReport);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/counter
  * @desc    Get counter sales report (Kitchen vs Bar)
  * @access  Private (manager, admin)
  */
-router.get('/reports/:outletId/counter', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-counter', 120), orderController.getCounterSalesReport);
+router.get('/reports/:outletId/counter', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), reportCache('order-counter', 120), orderController.getCounterSalesReport);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/counter/detail
@@ -628,14 +628,14 @@ router.get('/reports/:outletId/counter', authorize('super_admin', 'admin', 'mana
  * @query   startDate, endDate, page, limit, search, station, status, orderType, captainName, floorName, tableNumber, sortBy, sortOrder
  * @access  Private (manager, admin, cashier)
  */
-router.get('/reports/:outletId/counter/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-counter-detail', 120), orderController.getCounterSalesDetail);
+router.get('/reports/:outletId/counter/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), reportCache('order-counter-detail', 120), orderController.getCounterSalesDetail);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/cancellations
  * @desc    Get cancellation report
  * @access  Private (manager, admin)
  */
-router.get('/reports/:outletId/cancellations', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-cancellations', 120), orderController.getCancellationReport);
+router.get('/reports/:outletId/cancellations', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), reportCache('order-cancellations', 120), orderController.getCancellationReport);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/cancellations/detail
@@ -643,7 +643,7 @@ router.get('/reports/:outletId/cancellations', authorize('super_admin', 'admin',
  * @query   startDate, endDate, page, limit, search, cancelType, cancelledByName, approvedByName, captainName, cashierName, orderType, floorName, tableNumber, sortBy, sortOrder
  * @access  Private (manager, admin, cashier)
  */
-router.get('/reports/:outletId/cancellations/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-cancellations-detail', 120), orderController.getCancellationDetail);
+router.get('/reports/:outletId/cancellations/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), reportCache('order-cancellations-detail', 120), orderController.getCancellationDetail);
 
 /**
  * @route   POST /api/v1/orders/reports/:outletId/aggregate
@@ -659,7 +659,7 @@ router.post('/reports/:outletId/aggregate', authorize('super_admin', 'admin'), r
  * @query   startDate - Filter from date (YYYY-MM-DD)
  * @query   endDate - Filter to date (YYYY-MM-DD)
  */
-router.get('/reports/:outletId/service-type-breakdown', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-service-type-breakdown', 120), orderController.getServiceTypeSalesBreakdown);
+router.get('/reports/:outletId/service-type-breakdown', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), reportCache('order-service-type-breakdown', 120), orderController.getServiceTypeSalesBreakdown);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/due
@@ -682,7 +682,7 @@ router.get('/reports/:outletId/due/export', authorize('super_admin', 'admin', 'm
  * @access  Private (admin, manager, cashier, captain)
  * @query   startDate, endDate, page, limit, search, ncType (order|item|all), ncReason, appliedByName, orderType, floorName, sortBy, sortOrder
  */
-router.get('/reports/:outletId/nc', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('order-nc', 120), orderController.getNCReport);
+router.get('/reports/:outletId/nc', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), reportCache('order-nc', 120), orderController.getNCReport);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/nc/export
@@ -708,21 +708,21 @@ router.get('/reports/:outletId/nc/export', authorize('super_admin', 'admin', 'ma
  * @query   sortBy - session_date | opening_time | closing_time | total_sales | total_orders | cash_variance
  * @query   sortOrder - ASC | DESC (default: DESC)
  */
-router.get('/shifts/:outletId/history', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('shift-history', 30), orderController.getShiftHistory);
+router.get('/shifts/:outletId/history', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), reportCache('shift-history', 30), orderController.getShiftHistory);
 
 /**
  * @route   GET /api/v1/orders/shifts/:shiftId/detail
  * @desc    Get detailed shift information with transactions, payments, staff activity
  * @access  Private (cashier, manager, admin)
  */
-router.get('/shifts/:shiftId/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('shift-detail', 30), orderController.getShiftDetail);
+router.get('/shifts/:shiftId/detail', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), reportCache('shift-detail', 30), orderController.getShiftDetail);
 
 /**
  * @route   GET /api/v1/orders/shifts/:shiftId/summary
  * @desc    Get single shift summary with shift-time-based calculations
  * @access  Private (cashier, manager, admin)
  */
-router.get('/shifts/:shiftId/summary', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('shift-summary', 30), orderController.getShiftSummaryById);
+router.get('/shifts/:shiftId/summary', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), reportCache('shift-summary', 30), orderController.getShiftSummaryById);
 
 /**
  * @route   GET /api/v1/orders/shifts/:outletId/outlet-summary
@@ -731,7 +731,7 @@ router.get('/shifts/:shiftId/summary', authorize('super_admin', 'admin', 'manage
  * @query   startDate - Filter from date (YYYY-MM-DD)
  * @query   endDate - Filter to date (YYYY-MM-DD)
  */
-router.get('/shifts/:outletId/outlet-summary', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), reportCache('shift-outlet-summary', 30), orderController.getShiftSummary);
+router.get('/shifts/:outletId/outlet-summary', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), reportCache('shift-outlet-summary', 30), orderController.getShiftSummary);
 
 /**
  * @route   GET /api/v1/orders/shifts/:outletId/history/export
@@ -739,14 +739,14 @@ router.get('/shifts/:outletId/outlet-summary', authorize('super_admin', 'admin',
  * @access  Private (cashier, manager, admin)
  * @query   startDate, endDate - Date range filters
  */
-router.get('/shifts/:outletId/history/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), orderController.exportShiftHistory);
+router.get('/shifts/:outletId/history/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), orderController.exportShiftHistory);
 
 /**
  * @route   GET /api/v1/orders/shifts/:shiftId/detail/export
  * @desc    Export shift detail as CSV
  * @access  Private (cashier, manager, admin)
  */
-router.get('/shifts/:shiftId/detail/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), orderController.exportShiftDetail);
+router.get('/shifts/:shiftId/detail/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), orderController.exportShiftDetail);
 
 // ========================
 // ADMIN ORDER MANAGEMENT
@@ -800,84 +800,84 @@ router.get('/admin/detail/:orderId', authorize('super_admin', 'admin', 'manager'
  * @desc    Export daily sales report as CSV
  * @access  Private (manager, admin, cashier)
  */
-router.get('/reports/:outletId/daily-sales/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), orderController.exportDailySales);
+router.get('/reports/:outletId/daily-sales/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), orderController.exportDailySales);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/daily-sales/detail/export
  * @desc    Export detailed daily sales as CSV
  * @access  Private (manager, admin, cashier)
  */
-router.get('/reports/:outletId/daily-sales/detail/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), orderController.exportDailySalesDetail);
+router.get('/reports/:outletId/daily-sales/detail/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), orderController.exportDailySalesDetail);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/item-sales/export
  * @desc    Export item sales report as CSV
  * @access  Private (manager, admin, cashier)
  */
-router.get('/reports/:outletId/item-sales/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), orderController.exportItemSales);
+router.get('/reports/:outletId/item-sales/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), orderController.exportItemSales);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/item-sales/detail/export
  * @desc    Export detailed item sales report as CSV
  * @access  Private (manager, admin, cashier)
  */
-router.get('/reports/:outletId/item-sales/detail/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), orderController.exportItemSalesDetail);
+router.get('/reports/:outletId/item-sales/detail/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), orderController.exportItemSalesDetail);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/category-sales/export
  * @desc    Export category sales report as CSV
  * @access  Private (manager, admin, cashier)
  */
-router.get('/reports/:outletId/category-sales/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), orderController.exportCategorySales);
+router.get('/reports/:outletId/category-sales/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), orderController.exportCategorySales);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/staff/export
  * @desc    Export staff performance report as CSV
  * @access  Private (manager, admin, cashier)
  */
-router.get('/reports/:outletId/staff/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), orderController.exportStaffReport);
+router.get('/reports/:outletId/staff/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), orderController.exportStaffReport);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/payment-modes/export
  * @desc    Export payment mode report as CSV
  * @access  Private (manager, admin, cashier)
  */
-router.get('/reports/:outletId/payment-modes/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), orderController.exportPaymentModes);
+router.get('/reports/:outletId/payment-modes/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), orderController.exportPaymentModes);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/tax/export
  * @desc    Export tax report as CSV
  * @access  Private (manager, admin, cashier)
  */
-router.get('/reports/:outletId/tax/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), orderController.exportTaxReport);
+router.get('/reports/:outletId/tax/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), orderController.exportTaxReport);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/service-type-breakdown/export
  * @desc    Export service type breakdown as CSV
  * @access  Private (manager, admin, cashier)
  */
-router.get('/reports/:outletId/service-type-breakdown/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), orderController.exportServiceTypeBreakdown);
+router.get('/reports/:outletId/service-type-breakdown/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), orderController.exportServiceTypeBreakdown);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/floor-section/export
  * @desc    Export floor/section sales report as CSV
  * @access  Private (manager, admin, cashier)
  */
-router.get('/reports/:outletId/floor-section/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), orderController.exportFloorSection);
+router.get('/reports/:outletId/floor-section/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), orderController.exportFloorSection);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/counter/export
  * @desc    Export counter sales report as CSV
  * @access  Private (manager, admin, cashier)
  */
-router.get('/reports/:outletId/counter/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), orderController.exportCounterSales);
+router.get('/reports/:outletId/counter/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), orderController.exportCounterSales);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/cancellations/export
  * @desc    Export cancellation report as CSV
  * @access  Private (manager, admin, cashier)
  */
-router.get('/reports/:outletId/cancellations/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'captain'), orderController.exportCancellations);
+router.get('/reports/:outletId/cancellations/export', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), orderController.exportCancellations);
 
 // ========================
 // NC (NO CHARGE) MANAGEMENT
@@ -890,7 +890,7 @@ const ncController = require('../controllers/nc.controller');
  * @desc    Get NC reasons for an outlet
  * @access  Private (admin, manager, cashier)
  */
-router.get('/:outletId/nc/reasons', authorize('super_admin', 'admin', 'manager', 'cashier'), reportCache('order-nc-reasons', 300), ncController.getNCReasons);
+router.get('/:outletId/nc/reasons', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), reportCache('order-nc-reasons', 300), ncController.getNCReasons);
 
 /**
  * @route   POST /api/v1/orders/:outletId/nc/reasons
@@ -911,28 +911,28 @@ router.put('/:outletId/nc/reasons/:reasonId', authorize('super_admin', 'admin', 
  * @desc    Mark entire order as NC
  * @access  Private (admin, manager, cashier)
  */
-router.post('/:orderId/nc', authorize('super_admin', 'admin', 'manager', 'cashier'), ncController.markOrderAsNC);
+router.post('/:orderId/nc', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), ncController.markOrderAsNC);
 
 /**
  * @route   DELETE /api/v1/orders/:orderId/nc
  * @desc    Remove NC from entire order
  * @access  Private (admin, manager)
  */
-router.delete('/:orderId/nc', authorize('super_admin', 'admin', 'manager', 'cashier'), ncController.removeOrderNC);
+router.delete('/:orderId/nc', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), ncController.removeOrderNC);
 
 /**
  * @route   GET /api/v1/orders/:orderId/nc/logs
  * @desc    Get NC logs for an order
  * @access  Private (admin, manager, cashier)
  */
-router.get('/:orderId/nc/logs', authorize('super_admin', 'admin', 'manager', 'cashier'), reportCache('order-nc-logs', 120), ncController.getNCLogs);
+router.get('/:orderId/nc/logs', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), reportCache('order-nc-logs', 120), ncController.getNCLogs);
 
 /**
  * @route   POST /api/v1/orders/:orderId/items/:orderItemId/nc
  * @desc    Mark an order item as NC
  * @access  Private (admin, manager, cashier)
  */
-router.post('/:orderId/items/:orderItemId/nc', authorize('super_admin', 'admin', 'manager', 'cashier'), ncController.markItemAsNC);
+router.post('/:orderId/items/:orderItemId/nc', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), ncController.markItemAsNC);
 
 /**
  * @route   DELETE /api/v1/orders/:orderId/items/:orderItemId/nc
@@ -947,7 +947,7 @@ router.delete('/:orderId/items/:orderItemId/nc', authorize('super_admin', 'admin
  * @access  Private (admin, manager, cashier)
  * @body    { items: [{ orderItemId, ncReasonId?, ncReason? }], ncReasonId?, ncReason?, notes? }
  */
-router.post('/:orderId/items/nc/bulk', authorize('super_admin', 'admin', 'manager', 'cashier'), ncController.markItemsAsNC);
+router.post('/:orderId/items/nc/bulk', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), ncController.markItemsAsNC);
 
 /**
  * @route   DELETE /api/v1/orders/:orderId/items/nc/bulk
@@ -955,7 +955,7 @@ router.post('/:orderId/items/nc/bulk', authorize('super_admin', 'admin', 'manage
  * @access  Private (admin, manager)
  * @body    { orderItemIds: [1, 2, 3], notes? }
  */
-router.delete('/:orderId/items/nc/bulk', authorize('super_admin', 'admin', 'manager', 'cashier'), ncController.removeItemsNC);
+router.delete('/:orderId/items/nc/bulk', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), ncController.removeItemsNC);
 
 /**
  * @route   GET /api/v1/orders/reports/:outletId/nc

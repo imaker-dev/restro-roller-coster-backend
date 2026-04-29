@@ -53,8 +53,33 @@ function formatInvoiceItem(item) {
   if (!item) return null;
   
   // Handle both snake_case (raw DB) and camelCase (formatted) item structures
-  const taxDetails = item.tax_details || item.taxDetails;
-  
+  const rawTaxDetails = item.tax_details || item.taxDetails;
+  let taxDetails = null;
+
+  if (rawTaxDetails) {
+    const parsed = typeof rawTaxDetails === 'string' ? JSON.parse(rawTaxDetails) : rawTaxDetails;
+    if (Array.isArray(parsed)) {
+      // Already correct format (POS orders / new self-orders)
+      taxDetails = parsed;
+    } else if (parsed && typeof parsed === 'object') {
+      // Legacy self-order format: { taxGroupId, taxGroupName, rate, amount, isInclusive }
+      // Normalize to array format that Flutter expects
+      const rate = parseFloat(parsed.rate) || 0;
+      const amount = parseFloat(parsed.amount) || 0;
+      if (rate > 0 || amount > 0) {
+        taxDetails = [{
+          componentId: parsed.taxGroupId || null,
+          componentName: parsed.taxGroupName || 'Tax',
+          componentCode: parsed.componentCode || 'TAX',
+          rate,
+          amount,
+        }];
+      } else {
+        taxDetails = [];
+      }
+    }
+  }
+
   return {
     id: item.id,
     orderItemId: item.order_item_id || item.orderItemId || item.id,
@@ -67,9 +92,7 @@ function formatInvoiceItem(item) {
     quantity: parseInt(item.quantity) || 0,
     unitPrice: parseFloat(item.unit_price || item.unitPrice) || 0,
     totalPrice: parseFloat(item.total_price || item.totalPrice) || 0,
-    taxDetails: taxDetails
-      ? (typeof taxDetails === 'string' ? JSON.parse(taxDetails) : taxDetails)
-      : null,
+    taxDetails,
     status: item.status,
     specialInstructions: item.special_instructions || item.specialInstructions || null,
     isNC: !!(item.is_nc || item.isNc || item.isNC),
@@ -191,6 +214,7 @@ function formatInvoice(invoice) {
     outletId: invoice.outlet_id,
     orderId: invoice.order_id,
     invoiceNumber: invoice.invoice_number,
+    tokenNumber: invoice.token_number || null,
     invoiceDate: invoice.invoice_date,
     invoiceTime: invoice.invoice_time,
     orderNumber: invoice.order_number || null,
@@ -423,6 +447,7 @@ const billingService = {
       orderId: invoice.orderId || order.id,
       invoiceId: invoice.id,
       invoiceNumber: invoice.invoiceNumber,
+      tokenNumber: invoice.tokenNumber || null,
       orderNumber: invoice.orderNumber || order.order_number || null,
       orderType: invoice.orderType || order.order_type || null,
       outletName: outletData.name || 'Restaurant',
@@ -549,6 +574,27 @@ const billingService = {
     const nextSeq = (result[0].max_seq || 0) + 1;
     const seq = String(nextSeq).padStart(6, '0');
     return `INV/${fyShort}/${seq}`;
+  },
+
+  // ========================
+  // TOKEN NUMBER GENERATION
+  // ========================
+
+  /**
+   * Generate daily sequential token number per outlet (1, 2, 3... resets every day).
+   * Must be called inside an active transaction (connection) so the FOR UPDATE lock
+   * prevents duplicate tokens under concurrent bill generation.
+   * Uses DATE(NOW()) SQL-side to avoid JS/IST timezone mismatch.
+   */
+  async generateTokenNumber(outletId, connection) {
+    const [result] = await connection.query(
+      `SELECT COALESCE(MAX(token_number), 0) + 1 AS next_token
+       FROM invoices
+       WHERE outlet_id = ? AND DATE(created_at) = DATE(NOW())
+       FOR UPDATE`,
+      [outletId]
+    );
+    return result[0].next_token || 1;
   },
 
   // ========================
@@ -759,6 +805,9 @@ const billingService = {
       let invoiceId;
       let invoiceNumber;
 
+      // Generate a new daily token number (SQL-side, inside transaction to prevent duplicates)
+      const tokenNumber = await this.generateTokenNumber(order.outlet_id, connection);
+
       if (cancelledInv[0]) {
         // Revive cancelled invoice: UPDATE existing row to preserve bill number
         invoiceId = cancelledInv[0].id;
@@ -766,6 +815,7 @@ const billingService = {
         await connection.query(
           `UPDATE invoices SET
             uuid = ?, invoice_date = ?, invoice_time = ?,
+            token_number = ?,
             customer_id = ?, customer_name = ?, customer_phone = ?, customer_email = ?,
             customer_gstin = ?, customer_address = ?, billing_address = ?,
             is_interstate = ?, customer_company_name = ?, customer_gst_state = ?, customer_gst_state_code = ?,
@@ -780,6 +830,7 @@ const billingService = {
           [
             uuidv4(),
             today.toISOString().slice(0, 10), today.toTimeString().slice(0, 8),
+            tokenNumber,
             customerId || order.customer_id,
             customerName || order.customer_name,
             customerPhone || order.customer_phone,
@@ -809,7 +860,7 @@ const billingService = {
         const uuid = uuidv4();
         const [result] = await connection.query(
           `INSERT INTO invoices (
-            uuid, outlet_id, order_id, invoice_number, invoice_date, invoice_time,
+            uuid, outlet_id, order_id, invoice_number, token_number, invoice_date, invoice_time,
             customer_id, customer_name, customer_phone, customer_email,
             customer_gstin, customer_address, billing_address,
             is_interstate, customer_company_name, customer_gst_state, customer_gst_state_code,
@@ -819,9 +870,9 @@ const billingService = {
             is_nc, nc_amount, nc_tax_amount, payable_amount,
             amount_in_words, payment_status, tax_breakup, hsn_summary,
             notes, terms_conditions, generated_by
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
           [
-            uuid, order.outlet_id, orderId, invoiceNumber,
+            uuid, order.outlet_id, orderId, invoiceNumber, tokenNumber,
             today.toISOString().slice(0, 10), today.toTimeString().slice(0, 8),
             customerId || order.customer_id,
             customerName || order.customer_name,
@@ -1514,7 +1565,7 @@ const billingService = {
     const offset = (page - 1) * limit;
 
     // Determine if user is a captain (not admin/manager/cashier/super_admin)
-    const privilegedRoles = ['admin', 'manager', 'super_admin', 'cashier'];
+    const privilegedRoles = ['master', 'admin', 'manager', 'super_admin', 'cashier'];
     const userRoles = user.roles || [];
     const isCaptain = !userRoles.some(r => privilegedRoles.includes(r));
 
@@ -1766,13 +1817,20 @@ const billingService = {
    */
   async getCaptainBills(captainId, outletId, filters = {}) {
     const pool = getPool();
-    const { search, sortBy = 'created_at', sortOrder = 'desc', status = 'pending' } = filters;
+    const { search, sortBy = 'created_at', sortOrder = 'desc', status = 'pending', viewAllFloorOrders = false } = filters;
     const page = Math.max(1, parseInt(filters.page) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(filters.limit) || 20));
     const offset = (page - 1) * limit;
 
-    let whereClause = `WHERE i.outlet_id = ? AND i.is_cancelled = 0 AND o.created_by = ?`;
-    const params = [outletId, captainId];
+    // Cashiers/pos_users with viewAllFloorOrders see all bills for their floors
+    // Captains see only their own bills
+    let whereClause = `WHERE i.outlet_id = ? AND i.is_cancelled = 0`;
+    const params = [outletId];
+    
+    if (!viewAllFloorOrders) {
+      whereClause += ` AND o.created_by = ?`;
+      params.push(captainId);
+    }
 
     // Status filter: pending (default), completed, partial/due, or all
     if (status === 'completed') {

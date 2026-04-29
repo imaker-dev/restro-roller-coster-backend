@@ -842,7 +842,7 @@ const orderController = {
       const { outletId } = req.params;
       const floorIds = await getUserFloorIds(req.user.userId, outletId);
       const userRoles = req.user.roles || [];
-      const isCashierOnly = userRoles.length > 0 && !userRoles.some(r => ['admin', 'super_admin', 'manager', 'owner'].includes(r));
+      const isCashierOnly = userRoles.length > 0 && !userRoles.some(r => ['master', 'admin', 'super_admin', 'manager', 'owner'].includes(r));
       const dashboard = await reportsService.getLiveDashboard(outletId, floorIds, {
         cashierId: isCashierOnly ? req.user.userId : null,
         isCashierOnly
@@ -860,7 +860,7 @@ const orderController = {
       const { startDate, endDate } = req.query;
       const floorIds = await getUserFloorIds(req.user.userId, outletId);
       const userRoles = req.user.roles || [];
-      const isCashierOnly = userRoles.length > 0 && !userRoles.some(r => ['admin', 'super_admin', 'manager', 'owner'].includes(r));
+      const isCashierOnly = userRoles.length > 0 && !userRoles.some(r => ['master', 'admin', 'super_admin', 'manager', 'owner'].includes(r));
       const report = await reportsService.getDailySalesReport(outletId, startDate, endDate, floorIds, {
         cashierId: isCashierOnly ? req.user.userId : null,
         isCashierOnly
@@ -881,7 +881,7 @@ const orderController = {
               sortBy, sortOrder } = req.query;
       const floorIds = await getUserFloorIds(req.user.userId, outletId);
       const userRoles = req.user.roles || [];
-      const isCashierOnly = userRoles.length > 0 && !userRoles.some(r => ['admin', 'super_admin', 'manager', 'owner'].includes(r));
+      const isCashierOnly = userRoles.length > 0 && !userRoles.some(r => ['master', 'admin', 'super_admin', 'manager', 'owner'].includes(r));
       const report = await reportsService.getDailySalesDetail(outletId, startDate, endDate, {
         page, limit, search,
         orderType, status, paymentStatus,
@@ -916,7 +916,7 @@ const orderController = {
       const { outletId } = req.params;
       const floorIds = await getUserFloorIds(req.user.userId, outletId);
       const userRoles = req.user.roles || [];
-      const isCashierOnly = userRoles.length > 0 && !userRoles.some(r => ['admin', 'super_admin', 'manager', 'owner'].includes(r));
+      const isCashierOnly = userRoles.length > 0 && !userRoles.some(r => ['master', 'admin', 'super_admin', 'manager', 'owner'].includes(r));
       const options = {
         page: req.query.page,
         limit: req.query.limit,
@@ -1211,6 +1211,11 @@ const orderController = {
     try {
       const { outletId } = req.params;
       const floorIds = await getUserFloorIds(req.user.userId, outletId);
+      
+      // Determine user role - cashiers/pos_users see all floor bills, captains see only their own
+      const isCashier = req.user.roles?.includes('cashier') || req.user.roles?.includes('pos_user');
+      const isCaptain = req.user.roles?.includes('captain') || req.user.roles?.includes('waiter');
+      
       const filters = {
         status: req.query.status,
         search: req.query.search,
@@ -1218,7 +1223,8 @@ const orderController = {
         limit: req.query.limit,
         sortBy: req.query.sortBy,
         sortOrder: req.query.sortOrder,
-        floorIds: floorIds.length > 0 ? floorIds : undefined
+        floorIds: floorIds.length > 0 ? floorIds : undefined,
+        viewAllFloorOrders: isCashier && !isCaptain
       };
       const result = await billingService.getCaptainBills(
         req.user.userId,
@@ -1241,9 +1247,9 @@ const orderController = {
       const { outletId } = req.params;
       const floorIds = await getUserFloorIds(req.user.userId, outletId);
       
-      // Determine user role - cashiers see all floor orders, captains see only their own
+      // Determine user role - cashiers/pos_users see all floor orders, captains see only their own
       // Note: req.user.roles is array of role strings like ['cashier', 'admin']
-      const isCashier = req.user.roles?.includes('cashier');
+      const isCashier = req.user.roles?.includes('cashier') || req.user.roles?.includes('pos_user');
       const isCaptain = req.user.roles?.includes('captain') || req.user.roles?.includes('waiter');
       
       const filters = {

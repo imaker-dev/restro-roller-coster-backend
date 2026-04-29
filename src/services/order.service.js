@@ -98,7 +98,7 @@ const orderService = {
       [userId]
     );
     // Captains and cashiers can modify any order (no ownership restriction)
-    const isPrivileged = userRoles.some(r => ['admin', 'manager', 'super_admin', 'cashier', 'captain'].includes(r.role_name));
+    const isPrivileged = userRoles.some(r => ['master', 'admin', 'manager', 'super_admin', 'cashier', 'captain'].includes(r.role_name));
     
     if (isPrivileged) return true;
     
@@ -159,7 +159,7 @@ const orderService = {
       throw new Error('Invalid modification password');
     }
 
-    const allowedRoles = ['cashier', 'manager', 'admin', 'super_admin'];
+    const allowedRoles = ['cashier', 'manager', 'admin', 'super_admin', 'master'];
     const hasRole = roles.some(r => allowedRoles.includes(r.slug));
     if (!hasRole) {
       throw new Error('Only cashier, manager or admin can modify a billed order');
@@ -275,7 +275,7 @@ const orderService = {
       tableInfo = tableResult[0][0] || null;
       existingSession = sessionResult[0][0] || null;
       const userRoles = roleResult[0];
-      isPrivileged = userRoles.some(r => ['admin', 'manager', 'super_admin', 'cashier'].includes(r.role_name));
+      isPrivileged = userRoles.some(r => ['master', 'admin', 'manager', 'super_admin', 'cashier'].includes(r.role_name));
 
       if (existingSession) {
         if (existingSession.order_id) {
@@ -476,7 +476,7 @@ const orderService = {
         ]);
         cachedUserRoles = userRoles;
         // Captains and cashiers can modify any order (no ownership restriction)
-        const isPrivileged = userRoles.some(r => ['admin', 'manager', 'super_admin', 'cashier', 'captain'].includes(r.role_name));
+        const isPrivileged = userRoles.some(r => ['master', 'admin', 'manager', 'super_admin', 'cashier', 'captain'].includes(r.role_name));
         
         // Convert to numbers for comparison (handle type mismatch)
         const sessionOwnerId = parseInt(sessionOwner[0]?.started_by, 10);
@@ -516,7 +516,7 @@ const orderService = {
         // ── OPEN ITEM FLOW ──────────────────────────
         if (isOpenItem) {
           // Role check: only cashier/manager/admin can add open items (pre-fetched)
-          const allowedOpenItemRoles = ['cashier', 'manager', 'admin', 'super_admin'];
+          const allowedOpenItemRoles = ['cashier', 'manager', 'admin', 'super_admin', 'master'];
           if (!creatorRolesCache || !creatorRolesCache.some(r => allowedOpenItemRoles.includes(r.role_name || r.slug))) {
             throw new Error('Only cashier, manager or admin can add open items');
           }
@@ -1475,7 +1475,7 @@ const orderService = {
 
     // Cashier-wise filtering: cashiers only see their own takeaway orders
     // Admins, managers, super_admins can see all orders
-    const privilegedRoles = ['super_admin', 'admin', 'manager'];
+    const privilegedRoles = ['master', 'super_admin', 'admin', 'manager'];
     const isPrivileged = userRoles.some(r => privilegedRoles.includes(r));
     if (cashierId && !isPrivileged) {
       whereClause += ` AND o.created_by = ?`;
@@ -2207,6 +2207,9 @@ const orderService = {
       try {
         const printerService = require('./printer.service');
         const kotService = require('./kot.service');
+        // Resolve user name for cancel slip
+        const [[cancelUser]] = await pool.query('SELECT name FROM users WHERE id = ?', [userId]);
+        const cancelledByName = cancelUser?.name || 'Staff';
         const cancelSlipData = {
           outletId: item.outlet_id,
           orderId: item.order_id,
@@ -2216,7 +2219,7 @@ const orderService = {
           station: item.kot_station || 'kitchen',
           time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
           reason: reason,
-          cancelledBy: userId,
+          cancelledBy: cancelledByName,
           items: [{
             itemName: item.item_name,
             variantName: item.variant_name,
@@ -2404,6 +2407,14 @@ const orderService = {
 
       await connection.commit();
 
+      // Mark self-order session as order-completed (triggers expiry buffer)
+      if (order.order_source === 'self_order' && order.self_order_session_id) {
+        const selfOrderService = require('./selfOrder.service');
+        selfOrderService.markSessionOrderCompleted(orderId).catch(err =>
+          logger.warn('Failed to mark self-order session completed:', err.message)
+        );
+      }
+
       const cancelledOrder = await this.getById(orderId);
       await this.emitOrderUpdate(order.outlet_id, cancelledOrder, 'order:cancelled');
 
@@ -2433,6 +2444,9 @@ const orderService = {
       if (activeKots.length > 0) {
         const kotService = require('./kot.service');
         const printerService = require('./printer.service');
+        // Resolve user name for cancel slips
+        const [[cancelUser]] = await pool.query('SELECT name FROM users WHERE id = ?', [userId]);
+        const cancelledByName = cancelUser?.name || 'Staff';
 
         for (const kot of activeKots) {
           // Fetch full KOT with items, addons, item_type for rich event data
@@ -2465,7 +2479,7 @@ const orderService = {
               station: kot.station || 'kitchen',
               time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
               reason: reason || 'Order cancelled',
-              cancelledBy: userId,
+              cancelledBy: cancelledByName,
               items: kotItems
             };
 
@@ -2725,7 +2739,7 @@ const orderService = {
     );
     // Cashier, manager, admin can view any order; captain/waiter can only view their own
     const canViewAnyOrder = userRoles.some(r => 
-      ['admin', 'manager', 'super_admin', 'cashier'].includes(r.role_name)
+      ['master', 'admin', 'manager', 'super_admin', 'cashier'].includes(r.role_name)
     );
 
     if (order.created_by !== captainId && !canViewAnyOrder) {
@@ -3098,7 +3112,7 @@ const orderService = {
       ]);
 
       // ── 2. Validate results ──
-      const allowedRoles = ['super_admin', 'admin', 'manager', 'cashier', 'captain'];
+      const allowedRoles = ['master', 'super_admin', 'admin', 'manager', 'cashier', 'captain'];
       if (!userRoles.some(r => allowedRoles.includes(r.role_name))) {
         throw new Error('Only Cashier, Captain, Manager, Admin, or Super Admin can transfer items');
       }

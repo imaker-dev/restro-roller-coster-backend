@@ -147,6 +147,12 @@ const initializeSocket = (server) => {
       logger.debug(`Socket ${socket.id} joined cashier:${outletId}`);
     });
 
+    // Join pos_user room (mirrors cashier — receives all cashier events)
+    socket.on('join:pos_user', (outletId) => {
+      socket.join(`cashier:${outletId}`);
+      logger.debug(`Socket ${socket.id} (pos_user) joined cashier:${outletId}`);
+    });
+
     // Join captain room (for order updates)
     socket.on('join:captain', (outletId) => {
       socket.join(`captain:${outletId}`);
@@ -309,6 +315,14 @@ const setupRedisPubSub = () => {
     io.to(`outlet:${data.outletId}`).emit('notification', data);
   });
 
+  // Self-order updates - notify outlet, captain, and cashier for approval/visibility
+  pubsub.subscribe('selforder:update', (data) => {
+    logger.info(`[RedisPubSub] selforder:update - outlet: ${data.outletId}, type: ${data.type}, order: ${data.orderNumber || 'N/A'}`);
+    io.to(`outlet:${data.outletId}`).emit('selforder:updated', data);
+    io.to(`captain:${data.outletId}`).emit('selforder:updated', data);
+    io.to(`cashier:${data.outletId}`).emit('selforder:updated', data);
+  });
+
   // Shift open - notify floor captains/staff on SAME floor + the cashier who opened it
   pubsub.subscribe('shift:open', (data) => {
     logger.info(`[RedisPubSub] shift:open - outlet: ${data.outletId}, floor: ${data.floorId}, cashier: ${data.cashierName}`);
@@ -414,6 +428,12 @@ const emitLocal = (channel, data) => {
 
       case 'print:new_job':
         io.to(`outlet:${data.outletId}`).emit('print:new_job', data);
+        break;
+
+      case 'selforder:update':
+        io.to(`outlet:${data.outletId}`).emit('selforder:updated', data);
+        io.to(`captain:${data.outletId}`).emit('selforder:updated', data);
+        io.to(`cashier:${data.outletId}`).emit('selforder:updated', data);
         break;
 
       case 'shift:open':

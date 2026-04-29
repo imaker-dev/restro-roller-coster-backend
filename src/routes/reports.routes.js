@@ -10,7 +10,7 @@ const { reportCache } = require('../middleware/reportCache');
 router.use(authenticate);
 
 // Roles that can access reports
-const REPORT_ROLES = ['super_admin', 'admin', 'manager', 'cashier'];
+const REPORT_ROLES = ['super_admin', 'admin', 'manager', 'cashier', 'pos_user'];
 
 /**
  * @route   GET /api/v1/reports/dashboard

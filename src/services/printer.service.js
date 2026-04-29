@@ -1347,7 +1347,13 @@ const printerService = {
     if (billData.outletPhone) lines.push('Ph: ' + billData.outletPhone);
     if (billData.outletGstin) lines.push('GSTIN: ' + billData.outletGstin);
 
-    // ── 2. BILL META ────────────────────────────
+    // ── 2. TOKEN NUMBER (prominent, centered, large) ────
+    if (billData.tokenNumber) {
+      lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HW + 'TOKEN: ' + billData.tokenNumber);
+      lines.push(cmd.NORMAL + cmd.BOLD_OFF + FONT_A + CHAR_SPACE_0 + LS_BODY);
+    }
+
+    // ── 3. BILL META ────────────────────────────
     lines.push(cmd.ALIGN_LEFT + dash);
     const orderLabel = billData.orderType === 'dine_in'
       ? 'Dine In: ' + (billData.tableNumber || '')

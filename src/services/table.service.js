@@ -1427,7 +1427,7 @@ const tableService = {
          WHERE ur.user_id = ? AND ur.is_active = 1`,
         [transferredBy]
       );
-      const isAdminOrManager = userRoles.some(r => ['admin', 'manager', 'super_admin'].includes(r.role_name));
+      const isAdminOrManager = userRoles.some(r => ['master', 'admin', 'manager', 'super_admin'].includes(r.role_name));
       if (!isAdminOrManager) {
         throw new Error('Only managers and admins can transfer tables');
       }
@@ -2098,7 +2098,7 @@ const tableService = {
          WHERE ur.user_id = ? AND ur.is_active = 1`,
         [userId]
       );
-      const allowedRoles = ['super_admin', 'admin', 'manager', 'cashier', 'captain'];
+      const allowedRoles = ['master', 'super_admin', 'admin', 'manager', 'cashier', 'captain'];
       const hasPermission = userRoles.some(r => allowedRoles.includes(r.role_name));
       if (!hasPermission) {
         throw new Error('Only Cashier, Captain, Manager, Admin, or Super Admin can transfer tables');
