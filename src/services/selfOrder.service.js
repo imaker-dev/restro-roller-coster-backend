@@ -210,8 +210,15 @@ const selfOrderService = {
         [outletId, tableId]
       ),
       pool.query(
-        `SELECT id FROM day_sessions WHERE outlet_id = ? AND status = 'open' LIMIT 1`,
-        [outletId]
+        `SELECT ds.id FROM day_sessions ds
+         INNER JOIN tables t ON t.id = ?
+         WHERE ds.outlet_id = ? AND ds.status = 'open'
+           AND (
+             (t.floor_id IS NOT NULL AND ds.floor_id = t.floor_id)
+             OR t.floor_id IS NULL
+           )
+         LIMIT 1`,
+        [tableId, outletId]
       ),
       pool.query(
         `SELECT o.id, o.order_number, o.order_source, o.self_order_session_id, o.status
@@ -440,10 +447,12 @@ const selfOrderService = {
 
     const settings = await this.getSettings(outletId);
 
-    // Check if outlet is still open (shift active)
+    // Check floor-specific shift (floor_id = null tables fall back to any open shift)
+    const floorId = session.floorId || null;
     const [[activeShift]] = await pool.query(
-      `SELECT id FROM day_sessions WHERE outlet_id = ? AND status = 'open' LIMIT 1`,
-      [outletId]
+      `SELECT id FROM day_sessions WHERE outlet_id = ? AND status = 'open'
+       AND (? IS NULL OR floor_id = ?) LIMIT 1`,
+      [outletId, floorId, floorId]
     );
     if (!activeShift) throw new Error('Restaurant is currently closed. Orders cannot be placed at this time.');
 
@@ -689,6 +698,15 @@ const selfOrderService = {
   async _addItemsToExistingOrder(session, { specialInstructions, items }, settings) {
     const pool = getPool();
     const orderId = session.orderId;
+
+    // Check floor-specific shift before allowing item additions
+    const floorId = session.floorId || null;
+    const [[activeShift]] = await pool.query(
+      `SELECT id FROM day_sessions WHERE outlet_id = ? AND status = 'open'
+       AND (? IS NULL OR floor_id = ?) LIMIT 1`,
+      [session.outletId, floorId, floorId]
+    );
+    if (!activeShift) throw new Error('Restaurant is currently closed. Orders cannot be placed at this time.');
 
     // Verify order is still modifiable
     const [[order]] = await pool.query(
