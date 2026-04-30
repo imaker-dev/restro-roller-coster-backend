@@ -41,28 +41,19 @@ const verifySelfOrderSession = async (req, res, next) => {
 
     const pool = getPool();
 
-    // Smart expiry: expire sessions based on rules (idle timeout, completion buffer)
-    // Rule 1: Sessions without order that exceeded idle timeout (default 10 min)
-    await pool.query(
+    // Fire-and-forget expiry cleanup (idle + completion buffer) — SELECT below re-checks inline
+    pool.query(
       `UPDATE self_order_sessions s
        SET s.status = 'expired', s.updated_at = NOW()
        WHERE s.token = ? AND s.status IN ('active', 'ordering')
-         AND s.order_id IS NULL
-         AND s.created_at < NOW() - INTERVAL COALESCE(s.idle_timeout_minutes, 10) MINUTE`,
+         AND (
+           (s.order_id IS NULL AND s.created_at < NOW() - INTERVAL COALESCE(s.idle_timeout_minutes, 10) MINUTE)
+           OR (s.order_completed_at IS NOT NULL AND s.order_completed_at < NOW() - INTERVAL COALESCE(s.completion_buffer_minutes, 1) MINUTE)
+         )`,
       [token]
-    );
+    ).catch(() => {});
 
-    // Rule 3: Sessions with completed orders that exceeded buffer (default 1 min)
-    await pool.query(
-      `UPDATE self_order_sessions s
-       SET s.status = 'expired', s.updated_at = NOW()
-       WHERE s.token = ? AND s.status IN ('active', 'ordering')
-         AND s.order_completed_at IS NOT NULL
-         AND s.order_completed_at < NOW() - INTERVAL COALESCE(s.completion_buffer_minutes, 1) MINUTE`,
-      [token]
-    );
-
-    // Fetch session with order status for smart validation
+    // Fetch session — inline expiry conditions so we never serve an expired session
     const [sessions] = await pool.query(
       `SELECT s.*, t.table_number, t.name as table_name, t.floor_id,
               f.name as floor_name, ou.name as outlet_name, o.status as order_status
@@ -72,6 +63,9 @@ const verifySelfOrderSession = async (req, res, next) => {
        LEFT JOIN floors f ON t.floor_id = f.id
        LEFT JOIN orders o ON s.order_id = o.id
        WHERE s.token = ? AND s.status IN ('active', 'ordering')
+         AND s.expires_at > NOW()
+         AND NOT (s.order_id IS NULL AND s.created_at < NOW() - INTERVAL COALESCE(s.idle_timeout_minutes, 10) MINUTE)
+         AND NOT (s.order_completed_at IS NOT NULL AND s.order_completed_at < NOW() - INTERVAL COALESCE(s.completion_buffer_minutes, 1) MINUTE)
        LIMIT 1`,
       [token]
     );

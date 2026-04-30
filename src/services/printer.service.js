@@ -14,6 +14,7 @@ const fs = require('fs');
 const path = require('path');
 const EventEmitter = require('events');
 const { loadOutletLogo } = require('../utils/escpos-image');
+const { getSocketIO } = require('../config/socket');
 
 // In-memory event emitter for long-polling bridge notification.
 // When a print job is created, we emit so waiting bridgePoll requests respond instantly.
@@ -174,6 +175,7 @@ const printerService = {
     const stationId = data.stationId || data.station_id || null;
     const ipAddress = data.ipAddress || data.ip_address || null;
     const connectionType = data.connectionType || data.connection_type || 'network';
+    const deviceId = data.deviceId || data.device_id || null; // Mobile POS device identifier
     const paperWidth = data.paperWidth || data.paper_width || '80mm';
     const charactersPerLine = data.charactersPerLine || data.characters_per_line || 48;
     const supportsCashDrawer = data.supportsCashDrawer || data.supports_cash_drawer || false;
@@ -209,13 +211,13 @@ const printerService = {
         `INSERT INTO printers (
           uuid, outlet_id, name, code, printer_type, station,
           station_id, ip_address, port,
-          connection_type, paper_width, characters_per_line,
+          connection_type, device_id, paper_width, characters_per_line,
           supports_cash_drawer, supports_cutter, supports_logo
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           uuid, outletId, data.name, code, printerType,
           stationValue, stationId,
-          ipAddress, data.port || 9100, connectionType,
+          ipAddress, data.port || 9100, connectionType, deviceId,
           paperWidth, charactersPerLine,
           supportsCashDrawer, supportsCutter,
           supportsLogo
@@ -481,9 +483,9 @@ const printerService = {
     const params = [];
 
     const fields = ['name', 'code', 'printer_type', 'station', 'station_id',
-                    'ip_address', 'port', 'connection_type', 'paper_width',
-                    'characters_per_line', 'supports_cash_drawer', 'supports_cutter',
-                    'supports_logo', 'is_active'];
+                    'ip_address', 'port', 'connection_type', 'device_id',
+                    'paper_width', 'characters_per_line', 'supports_cash_drawer',
+                    'supports_cutter', 'supports_logo', 'is_active'];
     
     for (const field of fields) {
       const camelField = field.replace(/_([a-z])/g, (g) => g[1].toUpperCase());
@@ -1292,15 +1294,29 @@ const printerService = {
 
   async printCancelSlip(cancelData, userId) {
     const content = this.formatCancelSlipContent(cancelData);
-    // Use station name as-is (dynamic - matches kitchen_stations.station_type)
     const station = cancelData.station || 'kitchen';
 
+    // ── Mobile POS intercept ────────────────────────────────────────────────
+    const mposWrapped = this.wrapWithEscPos(content, { beep: true, mobilePOS: true });
+    const mposResult = await this.sendToMobilePOS(
+      { id: null, name: 'MobilePOS', outlet_id: cancelData.outletId, device_id: null, station },
+      mposWrapped,
+      { jobType: 'cancel_slip', ref: cancelData.orderNumber, outletId: cancelData.outletId, userId }
+    );
+    if (mposResult) {
+      logger.info(`printCancelSlip: intercepted by Mobile POS (${mposResult.mode}) ref=${cancelData.orderNumber}`);
+      return mposResult;
+    }
+    // ───────────────────────────────────────────────────────────────────────
+
+    // Bridge fallback — regular wrapping for non-Mobile-POS printers
+    const wrappedContent = this.wrapWithEscPos(content, { beep: true });
     return this.createPrintJob({
       outletId: cancelData.outletId,
       jobType: 'cancel_slip',
       station,
       orderId: cancelData.orderId,
-      content: this.wrapWithEscPos(content, { beep: true }),
+      content: wrappedContent,
       contentType: 'escpos',
       referenceNumber: cancelData.orderNumber,
       tableNumber: cancelData.tableNumber,
@@ -1510,6 +1526,190 @@ const printerService = {
     return lines.join('\n');
   },
 
+  formatBillContentForMobilePOS(billData) {
+    // Identical to formatBillContent with 3 Mobile POS tweaks:
+    //   1. LS_BODY = 30-dot (removes extra line gaps)
+    //   2. No extra reset line after TOKEN (removes gap after token)
+    //   3. GRAND TOTAL on one bold line (not two double-HW lines)
+    const lines = [];
+    const w = 48;
+    const dash = '-'.repeat(w);
+    const cmd = this.getEscPosCommands();
+    const FONT_A = '\x1B\x4D\x00';
+    const CHAR_SPACE_0 = '\x1B\x20\x00';
+    const LS_BODY = '\x1B\x33\x1E'; // [MPOS tweak 1] 30-dot — compact, no extra gaps
+
+    // ── 1. HEADER ───────────────────────────────
+    if (billData.isDuplicate) {
+      lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + '*** DUPLICATE ***');
+      if (billData.duplicateNumber) lines.push('Copy #' + billData.duplicateNumber);
+      lines.push(cmd.BOLD_OFF);
+    }
+
+    lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HEIGHT + (billData.outletName || 'Restaurant') + cmd.NORMAL + cmd.BOLD_OFF + FONT_A + CHAR_SPACE_0 + LS_BODY);
+    if (billData.outletAddress) lines.push(billData.outletAddress);
+    if (billData.outletPhone) lines.push('Ph: ' + billData.outletPhone);
+    if (billData.outletGstin) lines.push('GSTIN: ' + billData.outletGstin);
+
+    // ── 2. TOKEN NUMBER ─────────────────────────
+    if (billData.tokenNumber) {
+      // [MPOS tweak 2] reset appended inline — no separate line entry, avoids blank line after token
+      lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HW + 'TOKEN: ' + billData.tokenNumber + cmd.NORMAL + cmd.BOLD_OFF + FONT_A + CHAR_SPACE_0 + LS_BODY);
+    }
+
+    // ── 3. BILL META ────────────────────────────
+    lines.push(cmd.ALIGN_LEFT + dash);
+    const orderLabel = billData.orderType === 'dine_in'
+      ? 'Dine In: ' + (billData.tableNumber || '')
+      : (billData.orderType === 'takeaway' ? 'Takeaway' : (billData.orderType || ''));
+    lines.push(cmd.BOLD_ON + this.padBetween(
+      billData.date + ' ' + (billData.time || ''),
+      orderLabel,
+      w
+    ) + cmd.BOLD_OFF);
+    lines.push('Bill: ' + (billData.invoiceNumber || ''));
+    lines.push('Cashier: ' + (billData.cashierName || 'Staff'));
+
+    // ── 4. CUSTOMER (strict 2-column) ───────────
+    lines.push(dash);
+    const custName = billData.customerName || 'Walk-in';
+    const custPhone = billData.customerPhone || '';
+    const company = billData.customerCompanyName || '';
+    const gstin = billData.customerGstin || '';
+    const state = billData.customerGstState
+      ? billData.customerGstState + (billData.customerGstStateCode ? ' (' + billData.customerGstStateCode + ')' : '')
+      : '';
+
+    if (company || gstin) {
+      lines.push(this.padBetween('Name: ' + custName, 'Co: ' + (company || ''), w));
+      if (custPhone || gstin) {
+        lines.push(this.padBetween(
+          custPhone ? 'Ph: ' + custPhone : '',
+          gstin ? 'GSTIN: ' + gstin : '',
+          w
+        ));
+      }
+      if (billData.isInterstate || state) {
+        lines.push(cmd.BOLD_ON + this.padBetween(
+          billData.isInterstate ? '** INTERSTATE **' : '',
+          state ? 'State: ' + state : '',
+          w
+        ) + cmd.BOLD_OFF);
+      }
+    } else {
+      if (custPhone) {
+        lines.push(this.padBetween('Name: ' + custName, 'Ph: ' + custPhone, w));
+      } else {
+        lines.push('Name: ' + custName);
+      }
+    }
+
+    // ── 5. ITEM TABLE (full width fixed grid) ───
+    lines.push(dash);
+    const cN = 24, cQ = 5, cP = 9, cA = 10;
+    lines.push(cmd.BOLD_ON +
+      'ITEM'.padEnd(cN) +
+      this.rAlign('QTY', cQ) +
+      this.rAlign('RATE', cP) +
+      this.rAlign('AMT', cA) +
+      cmd.BOLD_OFF
+    );
+    lines.push(dash);
+
+    let totalQty = 0;
+    for (const item of billData.items || []) {
+      const qty = parseInt(item.quantity) || 0;
+      totalQty += qty;
+      const price = parseFloat(item.unitPrice).toFixed(2);
+      const amount = parseFloat(item.totalPrice).toFixed(2);
+      const cols =
+        this.rAlign(qty.toString(), cQ) +
+        this.rAlign(price, cP) +
+        this.rAlign(amount, cA);
+      let name = item.itemName || '';
+      if (item.variantName) name += ' (' + item.variantName + ')';
+      if (item.taxRate && item.taxRate >= 18) name += '*';
+      if (item.isNC) name += ' [NC]';
+
+      if (name.length <= cN) {
+        lines.push(name.padEnd(cN) + cols);
+      } else {
+        const wrapped = this.wrapText(name, cN);
+        for (let i = 0; i < wrapped.length - 1; i++) lines.push(wrapped[i]);
+        lines.push((wrapped[wrapped.length - 1] || '').padEnd(cN) + cols);
+      }
+    }
+    lines.push(dash);
+
+    // ── 6. SUMMARY (right-aligned values) ───────
+    lines.push(cmd.BOLD_ON + this.padBetween('Total Qty: ' + totalQty, '', w) + cmd.BOLD_OFF);
+    lines.push(this.padBetween('Subtotal:', billData.subtotal, w));
+
+    for (const tax of billData.taxes || []) {
+      const baseName = (tax.name || 'Tax').replace(/\s*[\d.]+%?/g, '').trim().toUpperCase();
+      lines.push(this.padBetween(baseName + ' @' + tax.rate + '%:', tax.amount, w));
+    }
+
+    if (billData.serviceCharge) {
+      lines.push(this.padBetween('Service Charge:', billData.serviceCharge, w));
+    }
+
+    if (billData.discounts && billData.discounts.length > 0) {
+      for (const disc of billData.discounts) {
+        const discAmt = parseFloat(disc.amount).toFixed(2);
+        let label = 'Discount';
+        if (disc.type === 'percentage') label += ' (' + disc.value + '%)';
+        else if (disc.value > 0) label += ' (Flat Rs.' + parseFloat(disc.value).toFixed(0) + ')';
+        lines.push(this.padBetween(label + ':', '-' + discAmt, w));
+      }
+    } else if (billData.discount) {
+      lines.push(this.padBetween('Discount:', '-' + billData.discount, w));
+    }
+
+    if (billData.roundOff && parseFloat(billData.roundOff) !== 0) {
+      lines.push(this.padBetween('Round Off:', billData.roundOff, w));
+    }
+
+    if (billData.ncAmount && parseFloat(billData.ncAmount) > 0) {
+      lines.push(cmd.BOLD_ON + this.padBetween('NO CHARGE (NC):', '-' + parseFloat(billData.ncAmount).toFixed(2), w) + cmd.BOLD_OFF);
+    }
+
+    // ── 7. GRAND TOTAL — [MPOS tweak 3] single bold line, no double-HW ──
+    const eqDash = '='.repeat(w);
+    lines.push(eqDash);
+    lines.push(cmd.BOLD_ON + this.padBetween('GRAND TOTAL:', 'Rs.' + billData.grandTotal, w) + cmd.BOLD_OFF);
+    lines.push(eqDash);
+
+    // ── 8. PAYMENT (full width) ─────────────────
+    if (billData.dueAmount && parseFloat(billData.dueAmount) > 0) {
+      lines.push(this.padBetween('PAID:', 'Rs.' + parseFloat(billData.paidAmount || 0).toFixed(2), w));
+      lines.push(this.padBetween('DUE:', 'Rs.' + parseFloat(billData.dueAmount).toFixed(2), w));
+      lines.push(dash);
+    }
+
+    if (billData.paymentMode) {
+      if (billData.paymentMode === 'split' && billData.splitBreakdown && billData.splitBreakdown.length > 0) {
+        lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + 'SPLIT PAYMENT' + cmd.BOLD_OFF);
+        lines.push(cmd.ALIGN_LEFT);
+        for (const sp of billData.splitBreakdown) {
+          lines.push(this.padBetween(
+            (sp.paymentMode || '').toUpperCase(),
+            'Rs.' + parseFloat(sp.amount || 0).toFixed(2),
+            w
+          ));
+        }
+        lines.push(dash);
+      } else {
+        lines.push(this.padBetween('Payment:', billData.paymentMode.toUpperCase(), w));
+      }
+    }
+
+    // ── 9. FOOTER ───────────────────────────────
+    lines.push(cmd.ALIGN_CENTER + 'THANK YOU! VISIT AGAIN');
+
+    return lines.join('\n');
+  },
+
   centerText(text, width) {
     const padding = Math.max(0, Math.floor((width - text.length) / 2));
     return ' '.repeat(padding) + text;
@@ -1559,7 +1759,7 @@ const printerService = {
       DOUBLE_HEIGHT: '\x1B\x21\x10', // Double height
       DOUBLE_HW: '\x1B\x21\x30',      // Double height + double width (4x size)
       NORMAL: '\x1B\x21\x00',        // Normal text
-      FEED_LINES: '\x1B\x64\x05',    // Feed 8 lines
+      FEED_LINES: '\x1B\x64\x05',    // Feed 5 lines
       CUT: '\x1D\x56\x00',           // Full cut
       PARTIAL_CUT: '\x1D\x56\x01',   // Partial cut
       OPEN_DRAWER: '\x1B\x70\x00\x19\xFA', // Open cash drawer
@@ -1567,13 +1767,21 @@ const printerService = {
     };
   },
 
+  getMobilePosCommands() {
+    return {
+      ...this.getEscPosCommands(),
+      FEED_LINES: '\x1B\x64\x03',    // 3 lines — minimal feed before cut for Mobile POS
+      CUT: '\x1D\x56\x42\x00',       // Partial cut with feed — Sunmi honours this
+      PARTIAL_CUT: '\x1D\x56\x42\x00',
+    };
+  },
+
   wrapWithEscPos(content, options = {}) {
-    const cmd = this.getEscPosCommands();
+    // mobilePOS option: uses Sunmi-safe commands (minimal feed, correct cut byte)
+    const cmd = options.mobilePOS ? this.getMobilePosCommands() : this.getEscPosCommands();
     const parts = [];
     
     parts.push(Buffer.from(cmd.INIT, 'binary'));
-    // Set tight line spacing immediately after init to reduce top gap
-    parts.push(Buffer.from('\x1B\x33\x00', 'binary')); // Zero line spacing before logo
 
     if (options.beep) {
       parts.push(Buffer.from(cmd.BEEP, 'binary'));
@@ -1581,15 +1789,14 @@ const printerService = {
 
     // Add logo if provided (must be ESC/POS bitmap Buffer)
     if (options.logo && Buffer.isBuffer(options.logo)) {
+      parts.push(Buffer.from('\x1B\x33\x00', 'binary')); // Zero spacing — logo rows must be contiguous
       parts.push(Buffer.from('\x1B\x61\x01', 'binary')); // Center align for logo
       parts.push(options.logo);
-      // No extra feed after logo — text follows immediately
+      parts.push(Buffer.from('\x1B\x32', 'binary')); // Reset to default spacing after logo
     }
 
     // Add text content
     parts.push(Buffer.from(content, 'binary'));
-    // Reset to default line spacing before feed — tight spacing makes feed too short for cutter offset
-    parts.push(Buffer.from('\x1B\x32', 'binary'));
     parts.push(Buffer.from(cmd.FEED_LINES, 'binary'));
 
     if (options.cut !== false) {
@@ -1610,8 +1817,29 @@ const printerService = {
   async printKot(kotData, userId) {
     const content = this.formatKotContent(kotData);
     const station = kotData.station || 'kitchen';
-    const wrappedContent = this.wrapWithEscPos(content, { beep: true });
     const jobType = station === 'bar' || station === 'main_bar' ? 'bot' : 'kot';
+
+    // ── Mobile POS intercept ────────────────────────────────────────────────
+    // Uses mobilePOS:true wrapping — Sunmi-safe cut + minimal feed.
+    // Priority: userId room → device room → station room → null (→ normal printers)
+    // Works for:
+    //   - Staff on Mobile POS (userId online): routes to their device directly
+    //   - Self-order auto-KOT (system userId, no socket): falls to station room →
+    //     kitchen staff who joined with { station: 'kitchen' } receives the print
+    const mposWrapped = this.wrapWithEscPos(content, { beep: true, mobilePOS: true });
+    const mposResult = await this.sendToMobilePOS(
+      { id: null, name: 'MobilePOS', outlet_id: kotData.outletId, device_id: null, station },
+      mposWrapped,
+      { jobType, ref: kotData.kotNumber, outletId: kotData.outletId, userId }
+    );
+    if (mposResult) {
+      logger.info(`printKot: intercepted by Mobile POS (${mposResult.mode}) ref=${kotData.kotNumber}`);
+      return mposResult;
+    }
+    // ───────────────────────────────────────────────────────────────────────
+
+    // Regular printers — use standard wrapping (full cut, 5-line feed)
+    const wrappedContent = this.wrapWithEscPos(content, { beep: true });
 
     // Find ALL printers for this station (multi-printer support)
     const printers = await this.getAllPrintersForStation(
@@ -1638,11 +1866,40 @@ const printerService = {
       });
     }
 
-    // Step 1: Try direct TCP in PARALLEL for all printers with healthy IPs
+    // Step 1: Mobile POS printers — emit via Socket.IO directly to device
+    // Falls back to bridge if device is offline. Non-blocking per printer.
+    const mposPrinters = printers.filter(p => p.connection_type === 'mobile_pos');
+    const regularPrinters = printers.filter(p => p.connection_type !== 'mobile_pos');
+    const results = [];
+
+    for (const printer of mposPrinters) {
+      const mposResult = await this.sendToMobilePOS(printer, wrappedContent, {
+        jobType, ref: kotData.kotNumber, outletId: kotData.outletId
+      });
+      if (mposResult) {
+        results.push(mposResult);
+        continue;
+      }
+      // Device offline — fall back to bridge job
+      try {
+        const bridgeResult = await this.createPrintJob({
+          outletId: kotData.outletId, printerId: printer.id, jobType, station,
+          stationId: kotData.stationId || null, isCounter: kotData.isCounter || false,
+          kotId: kotData.kotId, orderId: kotData.orderId, content: wrappedContent,
+          contentType: 'escpos', referenceNumber: kotData.kotNumber,
+          tableNumber: kotData.tableNumber, priority: 10, createdBy: userId
+        });
+        results.push({ ...bridgeResult, printerId: printer.id, method: 'bridge' });
+      } catch (err) {
+        logger.error(`printKot: MPOS bridge fallback failed for printer ${printer.id} (${printer.name}):`, err.message);
+      }
+    }
+
+    // Step 2: Try direct TCP in PARALLEL for regular printers with healthy IPs
     // Only when server is on same network as printers (DIRECT_PRINT_ENABLED=true)
     const directResults = new Map(); // printerId → true/false
     const directCandidates = DIRECT_PRINT_ENABLED
-      ? printers.filter(p => p.ip_address && isDirectTcpHealthy(p.ip_address, p.port))
+      ? regularPrinters.filter(p => p.ip_address && isDirectTcpHealthy(p.ip_address, p.port))
       : [];
 
     if (directCandidates.length > 0) {
@@ -1661,9 +1918,8 @@ const printerService = {
       await Promise.all(directAttempts);
     }
 
-    // Step 2: Create bridge jobs for printers that didn't print directly
-    const results = [];
-    for (const printer of printers) {
+    // Step 3: Create bridge jobs for regular printers that didn't print directly
+    for (const printer of regularPrinters) {
       if (directResults.get(printer.id) === true) {
         results.push({ printerId: printer.id, method: 'direct' });
         continue;
@@ -1692,18 +1948,17 @@ const printerService = {
       }
     }
 
+    const mposCount = results.filter(r => r.method === 'mobile_pos').length;
     const directCount = results.filter(r => r.method === 'direct').length;
     const bridgeCount = results.filter(r => r.method === 'bridge').length;
-    if (printers.length > 1 || bridgeCount > 0) {
-      logger.info(`printKot: ${kotData.kotNumber} → ${results.length} prints (${directCount} direct, ${bridgeCount} bridge) for ${printers.length} printers`);
+    if (printers.length > 1 || bridgeCount > 0 || mposCount > 0) {
+      logger.info(`printKot: ${kotData.kotNumber} → ${results.length} prints (${mposCount} mpos, ${directCount} direct, ${bridgeCount} bridge)`);
     }
     return results[0] || null;
   },
 
   async printBill(billData, userId, resolvedPrinter = null) {
-    const content = this.formatBillContent(billData);
-    
-    // Load logo if outlet has logo_url
+    // Load logo once — shared by both Mobile POS and regular printers
     let logo = null;
     const logoSource = resolveLogoSource(billData.outletLogoUrl);
     if (logoSource) {
@@ -1716,8 +1971,43 @@ const printerService = {
 
     const printerId = resolvedPrinter?.id || null;
     const station = resolvedPrinter?.station || 'bill';
+    logger.info(`[BILL-PRINT] printBill: resolvedPrinter=${resolvedPrinter ? `id=${resolvedPrinter.id} name=${resolvedPrinter.name} type=${resolvedPrinter.connection_type}` : 'NULL'}, printerId=${printerId}, station=${station}`);
+
+    // ── Mobile POS intercept ─────────────────────────────────────────────────
+    // Uses Mobile POS-specific formatter (32-char, compact) + mobilePOS:true wrap.
+    // Grand Total on one line, no extra Token space, minimal feed then cut.
+    const mposContent = this.formatBillContentForMobilePOS(billData);
+    const mposWrapped = this.wrapWithEscPos(mposContent, { openDrawer: billData.openDrawer, mobilePOS: true, logo });
+    if (userId) {
+      const mposResult = await this.sendToMobilePOS(
+        { id: printerId, name: 'MobilePOS', outlet_id: billData.outletId, device_id: null, station },
+        mposWrapped,
+        { jobType: billData.isDuplicate ? 'duplicate_bill' : 'bill', ref: billData.invoiceNumber, outletId: billData.outletId, userId }
+      );
+      if (mposResult) {
+        logger.info(`[BILL-PRINT] Bill ${billData.invoiceNumber || 'N/A'} intercepted by Mobile POS for user ${userId}`);
+        return mposResult;
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Regular printers (IP/bridge) — use full 80mm formatter + standard wrapping
+    const content = this.formatBillContent(billData);
     const wrappedContent = this.wrapWithEscPos(content, { openDrawer: billData.openDrawer, logo });
-    logger.info(`[BILL-PRINT] printBill: resolvedPrinter=${resolvedPrinter ? `id=${resolvedPrinter.id} name=${resolvedPrinter.name} ip=${resolvedPrinter.ip_address}` : 'NULL'}, using printerId=${printerId}, station=${station}`);
+
+    // Mobile POS printer record: emit ESC/POS via Socket.IO — fallback to bridge if offline
+    if (resolvedPrinter?.connection_type === 'mobile_pos') {
+      const mposResult = await this.sendToMobilePOS(resolvedPrinter, mposWrapped, {
+        jobType: billData.isDuplicate ? 'duplicate_bill' : 'bill',
+        ref: billData.invoiceNumber,
+        outletId: billData.outletId
+      });
+      if (mposResult) {
+        logger.info(`[BILL-PRINT] Bill ${billData.invoiceNumber || 'N/A'} sent to Mobile POS device "${resolvedPrinter.device_id}"`);
+        return mposResult;
+      }
+      logger.warn(`[BILL-PRINT] Mobile POS device offline for bill ${billData.invoiceNumber}, falling back to bridge`);
+    }
 
     // Try direct TCP first if enabled and printer has IP configured and is healthy
     // DIRECT_PRINT_ENABLED must be true (server on same network as printers)
@@ -1847,6 +2137,110 @@ const printerService = {
         logger.info(`Disconnected from printer ${ipAddress}:${port}`);
       });
     });
+  },
+
+  // ========================
+  // MOBILE POS PRINTING
+  // ========================
+
+  /**
+   * Returns true if the given user has an active Mobile POS socket connected.
+   * Used by printKot/printBill to intercept prints before normal printer routing.
+   * No printer record needed — just a live socket from the user's device.
+   */
+  async isUserOnMobilePOS(outletId, userId) {
+    if (!userId || !outletId) return false;
+    const io = getSocketIO();
+    if (!io) return false;
+    const room = `mpos:${outletId}:user:${userId}`;
+    const sockets = await io.in(room).allSockets();
+    return sockets.size > 0;
+  },
+
+  /**
+   * Routing priority (highest → lowest):
+   *  1. User room   mpos:{outletId}:user:{userId}    — cashier's specific device
+   *                 Use for bills: routes to the cashier who created it
+   *                 Handles 5-10 devices on same outlet with no duplicates
+   *
+   *  2. Device room mpos:{outletId}:device:{deviceId} — explicit targeting
+   *                 Use when you must target one specific device by ID
+   *
+   *  3. Station room mpos:{outletId}:station:{station} — station broadcast
+   *                 Picks FIRST socket only to prevent duplicate prints
+   *                 Use for KOT to kitchen, test prints, no-user context
+   *
+   *  4. Bridge fallback — if no socket found in any room above
+   */
+  async sendToMobilePOS(printer, escpos, { jobType = 'print', ref = '', outletId, station, userId } = {}) {
+    const io = getSocketIO();
+    const effectiveOutletId = outletId || printer.outlet_id;
+
+    if (!io) {
+      logger.warn(`MPOS[${printer.name}]: Socket.IO not ready — bridge fallback`);
+      return null;
+    }
+
+    const jobId = uuidv4();
+    const escposBase64 = Buffer.isBuffer(escpos)
+      ? escpos.toString('base64')
+      : Buffer.from(escpos, 'binary').toString('base64');
+
+    const payload = {
+      jobId, jobType,
+      referenceNumber: ref,
+      printerId: printer.id,
+      printerName: printer.name,
+      escpos: escposBase64,   // Flutter: base64Decode → Uint8List → printEscposData()
+      shouldCut: true,        // Flutter must call cutPaper() after printEscposData (Sunmi ignores embedded cut)
+      timestamp: Date.now(),
+    };
+
+    // Build room names up front
+    const userRoom = userId ? `mpos:${effectiveOutletId}:user:${userId}` : null;
+    const deviceRoom = printer.device_id ? `mpos:${effectiveOutletId}:device:${printer.device_id}` : null;
+    const stationKey = (station || printer.station || 'cashier').toLowerCase().trim();
+    const stationRoom = `mpos:${effectiveOutletId}:station:${stationKey}`;
+
+    // ── Check all rooms in parallel (single Redis round-trip instead of 3 sequential) ──
+    const [userSockets, deviceSockets, stationSockets] = await Promise.all([
+      userRoom   ? io.in(userRoom).allSockets()   : Promise.resolve(new Set()),
+      deviceRoom ? io.in(deviceRoom).allSockets() : Promise.resolve(new Set()),
+      io.in(stationRoom).allSockets(),
+    ]);
+
+    // ── Priority 1: User room (cashier-specific) ────────────────────────────
+    if (userSockets.size > 0) {
+      io.to(userRoom).emit('mpos:print', payload);
+      logger.info(`MPOS[${printer.name}]: job → user room ${userRoom} (userId=${userId}) ref=${ref}`);
+      return { method: 'mobile_pos', sent: true, jobId, printerId: printer.id, mode: 'user', room: userRoom };
+    }
+    if (userId) logger.warn(`MPOS[${printer.name}]: user ${userId} offline — trying device/station`);
+
+    // ── Priority 2: Device room (explicit) ─────────────────────────────────
+    if (deviceSockets.size > 0) {
+      io.to(deviceRoom).emit('mpos:print', payload);
+      logger.info(`MPOS[${printer.name}]: job → device room ${deviceRoom} ref=${ref}`);
+      return { method: 'mobile_pos', sent: true, jobId, printerId: printer.id, mode: 'device', room: deviceRoom };
+    }
+
+    // ── Priority 3: Station room (broadcast, first socket only) ────────────
+    if (stationSockets.size === 0) {
+      logger.warn(`MPOS[${printer.name}]: no device in any room — bridge fallback`);
+      return null;
+    }
+
+    if (stationSockets.size > 1) {
+      // Multiple devices on station — pick first only to prevent duplicate prints
+      const [firstSocketId] = stationSockets;
+      io.to(firstSocketId).emit('mpos:print', payload);
+      logger.info(`MPOS[${printer.name}]: job → first socket on station ${stationRoom} (${stationSockets.size} devices) ref=${ref}`);
+    } else {
+      io.to(stationRoom).emit('mpos:print', payload);
+      logger.info(`MPOS[${printer.name}]: job → station room ${stationRoom} ref=${ref}`);
+    }
+
+    return { method: 'mobile_pos', sent: true, jobId, printerId: printer.id, mode: 'station', room: stationRoom };
   },
 
   /**

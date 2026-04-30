@@ -1401,6 +1401,7 @@ const orderService = {
       LEFT JOIN floors f ON o.floor_id = f.id
       LEFT JOIN sections s ON o.section_id = s.id
       WHERE o.outlet_id = ? AND o.status NOT IN ('paid', 'completed', 'cancelled')
+        AND NOT (o.order_source = 'self_order' AND o.status = 'pending')
     `;
     const params = [outletId];
 
@@ -2558,6 +2559,7 @@ const orderService = {
       LEFT JOIN users u ON o.created_by = u.id
       LEFT JOIN invoices inv ON o.id = inv.order_id AND inv.is_cancelled = 0
       WHERE o.outlet_id = ?
+        AND NOT (o.order_source = 'self_order' AND o.status = 'pending')
     `;
     const params = [outletId];
 
@@ -2578,7 +2580,9 @@ const orderService = {
     if (status && status !== 'all') {
       if (status === 'running') {
         // Include 'billing' in running - order is still active until paid
-        query += ` AND o.status IN ('pending', 'confirmed', 'preparing', 'ready', 'served', 'billing')`;
+        // Exclude pending self-orders (manual mode, not accepted yet — should not show as running)
+        query += ` AND o.status IN ('pending', 'confirmed', 'preparing', 'ready', 'served', 'billing')
+          AND NOT (o.order_source = 'self_order' AND o.status = 'pending')`;
       } else if (status === 'completed') {
         query += ` AND o.status IN ('paid', 'completed')`;
       } else if (status === 'cancelled') {

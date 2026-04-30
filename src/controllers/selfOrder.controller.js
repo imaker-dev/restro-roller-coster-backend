@@ -32,8 +32,9 @@ const selfOrderController = {
       logger.error('Self-order init error:', error);
       const status = error.message.includes('not enabled') || error.message.includes('closed') ? 403
         : error.message.includes('not found') ? 404
-        : error.message.includes('another device') ? 409  // Device conflict
+        : error.message.includes('another device') ? 409
         : error.message.includes('Maximum active') || error.message.includes('in use') || error.message.includes('managed by staff') ? 409
+        : error.message.includes('bill has been generated') || error.message.includes('complete payment') ? 409
         : 400;
       res.status(status).json({ success: false, message: error.message });
     }
@@ -103,6 +104,7 @@ const selfOrderController = {
       const status = error.message.includes('required') ? 422
         : error.message.includes('not found') || error.message.includes('not available') ? 400
         : error.message.includes('already been placed') ? 409
+        : error.message.includes('bill has been generated') || error.message.includes('complete payment') ? 409
         : 500;
       res.status(status).json({ success: false, message: error.message });
     }
@@ -127,7 +129,8 @@ const selfOrderController = {
       res.status(200).json({ success: true, data: result });
     } catch (error) {
       logger.error('Self-order add items error:', error);
-      res.status(400).json({ success: false, message: error.message });
+      const status = error.message.includes('bill has been generated') || error.message.includes('complete payment') ? 409 : 400;
+      res.status(status).json({ success: false, message: error.message });
     }
   },
 

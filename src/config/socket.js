@@ -159,6 +159,98 @@ const initializeSocket = (server) => {
       logger.debug(`Socket ${socket.id} joined captain:${outletId}`);
     });
 
+    // ========================
+    // MOBILE POS PRINTING
+    // ========================
+    // Flutter app sends { outletId, userId } on login — no printer setup needed.
+    // Backend intercepts ALL prints for that userId and routes to their device.
+    // Works for any role: cashier, admin, captain, pos_user, etc.
+    //
+    //  PRIMARY (recommended — zero config):
+    //    Device sends: { outletId, userId }
+    //    Room:  mpos:{outletId}:user:{userId}
+    //    All KOT/BOT/Bill for that user → their device, regardless of configured printers
+    //
+    //  OPTIONAL additions (can combine with userId):
+    //    station: joins mpos:{outletId}:station:{station}  → station broadcast fallback
+    //    deviceId: joins mpos:{outletId}:device:{deviceId} → explicit device targeting
+    //
+    socket.on('join:mpos', (payload) => {
+      const { outletId, station, deviceId, userId } = payload || {};
+
+      if (!outletId) {
+        logger.warn(`Socket ${socket.id} join:mpos missing outletId`);
+        return;
+      }
+
+      socket.mposOutletId = outletId;
+      const joined = [];
+
+      // Station room — for station-wide broadcast jobs (KOT to kitchen, etc.)
+      // Also acts as fallback when userId not matched
+      if (station) {
+        const stationKey = String(station).toLowerCase().trim();
+        const stationRoom = `mpos:${outletId}:station:${stationKey}`;
+        socket.join(stationRoom);
+        socket.mposStation = stationKey;
+        joined.push(stationRoom);
+      }
+
+      // User room — for user-specific jobs (bills go to the cashier who created them)
+      // This is the primary route when 5-10 devices share the same station
+      if (userId) {
+        const userRoom = `mpos:${outletId}:user:${userId}`;
+        socket.join(userRoom);
+        socket.mposUserId = userId;
+        joined.push(userRoom);
+      }
+
+      // Device room — explicit targeting (advanced / edge cases)
+      if (deviceId) {
+        const deviceRoom = `mpos:${outletId}:device:${deviceId}`;
+        socket.join(deviceRoom);
+        socket.mposDeviceId = deviceId;
+        joined.push(deviceRoom);
+      }
+
+      if (joined.length === 0) {
+        logger.warn(`Socket ${socket.id} join:mpos: must provide station, userId, or deviceId`);
+        return;
+      }
+
+      socket.mposMode = userId ? 'user' : deviceId ? 'device' : 'station';
+      logger.info(`Socket ${socket.id} joined Mobile POS rooms: ${joined.join(', ')}`);
+      socket.emit('mpos:connected', {
+        mode:     socket.mposMode,
+        station:  socket.mposStation  || null,
+        userId:   socket.mposUserId   || null,
+        deviceId: socket.mposDeviceId || null,
+        rooms:    joined,
+        outletId,
+        socketId: socket.id,
+      });
+    });
+
+    socket.on('leave:mpos', (payload) => {
+      const { outletId, station, deviceId, userId } = payload || {};
+      if (station)  socket.leave(`mpos:${outletId}:station:${String(station).toLowerCase()}`);
+      if (userId)   socket.leave(`mpos:${outletId}:user:${userId}`);
+      if (deviceId) socket.leave(`mpos:${outletId}:device:${deviceId}`);
+    });
+
+    // Mobile POS acknowledges print job completion
+    socket.on('mpos:print_done', ({ jobId, success, error }) => {
+      logger.info(`Mobile POS print ${success ? 'success' : 'failed'}: jobId=${jobId}${error ? ` error=${error}` : ''}`);
+      publishMessage('mpos:print_result', {
+        jobId, success, error,
+        station:  socket.mposStation,
+        deviceId: socket.mposDeviceId,
+        outletId: socket.mposOutletId,
+        mode:     socket.mposMode,
+        socketId: socket.id,
+      });
+    });
+
     // Leave rooms
     socket.on('leave:outlet', (outletId) => {
       socket.leave(`outlet:${outletId}`);

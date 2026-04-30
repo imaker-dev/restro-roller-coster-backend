@@ -10,36 +10,6 @@ const { getPool } = require('../database');
 const { cache, publishMessage } = require('../config/redis');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
-
- let _selfOrderOrdersSchemaChecked = false;
- let _selfOrderOrdersHasOrderSource = false;
- let _selfOrderOrdersHasSessionId = false;
-
- async function ensureSelfOrderOrdersSchema(pool) {
-   if (_selfOrderOrdersSchemaChecked) {
-     return {
-       hasOrderSource: _selfOrderOrdersHasOrderSource,
-       hasSessionId: _selfOrderOrdersHasSessionId,
-     };
-   }
-
-   const [cols] = await pool.query(
-     `SELECT COLUMN_NAME
-      FROM information_schema.COLUMNS
-      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'orders'
-        AND COLUMN_NAME IN ('order_source', 'self_order_session_id')`
-   );
-
-   const colSet = new Set((cols || []).map(c => c.COLUMN_NAME));
-   _selfOrderOrdersHasOrderSource = colSet.has('order_source');
-   _selfOrderOrdersHasSessionId = colSet.has('self_order_session_id');
-   _selfOrderOrdersSchemaChecked = true;
-
-   return {
-     hasOrderSource: _selfOrderOrdersHasOrderSource,
-     hasSessionId: _selfOrderOrdersHasSessionId,
-   };
- }
 const { SELF_ORDER } = require('../constants');
 const settingsService = require('./settings.service');
 const menuEngineService = require('./menuEngine.service');
@@ -212,11 +182,11 @@ const selfOrderService = {
   async initSession({ outletId, tableId, qrToken, deviceId, ipAddress, userAgent }) {
     const pool = getPool();
 
-    // First, expire any idle/completed sessions for this table (smart expiry)
-    await this.expireIdleSessions(outletId, tableId);
+    // Non-blocking cleanup — expiry is also enforced in the SELECT below
+    this.expireIdleSessions(outletId, tableId).catch(() => {});
 
-    // Parallel: validate outlet+table, get settings, check existing sessions
-    const [outletResult, tableResult, settingsResult, activeSessionsResult] = await Promise.all([
+    // Parallel: outlet + table + settings + sessions(+joins) + active shift + active order on table
+    const [outletResult, tableResult, settingsResult, activeSessionsResult, activeShiftResult, activeOrderResult] = await Promise.all([
       pool.query('SELECT id, name, is_active FROM outlets WHERE id = ? AND is_active = 1', [outletId]),
       pool.query(
         `SELECT t.id, t.table_number, t.name, t.status, t.floor_id, t.is_active,
@@ -228,10 +198,28 @@ const selfOrderService = {
       ),
       this.getSettings(outletId),
       pool.query(
-        `SELECT id, token, status, order_id, device_id FROM self_order_sessions
-         WHERE outlet_id = ? AND table_id = ? AND status IN ('active', 'ordering') AND expires_at > NOW()
-         ORDER BY created_at DESC`,
+        `SELECT s.id, s.token, s.status, s.order_id, s.device_id, s.outlet_id, s.table_id,
+                s.customer_name, s.customer_phone, s.expires_at,
+                t.table_number, t.name as table_name, f.name as floor_name, o.name as outlet_name
+         FROM self_order_sessions s
+         JOIN tables t ON s.table_id = t.id
+         JOIN outlets o ON s.outlet_id = o.id
+         LEFT JOIN floors f ON t.floor_id = f.id
+         WHERE s.outlet_id = ? AND s.table_id = ? AND s.status IN ('active', 'ordering') AND s.expires_at > NOW()
+         ORDER BY s.created_at DESC`,
         [outletId, tableId]
+      ),
+      pool.query(
+        `SELECT id FROM day_sessions WHERE outlet_id = ? AND status = 'open' LIMIT 1`,
+        [outletId]
+      ),
+      pool.query(
+        `SELECT o.id, o.order_number, o.order_source, o.self_order_session_id, o.status
+         FROM orders o
+         WHERE o.table_id = ? AND o.outlet_id = ?
+           AND o.status NOT IN ('paid', 'completed', 'cancelled')
+         ORDER BY o.created_at DESC LIMIT 1`,
+        [tableId, outletId]
       ),
     ]);
 
@@ -239,35 +227,25 @@ const selfOrderService = {
     const table = tableResult[0][0];
     const settings = settingsResult;
     const activeSessions = activeSessionsResult[0];
+    const activeShift = activeShiftResult[0][0];
+    const activeOrderOnTable = activeOrderResult[0][0];
 
     // Validations
     if (!outlet) throw new Error('Outlet not found or inactive');
     if (!table) throw new Error('Table not found');
     if (!table.is_active) throw new Error('Table is not active');
     if (!settings.enabled) throw new Error('Self-ordering is not enabled for this outlet');
-
-    // Check if outlet has an active shift (outlet must be open for self-ordering)
-    const [[activeShift]] = await pool.query(
-      `SELECT id FROM day_sessions WHERE outlet_id = ? AND status = 'open' LIMIT 1`,
-      [outletId]
-    );
     if (!activeShift) throw new Error('Restaurant is currently closed. Please try again during business hours.');
 
     // QR codes are static/permanent — no token validation needed.
     // The QR only encodes outletId + tableId. Session lifecycle is managed separately.
 
-    // Check if table already has active orders (self-order OR manual POS)
-    // If so, only allow reusing the existing self-order session — don't create a new one
-    const [[activeOrderOnTable]] = await pool.query(
-      `SELECT o.id, o.order_number, o.order_source, o.self_order_session_id
-       FROM orders o
-       WHERE o.table_id = ? AND o.outlet_id = ?
-         AND o.status NOT IN ('paid', 'completed', 'cancelled')
-       ORDER BY o.created_at DESC LIMIT 1`,
-      [tableId, outletId]
-    );
-
     if (activeOrderOnTable) {
+      // Block: bill already generated — no new items or sessions allowed until payment
+      if (activeOrderOnTable.status === 'billed') {
+        throw new Error('Your bill has been generated. Please complete payment before placing new orders.');
+      }
+
       // Case 3: Staff/POS order running → block self-order with specific message
       if (activeOrderOnTable.order_source !== 'self_order') {
         throw new Error('This table is currently managed by staff. Please ask your server for assistance.');
@@ -295,24 +273,15 @@ const selfOrderService = {
           }
 
           // SAME DEVICE (or no device_id set yet) → Allow resume
-          // If session has no device_id yet, update it with current device
+          // Update device_id non-blocking (future same-device validation only)
           if (!existingSession.device_id && deviceId) {
-            await pool.query(
+            pool.query(
               `UPDATE self_order_sessions SET device_id = ? WHERE id = ?`,
               [deviceId, existingSession.id]
-            );
+            ).catch(() => {});
           }
 
-          const [rows] = await pool.query(
-            `SELECT s.*, t.table_number, t.name as table_name, f.name as floor_name, o.name as outlet_name
-             FROM self_order_sessions s
-             JOIN tables t ON s.table_id = t.id
-             JOIN outlets o ON s.outlet_id = o.id
-             LEFT JOIN floors f ON t.floor_id = f.id
-             WHERE s.id = ?`,
-            [existingSession.id]
-          );
-          if (rows[0]) return { ...this._formatSession(rows[0], settings), resumed: true };
+          return { ...this._formatSession(existingSession, settings), resumed: true };
         }
       }
 
@@ -340,22 +309,13 @@ const selfOrderService = {
 
         // Same device or no device_id → allow
         if (!existingWithOrder.device_id && deviceId) {
-          await pool.query(
+          pool.query(
             `UPDATE self_order_sessions SET device_id = ? WHERE id = ?`,
             [deviceId, existingWithOrder.id]
-          );
+          ).catch(() => {});
         }
 
-        const [rows] = await pool.query(
-          `SELECT s.*, t.table_number, t.name as table_name, f.name as floor_name, o.name as outlet_name
-           FROM self_order_sessions s
-           JOIN tables t ON s.table_id = t.id
-           JOIN outlets o ON s.outlet_id = o.id
-           LEFT JOIN floors f ON t.floor_id = f.id
-           WHERE s.id = ?`,
-          [existingWithOrder.id]
-        );
-        return { ...this._formatSession(rows[0], settings), resumed: true };
+        return { ...this._formatSession(existingWithOrder, settings), resumed: true };
       }
 
       // If there's an active session without order, check device
@@ -375,22 +335,13 @@ const selfOrderService = {
 
         // Same device or no device_id → allow
         if (!freshSession.device_id && deviceId) {
-          await pool.query(
+          pool.query(
             `UPDATE self_order_sessions SET device_id = ? WHERE id = ?`,
             [deviceId, freshSession.id]
-          );
+          ).catch(() => {});
         }
 
-        const [rows] = await pool.query(
-          `SELECT s.*, t.table_number, t.name as table_name, f.name as floor_name, o.name as outlet_name
-           FROM self_order_sessions s
-           JOIN tables t ON s.table_id = t.id
-           JOIN outlets o ON s.outlet_id = o.id
-           LEFT JOIN floors f ON t.floor_id = f.id
-           WHERE s.id = ?`,
-          [freshSession.id]
-        );
-        return { ...this._formatSession(rows[0], settings), resumed: true };
+        return { ...this._formatSession(freshSession, settings), resumed: true };
       }
 
       throw new Error('Maximum active sessions reached for this table. Please wait or ask staff for help.');
@@ -748,6 +699,9 @@ const selfOrderService = {
     if (!order) throw new Error('Order not found');
     if (['paid', 'completed', 'cancelled'].includes(order.status)) {
       throw new Error('This order is no longer active. Please start a new session.');
+    }
+    if (order.status === 'billed') {
+      throw new Error('Your bill has been generated. No new items can be added. Please complete payment.');
     }
 
     // Validate and price new items + resolve system user
@@ -1235,6 +1189,11 @@ const selfOrderService = {
 
     if (!order) return { hasOrder: false };
 
+    // Manual mode: order not yet accepted by staff — show nothing
+    if (order.status === 'pending') {
+      return { hasOrder: false };
+    }
+
     // Get items
     const [items] = await pool.query(
       `SELECT oi.id, oi.item_name, oi.variant_name, oi.quantity, oi.unit_price,
@@ -1553,11 +1512,6 @@ const selfOrderService = {
    */
   async getPendingSelfOrders(outletId, { status = 'pending', page = 1, limit = 20, search, fromDate, toDate } = {}) {
     const pool = getPool();
-
-     const schema = await ensureSelfOrderOrdersSchema(pool);
-     if (!schema.hasOrderSource) {
-       throw new Error('Self-order DB migration required: orders.order_source column missing. Please run migration 060 on the server.');
-     }
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const pageSize = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
@@ -2130,11 +2084,17 @@ const selfOrderService = {
       .png()
       .toFile(qrFilePath);
 
-    // Update table record — store both image path AND the URL encoded in the QR
-    await pool.query(
-      `UPDATE tables SET qr_code = ?, qr_url = ? WHERE id = ?`,
-      [relativePath, selfOrderUrl, tableId]
-    );
+    // Step 1: always update qr_code (safe on all MySQL versions)
+    await pool.query(`UPDATE tables SET qr_code = ? WHERE id = ?`, [relativePath, tableId]);
+
+    // Step 2: store the URL encoded in the QR (requires migration 071)
+    // Silently skip if qr_url column not yet present on this server
+    try {
+      await pool.query(`UPDATE tables SET qr_url = ? WHERE id = ?`, [selfOrderUrl, tableId]);
+    } catch (urlErr) {
+      if (!urlErr.message.includes('Unknown column')) throw urlErr;
+      // qr_url column missing — run migration 071 on production to fix this
+    }
 
     return {
       tableId,
@@ -2183,21 +2143,28 @@ const selfOrderService = {
     if (!outlet) throw new Error('Outlet not found');
 
     // Build query with optional floor filter — include ALL active tables
-    let query = `
-      SELECT t.id, t.table_number, t.name, t.qr_code, t.qr_url, t.status,
-             t.floor_id, f.name as floor_name, f.id as fid
-      FROM tables t
-      LEFT JOIN floors f ON t.floor_id = f.id
-      WHERE t.outlet_id = ? AND t.is_active = 1`;
+    const buildQuery = (withQrUrl) => {
+      const cols = withQrUrl
+        ? 't.id, t.table_number, t.name, t.qr_code, t.qr_url, t.status, t.floor_id, f.name as floor_name, f.id as fid'
+        : 't.id, t.table_number, t.name, t.qr_code, t.status, t.floor_id, f.name as floor_name, f.id as fid';
+      return `SELECT ${cols} FROM tables t LEFT JOIN floors f ON t.floor_id = f.id WHERE t.outlet_id = ? AND t.is_active = 1`;
+    };
     const params = [outletId];
+    let baseQuery = buildQuery(true);
+    if (floorId) params.push(parseInt(floorId, 10));
+    const orderBy = ` ORDER BY f.name, t.table_number`;
+    const floorFilter = floorId ? ` AND t.floor_id = ?` : '';
 
-    if (floorId) {
-      query += ` AND t.floor_id = ?`;
-      params.push(parseInt(floorId, 10));
+    let tables;
+    try {
+      const [rows] = await pool.query(baseQuery + floorFilter + orderBy, params);
+      tables = rows;
+    } catch (err) {
+      if (!err.message.includes('Unknown column') || !err.message.includes('qr_url')) throw err;
+      // qr_url column not yet on this server — fall back to reconstruction
+      const [rows] = await pool.query(buildQuery(false) + floorFilter + orderBy, params);
+      tables = rows;
     }
-    query += ` ORDER BY f.name, t.table_number`;
-
-    const [tables] = await pool.query(query, params);
 
     // Self-order URL for QR content (customer-facing frontend)
     const selfOrderAppUrl = baseUrl || process.env.SELF_ORDER_URL || 'http://localhost:3000';
@@ -2349,12 +2316,14 @@ const selfOrderService = {
     const pool = getPool();
 
     // Get orders linked to this table from self-order sessions (current + recent)
+    // Exclude 'pending' orders — not yet accepted by staff, should not appear in history
     const [orders] = await pool.query(
       `SELECT o.id, o.order_number, o.status, o.subtotal, o.tax_amount, o.total_amount,
               o.special_instructions, o.cancel_reason, o.created_at,
               o.self_order_session_id
        FROM orders o
        WHERE o.table_id = ? AND o.outlet_id = ? AND o.order_source = 'self_order'
+         AND o.status != 'pending'
        ORDER BY o.created_at DESC
        LIMIT ?`,
       [session.tableId, session.outletId, limit]
