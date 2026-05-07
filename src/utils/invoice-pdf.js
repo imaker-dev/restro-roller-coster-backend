@@ -75,8 +75,16 @@ async function generateInvoicePDF(invoice, outlet = {}) {
     rightAlign(rightText, y);
   }
 
+  // Detect Canadian taxes (HST/PST/QST) to set currency symbol
+  const taxBreakup = invoice.taxBreakup || {};
+  const hasCanadianTax = Object.values(taxBreakup).some(t => {
+    const n = (t.name || '').toUpperCase();
+    return n.includes('HST') || n.includes('PST') || n.includes('QST');
+  });
+  const currencySymbol = hasCanadianTax ? '$' : '₹';
+
   function currency(amount) {
-    return `Rs.${parseFloat(amount || 0).toFixed(2)}`;
+    return `${currencySymbol}${parseFloat(amount || 0).toFixed(2)}`;
   }
 
   // ─── HEADER ───────────────────────────────────
@@ -306,7 +314,7 @@ async function generateInvoicePDF(invoice, outlet = {}) {
       if (disc.discountType === 'percentage') {
         discLabel += ` (${disc.discountValue}%)`;
       } else if (disc.discountValue > 0) {
-        discLabel += ` (Flat Rs.${parseFloat(disc.discountValue).toFixed(0)})`;
+        discLabel += ` (Flat ${currencySymbol}${parseFloat(disc.discountValue).toFixed(0)})`;
       }
       totalRow(discLabel + ':', `-${currency(disc.discountAmount)}`, { color: '#e74c3c' });
     }
@@ -323,7 +331,6 @@ async function generateInvoicePDF(invoice, outlet = {}) {
   totalRow('Taxable Amount:', currency(invoice.taxableAmount));
 
   // Taxes — use taxBreakup for detailed rates (e.g., "CGST @2.5%")
-  const taxBreakup = invoice.taxBreakup || {};
   const taxEntries = Object.values(taxBreakup);
   if (taxEntries.length > 0) {
     for (const tax of taxEntries) {
