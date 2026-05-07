@@ -206,11 +206,14 @@ module.exports = {
   }),
 
   openCashDrawer: Joi.object({
-    openingCash: Joi.number().min(0).required()
+    openingCash: Joi.number().min(0).required(),
+    floorId: Joi.number().integer().min(1).allow(null, ''),
+    notes: Joi.string().allow('', null)
   }),
 
   closeCashDrawer: Joi.object({
     actualCash: Joi.number().min(0).required(),
+    floorId: Joi.number().integer().min(1).allow(null, ''),
     notes: Joi.string().allow('', null)
   }),
 

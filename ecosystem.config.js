@@ -1,22 +1,24 @@
 /**
- * PM2 Ecosystem Config — Optimized for 8-CPU server
+ * PM2 Ecosystem Config — Tuned for 100-200 outlets at rush hour
  *
- * Scale target: 50+ restaurants, 1000+ tables at peak
+ * Scale target: 100-200 restaurants, 3,000-6,000 tables at peak
+ * Peak load: ~1,000 req/s, 3,000+ concurrent WebSocket connections
  *
  * DB connection math (critical):
- *   6 API workers  × 10 conn =  60
- *   2 Queue workers ×  5 conn =  10
- *   MySQL internal/tools/misc =  10
- *   Total                     =  80  (safe under MySQL max_connections=151)
+ *   6 API workers  × 20 conn = 120  (POS + admin APIs)
+ *   2 Queue workers ×  8 conn =  16  (print, notify, reports, webhooks)
+ *   MySQL internal/tools/misc =  20
+ *   Total                       = 156 (safe under MySQL max_connections=300)
  *
- * MySQL MUST have: max_connections >= 151 (default) — increase to 300 if possible.
- * MySQL SHOULD have: wait_timeout=600 to release stale connections from PM2 restarts.
- * Previous config had 8 × 100 = 800 connections — caused DB exhaustion at peak.
- * Previous config had 6 × 15 = 90 + 2×8 = 16 = 106 — too close to 151 limit.
+ * MySQL MUST have:
+ *   max_connections = 300
+ *   innodb_buffer_pool_size = 4G (or 70% of total RAM)
+ *   innodb_io_capacity = 2000 (SSD)
+ *   wait_timeout = 600
  *
- * UV_THREADPOOL_SIZE: Only used for fs, crypto, DNS lookups.
- *   MySQL queries use their own TCP sockets, NOT the UV thread pool.
- *   8 is sufficient for API workers, 4 for queue workers.
+ * UV_THREADPOOL_SIZE: Only used for fs, crypto, DNS.
+ *   MySQL uses its own TCP sockets, NOT the UV thread pool.
+ *   16 gives headroom for file uploads, crypto (JWT), DNS.
  *
  * Queue workers use fork mode (not cluster) to prevent duplicate job execution.
  */
@@ -25,21 +27,23 @@ module.exports = {
     {
       name: 'restro-pos-api',
       script: 'src/app.js',
-      instances: 6,
+      instances: 6,                  // 6 workers on 8-CPU server (reserve 2 for OS + queue)
       exec_mode: 'cluster',
       watch: false,
-      max_memory_restart: '1.5G',
-      node_args: '--max-old-space-size=1536',
+      max_memory_restart: '2G',      // Increased for 100-200 outlets
+      node_args: '--max-old-space-size=2048',
       env: {
         NODE_ENV: 'development',
-        UV_THREADPOOL_SIZE: 8,
-        DB_CONNECTION_LIMIT: 10,
+        UV_THREADPOOL_SIZE: 16,
+        DB_CONNECTION_LIMIT: 20,   // 6 × 20 = 120 total (safe under MySQL 300)
+        DB_QUEUE_LIMIT: 200,
         LOG_LEVEL: 'debug',
       },
       env_production: {
         NODE_ENV: 'production',
-        UV_THREADPOOL_SIZE: 8,
-        DB_CONNECTION_LIMIT: 10,
+        UV_THREADPOOL_SIZE: 16,
+        DB_CONNECTION_LIMIT: 20,
+        DB_QUEUE_LIMIT: 200,
         LOG_LEVEL: 'warn',
       },
       error_file: './logs/pm2-error.log',
@@ -47,7 +51,8 @@ module.exports = {
       merge_logs: true,
       log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
       listen_timeout: 10000,
-      kill_timeout: 5000,
+      kill_timeout: 10000,         // 10s graceful shutdown (drain in-flight requests)
+      kill_signal: 'SIGTERM',
     },
     {
       name: 'restro-pos-queue',
@@ -59,12 +64,12 @@ module.exports = {
       env: {
         NODE_ENV: 'development',
         UV_THREADPOOL_SIZE: 4,
-        DB_CONNECTION_LIMIT: 5,
+        DB_CONNECTION_LIMIT: 8,    // 2 × 8 = 16 total
       },
       env_production: {
         NODE_ENV: 'production',
         UV_THREADPOOL_SIZE: 4,
-        DB_CONNECTION_LIMIT: 5,
+        DB_CONNECTION_LIMIT: 8,
       },
     },
   ],

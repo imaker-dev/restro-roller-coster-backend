@@ -5,6 +5,8 @@ const { getPool } = require('../database');
 const logger = require('../utils/logger');
 const whatsappService = require('../services/whatsapp.service');
 const emailService = require('../services/email.service');
+const { SUBSCRIPTION_STATUS } = require('../constants');
+const { getSubscriptionStatus } = require('../services/subscription.service');
 
 // ─── Private key loader (only on the live server) ────────────────────────────
 let PRIVATE_KEY = null;
@@ -26,6 +28,104 @@ const loadPrivateKey = () => {
   }
 
   throw new Error('Private key not found. Token generation unavailable.');
+};
+
+// ─── Helper: ensure token_generation_log table exists ────────────────────────
+const _ensureTokenLogTable = async (pool) => {
+  try {
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS token_generation_log (
+        id                 INT AUTO_INCREMENT PRIMARY KEY,
+        license_id         VARCHAR(36)  NOT NULL,
+        token_type         ENUM('upgrade', 'offline_activation') NOT NULL DEFAULT 'upgrade',
+        plan               ENUM('free', 'pro', 'offline_annual')  NOT NULL DEFAULT 'pro',
+        restaurant_name    VARCHAR(255) NOT NULL,
+        email              VARCHAR(255) NOT NULL,
+        outlet_id          BIGINT UNSIGNED NULL,
+        subscription_expiry DATE DEFAULT NULL,
+        device_hash        VARCHAR(64)  NULL,
+        generated_by_user_id INT DEFAULT NULL,
+        token_hash         VARCHAR(64)  NOT NULL,
+        used_at            DATETIME DEFAULT NULL,
+        created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_license  (license_id),
+        INDEX idx_email    (email),
+        INDEX idx_created  (created_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+  } catch (createErr) {
+    const isOrphaned = createErr.errno === 1932 || /doesn't exist in engine/i.test(createErr.message);
+    if (isOrphaned) {
+      logger.warn('[TokenGen] Detected orphaned token_generation_log. Dropping and recreating...');
+      try {
+        await pool.execute('DROP TABLE IF EXISTS token_generation_log');
+        await pool.execute(`
+          CREATE TABLE token_generation_log (
+            id                 INT AUTO_INCREMENT PRIMARY KEY,
+            license_id         VARCHAR(36)  NOT NULL,
+            token_type         ENUM('upgrade', 'offline_activation') NOT NULL DEFAULT 'upgrade',
+            plan               ENUM('free', 'pro', 'offline_annual')  NOT NULL DEFAULT 'pro',
+            restaurant_name    VARCHAR(255) NOT NULL,
+            email              VARCHAR(255) NOT NULL,
+            outlet_id          BIGINT UNSIGNED NULL,
+            subscription_expiry DATE DEFAULT NULL,
+            device_hash        VARCHAR(64)  NULL,
+            generated_by_user_id INT DEFAULT NULL,
+            token_hash         VARCHAR(64)  NOT NULL,
+            created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_license  (license_id),
+            INDEX idx_email    (email),
+            INDEX idx_created  (created_at)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        logger.info('[TokenGen] Recreated token_generation_log successfully.');
+      } catch (recreateErr) {
+        logger.error('[TokenGen] Failed to recreate token_generation_log:', recreateErr.message);
+      }
+    } else {
+      logger.warn('[TokenGen] CREATE TABLE warning:', createErr.message);
+    }
+  }
+
+  // Verify table is usable
+  try {
+    await pool.execute('SELECT 1 FROM token_generation_log LIMIT 0');
+  } catch (verifyErr) {
+    const isOrphaned = verifyErr.errno === 1932 || /doesn't exist in engine/i.test(verifyErr.message);
+    if (isOrphaned) {
+      try {
+        await pool.execute('DROP TABLE IF EXISTS token_generation_log');
+        await pool.execute(`
+          CREATE TABLE token_generation_log (
+            id                 INT AUTO_INCREMENT PRIMARY KEY,
+            license_id         VARCHAR(36)  NOT NULL,
+            token_type         ENUM('upgrade', 'offline_activation') NOT NULL DEFAULT 'upgrade',
+            plan               ENUM('free', 'pro', 'offline_annual')  NOT NULL DEFAULT 'pro',
+            restaurant_name    VARCHAR(255) NOT NULL,
+            email              VARCHAR(255) NOT NULL,
+            outlet_id          BIGINT UNSIGNED NULL,
+            subscription_expiry DATE DEFAULT NULL,
+            device_hash        VARCHAR(64)  NULL,
+            generated_by_user_id INT DEFAULT NULL,
+            token_hash         VARCHAR(64)  NOT NULL,
+            created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_license  (license_id),
+            INDEX idx_email    (email),
+            INDEX idx_created  (created_at)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        logger.info('[TokenGen] Recreated token_generation_log after verification failure.');
+      } catch (recreateErr) {
+        logger.error('[TokenGen] Failed to recreate token_generation_log after verification:', recreateErr.message);
+      }
+    }
+  }
+};
+
+// ─── Helper: derive public key from private key ──────────────────────────────
+const getPublicKey = () => {
+  const privateKey = loadPrivateKey();
+  return crypto.createPublicKey(privateKey).export({ type: 'pkcs1', format: 'pem' });
 };
 
 // ─── Helper: sign a payload ──────────────────────────────────────────────────
@@ -73,6 +173,33 @@ const notifyActivation = async (phone, email, data) => {
       : Promise.resolve({ ok: null, error: 'no phone provided' }),
     email
       ? _runNotification(`Email activation → ${email}`, () => emailService.sendActivationTokenEmail(email, data))
+      : Promise.resolve({ ok: null, error: 'no email provided' }),
+  ]);
+
+  return { whatsapp: waResult, email: emResult };
+};
+
+const notifyOfflineActivation = async (phone, email, data) => {
+  const msg =
+    `🎉 Your RestroPOS Offline Activation Token is Ready!\n\n` +
+    `Restaurant: ${data.restaurant}\n` +
+    `Plan: 🚀 Pro (Offline Annual)\n` +
+    `License ID: ${data.licenseId}\n` +
+    `Subscription Expiry: ${data.subscriptionExpiry || '—'}\n` +
+    `Grace Period End: ${data.gracePeriodEnd || '—'}\n\n` +
+    `🔑 Offline Activation Token:\n${data.token}\n\n` +
+    `📋 Login Details:\n` +
+    `• Email: ${data.adminEmail}\n` +
+    `• Password: ${data.adminPassword}\n\n` +
+    `Paste this token in the RestroPOS activation screen on your offline device.\n` +
+    `⚠️ Keep this token confidential. Do not share it.`;
+
+  const [waResult, emResult] = await Promise.all([
+    phone
+      ? _runNotification(`WhatsApp offline activation → ${phone}`, () => whatsappService.sendText(phone, msg))
+      : Promise.resolve({ ok: null, error: 'no phone provided' }),
+    email
+      ? _runNotification(`Email offline activation → ${email}`, () => emailService.sendActivationTokenEmail(email, data))
       : Promise.resolve({ ok: null, error: 'no email provided' }),
   ]);
 
@@ -330,7 +457,7 @@ const getTokenLog = async (req, res) => {
     let where = '1=1';
     const params = [];
 
-    if (type && ['activation', 'upgrade'].includes(type)) {
+    if (type && ['activation', 'upgrade', 'offline_activation'].includes(type)) {
       where += ' AND token_type = ?';
       params.push(type);
     }
@@ -344,7 +471,7 @@ const getTokenLog = async (req, res) => {
 
     const [rows] = await pool.query(
       `SELECT id, license_id, token_type, plan, restaurant_name, email,
-              generated_by_user_id, upgrade_from_license_id, created_at
+              generated_by_user_id, created_at
        FROM token_generation_log
        WHERE ${where}
        ORDER BY created_at DESC
@@ -388,6 +515,7 @@ const internalGenerateUpgradeToken = async ({ licenseId, restaurant = '', email 
   const token = signPayload(payload);
 
   const pool = getPool();
+  await _ensureTokenLogTable(pool);
   await pool.query(
     `INSERT INTO token_generation_log
       (license_id, token_type, plan, restaurant_name, email, generated_by_user_id, token_hash, upgrade_from_license_id)
@@ -400,9 +528,247 @@ const internalGenerateUpgradeToken = async ({ licenseId, restaurant = '', email 
   return { token, newLicenseId };
 };
 
+/**
+ * POST /api/v1/token-generation/offline-activation
+ * Admin/Master — generate an offline annual-subscription activation token
+ * for a specific outlet. The token is signed with the production private key
+ * and includes subscription expiry + grace period from outlet_subscriptions.
+ *
+ * The offline POS validates this token locally (signature + expiry) and
+ * blocks usage when the subscription expires.
+ *
+ * Body: { outletId, password, deviceHash?, restaurant?, email?, phone?, maxOutlets?,
+ *          notify_whatsapp?: true|false, notify_email?: true|false }
+ */
+const generateOfflineActivationToken = async (req, res) => {
+  try {
+    const {
+      outletId,
+      password,
+      deviceHash,
+      restaurant: bodyRestaurant,
+      email: bodyEmail,
+      phone: bodyPhone,
+      maxOutlets = -1,
+      notify_whatsapp = true,
+      notify_email = true,
+    } = req.body;
+
+    if (!outletId || isNaN(parseInt(outletId, 10))) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing or invalid required field: outletId (numeric)',
+      });
+    }
+
+    if (!password?.trim() || password.trim().length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing or invalid field: password (minimum 6 characters)',
+      });
+    }
+
+    const parsedOutletId = parseInt(outletId, 10);
+    const pool = getPool();
+
+    // ─── 1. Verify outlet exists and fetch details (single PK lookup) ─────────
+    const [[outlet]] = await pool.query(
+      `SELECT id, name, email, phone FROM outlets WHERE id = ?`,
+      [parsedOutletId]
+    );
+
+    if (!outlet) {
+      return res.status(404).json({
+        success: false,
+        message: 'Outlet not found',
+      });
+    }
+
+    // ─── 2. Check subscription status (Redis-first, 5-min TTL) ────────────────
+    const subStatus = await getSubscriptionStatus(parsedOutletId);
+
+    const isMaster = req.user?.roles?.includes('master');
+    const allowedStatuses = [
+      SUBSCRIPTION_STATUS.TRIAL,
+      SUBSCRIPTION_STATUS.ACTIVE,
+      SUBSCRIPTION_STATUS.GRACE_PERIOD,
+    ];
+
+    if (!allowedStatuses.includes(subStatus.status) && !isMaster) {
+      return res.status(403).json({
+        success: false,
+        code: 'SUBSCRIPTION_NOT_ACTIVE',
+        message: `Cannot generate offline token: subscription status is '${subStatus.status}'. Please renew or activate the subscription first.`,
+        status: subStatus.status,
+        graceDaysRemaining: subStatus.graceDaysRemaining,
+        subscriptionEnd: subStatus.subscriptionEnd,
+      });
+    }
+
+    if (isMaster && !allowedStatuses.includes(subStatus.status)) {
+      logger.warn(
+        `[TokenGen] MASTER OVERRIDE: generating offline token for outlet ${parsedOutletId} ` +
+        `despite subscription status '${subStatus.status}' by user #${req.user?.userId}`
+      );
+    }
+
+    // ─── 3. Fetch subscription dates directly from DB ─────────────────────────
+    const [[subRow]] = await pool.query(
+      `SELECT subscription_end, grace_period_end
+       FROM outlet_subscriptions WHERE outlet_id = ?`,
+      [parsedOutletId]
+    );
+
+    const subscriptionExpiry = subRow?.subscription_end
+      ? (subRow.subscription_end.toISOString
+          ? subRow.subscription_end.toISOString().split('T')[0]
+          : String(subRow.subscription_end).split('T')[0])
+      : null;
+
+    const gracePeriodEnd = subRow?.grace_period_end
+      ? (subRow.grace_period_end.toISOString
+          ? subRow.grace_period_end.toISOString().split('T')[0]
+          : String(subRow.grace_period_end).split('T')[0])
+      : null;
+
+    // ─── 4. Resolve display fields (override > outlet DB > empty) ─────────────
+    const restaurant = bodyRestaurant?.trim() || outlet.name || '';
+    const email = bodyEmail?.trim().toLowerCase() || outlet.email || '';
+    const phone = bodyPhone?.trim() || outlet.phone || '';
+
+    // ─── 5. Build signed payload ────────────────────────────────────────────────
+    const licenseId = crypto.randomUUID();
+    const issuedAt = new Date().toISOString();
+
+    const payload = {
+      v: 1,
+      lid: licenseId,
+      plan: 'pro',               // offline POS always gets full Pro features
+      type: 'offline_annual',    // discriminator for offline backend
+      outletId: parsedOutletId,
+      restaurant,
+      email: email || null,
+      phone: phone || null,
+      password: password.trim(), // for admin user creation on offline POS
+      subscriptionExpiry,       // from outlet_subscriptions
+      gracePeriodEnd,           // from outlet_subscriptions
+      issuedAt,
+      deviceHash: deviceHash || null,
+      modules: {
+        captain: true,
+        inventory: true,
+        advancedReports: true,
+      },
+      maxOutlets: parseInt(maxOutlets, 10) || 1,  // offline POS: 1 outlet by default
+      maxUsers: -1,  // -1 = unlimited users
+    };
+
+    const token = signPayload(payload);
+
+    // ─── 6. Log to token_generation_log (audit only — never store raw token) ───
+    await _ensureTokenLogTable(pool);
+
+    await pool.query(
+      `INSERT INTO token_generation_log
+        (license_id, token_type, plan, restaurant_name, email,
+         outlet_id, subscription_expiry, device_hash, generated_by_user_id, token_hash)
+       VALUES (?, 'offline_activation', 'pro', ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        licenseId,
+        restaurant,
+        email || null,
+        parsedOutletId,
+        subscriptionExpiry,
+        deviceHash || null,
+        req.user?.userId || null,
+        crypto.createHash('sha256').update(token).digest('hex'),
+      ]
+    );
+
+    // ─── 7. Send WhatsApp + Email notifications ────────────────────────────────
+    const notification = await notifyOfflineActivation(
+      notify_whatsapp ? phone : null,
+      notify_email ? email : null,
+      {
+        token,
+        licenseId,
+        restaurant,
+        subscriptionExpiry,
+        gracePeriodEnd,
+        adminEmail: email || '—',
+        adminPassword: password.trim(),
+      }
+    );
+
+    logger.info(
+      `[TokenGen] Offline activation token: lid=${licenseId} outlet=${parsedOutletId} ` +
+      `subExpiry=${subscriptionExpiry || 'none'} device=${deviceHash ? 'yes' : 'no'} ` +
+      `wa=${_notifStatus(notification.whatsapp)} em=${_notifStatus(notification.email)} ` +
+      `by user #${req.user?.userId}`
+    );
+
+    return res.json({
+      success: true,
+      message: 'Offline activation token generated successfully',
+      data: {
+        licenseId,
+        token,
+        outletId: parsedOutletId,
+        plan: 'pro',
+        type: 'offline_annual',
+        restaurant,
+        email: email || null,
+        phone: phone || null,
+        subscriptionExpiry,
+        gracePeriodEnd,
+        deviceHash: payload.deviceHash,
+        modules: payload.modules,
+        maxOutlets: payload.maxOutlets,
+        maxUsers: payload.maxUsers,
+        issuedAt,
+        notifications: {
+          whatsapp: notification.whatsapp.ok === true ? 'sent' : notification.whatsapp.ok === false ? 'failed' : 'skipped',
+          email: notification.email.ok === true ? 'sent' : notification.email.ok === false ? 'failed' : 'skipped',
+        },
+      },
+    });
+
+  } catch (err) {
+    logger.error('[TokenGen] generateOfflineActivationToken error:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to generate offline token: ' + err.message,
+    });
+  }
+};
+
+/**
+ * GET /api/v1/token-generation/public-key
+ * Public — returns the RSA public key for offline token signature verification.
+ *
+ * The offline POS backend downloads this once and caches it locally.
+ * Response is plain text PEM for easy consumption.
+ */
+const getOfflinePublicKey = async (req, res) => {
+  try {
+    const publicKey = getPublicKey();
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=86400'); // 24h client cache
+    return res.send(publicKey);
+  } catch (err) {
+    logger.error('[TokenGen] getOfflinePublicKey error:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Public key unavailable: ' + err.message,
+    });
+  }
+};
+
 module.exports = {
   generateActivationToken,
   generateUpgradeToken,
   getTokenLog,
   internalGenerateUpgradeToken,
+  generateOfflineActivationToken,
+  getOfflinePublicKey,
 };

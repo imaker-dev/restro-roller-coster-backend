@@ -42,6 +42,9 @@ const initializeRedis = async () => {
   try {
     redisClient = createRedisClient();
     redisSubscriber = createRedisClient({ keyPrefix: '' });
+    // socket.js subscribes 9+ channels — each adds a 'message' listener;
+    // default limit is 10, so bump to unlimited on this shared subscriber
+    redisSubscriber.setMaxListeners(0);
 
     await redisClient.ping();
     redisAvailable = true;
@@ -104,12 +107,17 @@ const cache = {
   async delPattern(pattern) {
     if (!redisAvailable || !redisClient) return;
     try {
-      const keys = await redisClient.keys(`${redisConfig.keyPrefix}${pattern}`);
-      if (keys.length > 0) {
-        const pipeline = redisClient.pipeline();
-        keys.forEach((key) => pipeline.del(key.replace(redisConfig.keyPrefix, '')));
-        await pipeline.exec();
-      }
+      let cursor = '0';
+      const fullPattern = `${redisConfig.keyPrefix}${pattern}`;
+      do {
+        const [nextCursor, keys] = await redisClient.scan(cursor, 'MATCH', fullPattern, 'COUNT', 100);
+        cursor = nextCursor;
+        if (keys.length > 0) {
+          const pipeline = redisClient.pipeline();
+          keys.forEach((key) => pipeline.del(key.replace(redisConfig.keyPrefix, '')));
+          await pipeline.exec();
+        }
+      } while (cursor !== '0');
     } catch (error) {
       logger.warn('Cache delPattern failed:', error.message);
     }

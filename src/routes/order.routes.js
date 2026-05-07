@@ -82,6 +82,7 @@ router.get('/captain/detail/:orderId', authorize('super_admin', 'admin', 'manage
  * @access  Private (cashier, pos_user, manager, admin)
  * @query   status - 'pending' (default) | 'completed' | 'cancelled' | 'all'
  * @query   search - Search by order number, customer name, phone
+ * @query   startDate, endDate - Date range filter (YYYY-MM-DD)
  * @query   page, limit, sortBy, sortOrder
  */
 router.get('/takeaway/pending/:outletId', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), orderController.getPendingTakeawayOrders);
@@ -704,7 +705,7 @@ router.get('/reports/:outletId/nc/export', authorize('super_admin', 'admin', 'ma
  * @query   endDate - Filter to date (YYYY-MM-DD)
  * @query   status - 'open' | 'closed' | 'all'
  * @query   page - Page number (default: 1)
- * @query   limit - Items per page (default: 20)
+ * @query   limit - Items per page (default: 10)
  * @query   sortBy - session_date | opening_time | closing_time | total_sales | total_orders | cash_variance
  * @query   sortOrder - ASC | DESC (default: DESC)
  */

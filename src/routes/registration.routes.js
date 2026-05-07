@@ -11,11 +11,11 @@ const {
 
 // Public registration: 5 requests per IP per 15 minutes
 const registerLimiter = createRateLimiter({
-  windowMs: 15 * 60 * 1000,
+  windowMs: 5 * 60 * 1000,
   max: 5,
   message: {
     success: false,
-    message: 'Too many registration attempts. Please try again after 15 minutes.',
+    message: 'Too many registration attempts. Please try again after 5 minutes.',
   },
 });
 

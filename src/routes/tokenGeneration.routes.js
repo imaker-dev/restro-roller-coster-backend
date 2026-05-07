@@ -5,6 +5,8 @@ const {
   generateActivationToken,
   generateUpgradeToken,
   getTokenLog,
+  generateOfflineActivationToken,
+  getOfflinePublicKey,
 } = require('../controllers/tokenGeneration.controller');
 
 /**
@@ -27,5 +29,21 @@ router.post('/upgrade', authenticate, generateUpgradeToken);
  * @access  Admin (authenticated)
  */
 router.get('/log', authenticate, getTokenLog);
+
+/**
+ * @route   POST /api/v1/token-generation/offline-activation
+ * @desc    Generate offline annual-subscription activation token for an outlet
+ *          Verifies outlet has active/trial/grace subscription before signing.
+ * @access  Admin (authenticated)
+ */
+router.post('/offline-activation', authenticate, generateOfflineActivationToken);
+
+/**
+ * @route   GET /api/v1/token-generation/public-key
+ * @desc    Get the RSA public key used to verify offline token signatures.
+ *          Offline POS backend fetches this once and caches it locally.
+ * @access  Public (no authentication required)
+ */
+router.get('/public-key', getOfflinePublicKey);
 
 module.exports = router;

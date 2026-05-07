@@ -1,12 +1,13 @@
 const jwt = require('jsonwebtoken');
 const jwtConfig = require('../config/jwt.config');
 const logger = require('../utils/logger');
+const { checkSubscription } = require('./subscription.middleware');
 
 /**
  * Verify JWT token middleware
  * Extracts and validates the access token from Authorization header
  */
-const authenticate = (req, res, next) => {
+const authenticate = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
 
@@ -34,6 +35,12 @@ const authenticate = (req, res, next) => {
         roles: decoded.roles || [],
         outletId: decoded.outletId,
       };
+
+      // Subscription check — fast Redis-first, skips master & payment routes
+      const subCheck = await checkSubscription(req, res);
+      if (subCheck.responseSent) {
+        return; // 403 already sent by subscription middleware
+      }
 
       next();
     } catch (jwtError) {

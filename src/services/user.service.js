@@ -42,6 +42,51 @@ class UserService {
   }
 
   /**
+   * Auto-assign admin/super_admin/manager to all floors and sections of their outlets.
+   * Called after role assignment in createUser / updateUser.
+   */
+  async _autoAssignAdminFloorsAndSections(userId, connection) {
+    const pool = connection || getPool();
+    const [adminRoles] = await pool.query(
+      `SELECT DISTINCT ur.outlet_id
+       FROM user_roles ur
+       JOIN roles r ON ur.role_id = r.id
+       WHERE ur.user_id = ? AND r.name IN ('admin', 'super_admin', 'manager')`,
+      [userId]
+    );
+
+    for (const { outlet_id } of adminRoles) {
+      // Auto-assign all floors
+      const [allFloors] = await pool.query(
+        `SELECT id FROM floors WHERE outlet_id = ?`,
+        [outlet_id]
+      );
+      if (allFloors.length > 0) {
+        const floorValues = allFloors.map((f, i) => [userId, f.id, outlet_id, i === 0, 1]);
+        await pool.query(
+          `INSERT IGNORE INTO user_floors (user_id, floor_id, outlet_id, is_primary, is_active)
+           VALUES ?`,
+          [floorValues]
+        );
+      }
+
+      // Auto-assign all sections
+      const [allSections] = await pool.query(
+        `SELECT id FROM sections WHERE outlet_id = ?`,
+        [outlet_id]
+      );
+      if (allSections.length > 0) {
+        const sectionValues = allSections.map((s, i) => [userId, s.id, outlet_id, i === 0, 1]);
+        await pool.query(
+          `INSERT IGNORE INTO user_sections (user_id, section_id, outlet_id, is_primary, is_active)
+           VALUES ?`,
+          [sectionValues]
+        );
+      }
+    }
+  }
+
+  /**
    * Check if target roles include super_admin or master level roles
    */
   async containsSuperAdminRoles(roleIds) {
@@ -147,19 +192,32 @@ class UserService {
     let effectiveOutletId = outletId; // Query param takes precedence if super_admin
     
     if (userContext) {
-      const isSuperAdmin = userContext.roles.includes('master') || userContext.roles.includes('super_admin');
-      
-      if (!isSuperAdmin) {
-        // Non-super_admin users can only see users from their outlet
+      const isMaster     = userContext.roles.includes('master');
+      const isSuperAdmin = !isMaster && userContext.roles.includes('super_admin');
+
+      if (isMaster) {
+        // master: no restriction — sees all users (effectiveOutletId still works as additional filter)
+      } else if (isSuperAdmin) {
+        // super_admin: restrict to users from their owned/assigned outlets
+        whereClause += ` AND ur.outlet_id IN (
+          SELECT DISTINCT o.id FROM outlets o
+          WHERE o.is_active = 1
+            AND (o.created_by = ? OR o.id IN (
+              SELECT ur2.outlet_id FROM user_roles ur2
+              WHERE ur2.user_id = ? AND ur2.is_active = 1 AND ur2.outlet_id IS NOT NULL
+            ))
+        )`;
+        params.push(userContext.userId, userContext.userId);
+        // effectiveOutletId from query param still applies as additional outlet filter below
+      } else {
+        // admin/manager: restrict to their specific outlet
         if (userContext.outletId) {
-          // Admin/manager with outlet: filter by their outlet
           effectiveOutletId = userContext.outletId;
         } else {
-          // Admin without outlet: can only see users without outlet assignments
+          // Admin without outlet: only see users without outlet assignments
           whereClause += ' AND (ur.outlet_id IS NULL OR ur.id IS NULL)';
         }
       }
-      // super_admin: no automatic filtering, can use query param or see all
     }
 
     if (search) {
@@ -426,6 +484,9 @@ class UserService {
         }
       }
 
+      // Auto-assign all floors and sections for admin/super_admin/manager roles
+      await this._autoAssignAdminFloorsAndSections(userId, connection);
+
       // Assign floors
       if (data.floors && data.floors.length > 0) {
         for (const floor of data.floors) {
@@ -632,6 +693,9 @@ class UserService {
           }
         }
       }
+
+      // Auto-assign all floors and sections for admin/super_admin/manager roles (on role change)
+      await this._autoAssignAdminFloorsAndSections(id, connection);
 
       // Update section assignments if provided
       if (data.sections !== undefined) {

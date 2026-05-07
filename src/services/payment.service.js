@@ -410,54 +410,62 @@ const paymentService = {
       // Release table when order is completed (full payment, partial payment, or 0 payment with due)
       const shouldReleaseTable = orderStatus === 'completed' && tableId;
       if (shouldReleaseTable) {
-        // Unmerge any merged tables and restore capacity
-        const [activeMerges] = await connection.query(
-          `SELECT tm.merged_table_id, t.capacity
-           FROM table_merges tm
-           JOIN tables t ON tm.merged_table_id = t.id
-           WHERE tm.primary_table_id = ? AND tm.unmerged_at IS NULL`,
-          [tableId]
+        // Guard: only free table if no OTHER active orders remain on it
+        const [[otherActiveOrders]] = await connection.query(
+          `SELECT COUNT(*) as cnt FROM orders
+           WHERE table_id = ? AND id != ? AND status NOT IN ('paid', 'completed', 'cancelled')`,
+          [tableId, orderId]
         );
+        if (Number(otherActiveOrders.cnt) === 0) {
+          // Unmerge any merged tables and restore capacity
+          const [activeMerges] = await connection.query(
+            `SELECT tm.merged_table_id, t.capacity
+             FROM table_merges tm
+             JOIN tables t ON tm.merged_table_id = t.id
+             WHERE tm.primary_table_id = ? AND tm.unmerged_at IS NULL`,
+            [tableId]
+          );
 
-        if (activeMerges.length > 0) {
-          await connection.query(
-            'UPDATE table_merges SET unmerged_at = NOW(), unmerged_by = ? WHERE primary_table_id = ? AND unmerged_at IS NULL',
-            [data.receivedBy, tableId]
-          );
-          const mergedIds = activeMerges.map(m => m.merged_table_id);
-          await connection.query(
-            'UPDATE tables SET status = "available" WHERE id IN (?)',
-            [mergedIds]
-          );
-          const capacityToRemove = activeMerges.reduce((sum, m) => sum + (m.capacity || 0), 0);
-          if (capacityToRemove > 0) {
+          if (activeMerges.length > 0) {
             await connection.query(
-              'UPDATE tables SET capacity = GREATEST(1, capacity - ?) WHERE id = ?',
-              [capacityToRemove, tableId]
+              'UPDATE table_merges SET unmerged_at = NOW(), unmerged_by = ? WHERE primary_table_id = ? AND unmerged_at IS NULL',
+              [data.receivedBy, tableId]
             );
+            const mergedIds = activeMerges.map(m => m.merged_table_id);
+            await connection.query(
+              'UPDATE tables SET status = "available" WHERE id IN (?)',
+              [mergedIds]
+            );
+            const capacityToRemove = activeMerges.reduce((sum, m) => sum + (m.capacity || 0), 0);
+            if (capacityToRemove > 0) {
+              await connection.query(
+                'UPDATE tables SET capacity = GREATEST(1, capacity - ?) WHERE id = ?',
+                [capacityToRemove, tableId]
+              );
+            }
           }
+
+          await connection.query(
+            `UPDATE tables SET status = 'available' WHERE id = ?`,
+            [tableId]
+          );
         }
 
-        await connection.query(
-          `UPDATE tables SET status = 'available' WHERE id = ?`,
-          [tableId]
-        );
-        
-        // Close table session - use provided ID or find active session for this table
+        // Close the session linked to this order regardless (session belongs to this order)
         if (tableSessionId) {
           await connection.query(
-            `UPDATE table_sessions SET 
+            `UPDATE table_sessions SET
               status = 'completed', ended_at = NOW()
              WHERE id = ?`,
             [tableSessionId]
           );
         } else {
-          // Fallback: close any active sessions for this table
+          // Fallback: close active session for this table that is linked to this order
           await connection.query(
-            `UPDATE table_sessions SET 
+            `UPDATE table_sessions SET
               status = 'completed', ended_at = NOW()
-             WHERE table_id = ? AND status = 'active'`,
-            [tableId]
+             WHERE table_id = ? AND status = 'active' AND order_id = ?`,
+            [tableId, orderId]
           );
         }
       }
@@ -871,54 +879,62 @@ const paymentService = {
       // Release table on any payment (full or partial) — order is completed, table should be freed
       const shouldReleaseTable = (paymentStatus === 'completed' || paymentStatus === 'partial') && tableId;
       if (shouldReleaseTable) {
-        // Unmerge any merged tables and restore capacity
-        const [activeMerges] = await connection.query(
-          `SELECT tm.merged_table_id, t.capacity
-           FROM table_merges tm
-           JOIN tables t ON tm.merged_table_id = t.id
-           WHERE tm.primary_table_id = ? AND tm.unmerged_at IS NULL`,
-          [order.table_id]
+        // Guard: only free table if no OTHER active orders remain on it
+        const [[otherActiveOrders]] = await connection.query(
+          `SELECT COUNT(*) as cnt FROM orders
+           WHERE table_id = ? AND id != ? AND status NOT IN ('paid', 'completed', 'cancelled')`,
+          [order.table_id, orderId]
         );
+        if (Number(otherActiveOrders.cnt) === 0) {
+          // Unmerge any merged tables and restore capacity
+          const [activeMerges] = await connection.query(
+            `SELECT tm.merged_table_id, t.capacity
+             FROM table_merges tm
+             JOIN tables t ON tm.merged_table_id = t.id
+             WHERE tm.primary_table_id = ? AND tm.unmerged_at IS NULL`,
+            [order.table_id]
+          );
 
-        if (activeMerges.length > 0) {
-          await connection.query(
-            'UPDATE table_merges SET unmerged_at = NOW(), unmerged_by = ? WHERE primary_table_id = ? AND unmerged_at IS NULL',
-            [receivedBy, order.table_id]
-          );
-          const mergedIds = activeMerges.map(m => m.merged_table_id);
-          await connection.query(
-            'UPDATE tables SET status = "available" WHERE id IN (?)',
-            [mergedIds]
-          );
-          const capacityToRemove = activeMerges.reduce((sum, m) => sum + (m.capacity || 0), 0);
-          if (capacityToRemove > 0) {
+          if (activeMerges.length > 0) {
             await connection.query(
-              'UPDATE tables SET capacity = GREATEST(1, capacity - ?) WHERE id = ?',
-              [capacityToRemove, order.table_id]
+              'UPDATE table_merges SET unmerged_at = NOW(), unmerged_by = ? WHERE primary_table_id = ? AND unmerged_at IS NULL',
+              [receivedBy, order.table_id]
             );
+            const mergedIds = activeMerges.map(m => m.merged_table_id);
+            await connection.query(
+              'UPDATE tables SET status = "available" WHERE id IN (?)',
+              [mergedIds]
+            );
+            const capacityToRemove = activeMerges.reduce((sum, m) => sum + (m.capacity || 0), 0);
+            if (capacityToRemove > 0) {
+              await connection.query(
+                'UPDATE tables SET capacity = GREATEST(1, capacity - ?) WHERE id = ?',
+                [capacityToRemove, order.table_id]
+              );
+            }
           }
+
+          await connection.query(
+            `UPDATE tables SET status = 'available' WHERE id = ?`,
+            [order.table_id]
+          );
         }
 
-        await connection.query(
-          `UPDATE tables SET status = 'available' WHERE id = ?`,
-          [order.table_id]
-        );
-        
-        // Close table session - use provided ID or find active session for this table
+        // Close the session linked to this order regardless
         if (order.table_session_id) {
           await connection.query(
-            `UPDATE table_sessions SET 
+            `UPDATE table_sessions SET
               status = 'completed', ended_at = NOW()
              WHERE id = ?`,
             [order.table_session_id]
           );
         } else {
-          // Fallback: close any active sessions for this table
+          // Fallback: close active session for this table that is linked to this order
           await connection.query(
-            `UPDATE table_sessions SET 
+            `UPDATE table_sessions SET
               status = 'completed', ended_at = NOW()
-             WHERE table_id = ? AND status = 'active'`,
-            [order.table_id]
+             WHERE table_id = ? AND status = 'active' AND order_id = ?`,
+            [order.table_id, orderId]
           );
         }
       }
@@ -1392,6 +1408,48 @@ const paymentService = {
       );
       if (userFloors.length > 0) {
         floorId = userFloors[0].floor_id;
+      }
+    }
+
+    // ─── Auto-assign admin/super_admin/manager to all floors & sections ─────────
+    if (!floorId) {
+      const [adminRoles] = await pool.query(
+        `SELECT ur.role_id FROM user_roles ur
+         JOIN roles r ON ur.role_id = r.id
+         WHERE ur.user_id = ? AND ur.outlet_id = ?
+           AND r.name IN ('admin', 'super_admin', 'manager')`,
+        [userId, outletId]
+      );
+
+      if (adminRoles.length > 0) {
+        // Auto-assign all floors for this outlet
+        const [allFloors] = await pool.query(
+          `SELECT id FROM floors WHERE outlet_id = ?`,
+          [outletId]
+        );
+        if (allFloors.length > 0) {
+          const floorValues = allFloors.map((f, i) => [userId, f.id, outletId, i === 0, 1]);
+          await pool.query(
+            `INSERT IGNORE INTO user_floors (user_id, floor_id, outlet_id, is_primary, is_active)
+             VALUES ?`,
+            [floorValues]
+          );
+          floorId = allFloors[0].id;
+        }
+
+        // Auto-assign all sections for this outlet
+        const [allSections] = await pool.query(
+          `SELECT id FROM sections WHERE outlet_id = ?`,
+          [outletId]
+        );
+        if (allSections.length > 0) {
+          const sectionValues = allSections.map((s, i) => [userId, s.id, outletId, i === 0, 1]);
+          await pool.query(
+            `INSERT IGNORE INTO user_sections (user_id, section_id, outlet_id, is_primary, is_active)
+             VALUES ?`,
+            [sectionValues]
+          );
+        }
       }
     }
 
@@ -2388,7 +2446,7 @@ const paymentService = {
       endDate = null,
       status = null, // 'open', 'closed', 'all'
       page = 1,
-      limit = 20,
+      limit = 10,
       sortBy = 'session_date',
       sortOrder = 'DESC'
     } = params;
@@ -2487,7 +2545,7 @@ const paymentService = {
     // Calculate real-time values for each shift based on shift time range
     // Process in small batches to avoid exhausting the connection pool.
     // Default limit=20 × 7 queries/shift = 140 concurrent connections > pool(10) + queue(100).
-    const SHIFT_BATCH_SIZE = 3;
+    const SHIFT_BATCH_SIZE = 2;
     const formattedShifts = [];
     for (let _bi = 0; _bi < shifts.length; _bi += SHIFT_BATCH_SIZE) {
       const _batch = shifts.slice(_bi, _bi + SHIFT_BATCH_SIZE);
@@ -2741,7 +2799,7 @@ const paymentService = {
     const shift = shifts[0];
 
     // If cashierId provided, verify this shift belongs to the cashier
-    if (cashierId && shift.cashier_id && shift.cashier_id !== cashierId) {
+    if (cashierId && shift.cashier_id && parseInt(shift.cashier_id) !== parseInt(cashierId)) {
       throw new Error('You can only view your own shifts');
     }
 
@@ -3462,15 +3520,16 @@ const paymentService = {
    * Get single shift summary by ID with shift-time-based calculations
    * @param {number} shiftId - Shift (day_session) ID
    * @param {number} cashierId - If provided, verify shift belongs to this cashier
+   * @param {number} floorId - If provided, verify shift belongs to this floor
    * @returns {Object} - Shift summary with real-time calculations
    */
-  async getShiftSummaryById(shiftId, cashierId = null) {
+  async getShiftSummaryById(shiftId, cashierId = null, floorId = null) {
     const pool = getPool();
     const r2 = (n) => parseFloat((parseFloat(n) || 0).toFixed(2));
 
     // Get shift details
-    const [shifts] = await pool.query(
-      `SELECT 
+    let [shifts] = await pool.query(
+      `SELECT
         ds.*,
         o.name as outlet_name,
         f.name as floor_name,
@@ -3483,14 +3542,45 @@ const paymentService = {
       [shiftId]
     );
 
+    // If shift not found OR floorId provided and doesn't match, try treating shiftId as outletId
+    // This handles the case where client passes outletId in the path with floorId query param
+    if (!shifts[0] || (floorId && shifts[0].floor_id && parseInt(shifts[0].floor_id) !== parseInt(floorId))) {
+      // Try to find the most recent shift for this outlet+floor combination
+      const [floorShifts] = await pool.query(
+        `SELECT
+          ds.*,
+          o.name as outlet_name,
+          f.name as floor_name,
+          cashier.name as cashier_name
+         FROM day_sessions ds
+         LEFT JOIN outlets o ON ds.outlet_id = o.id
+         LEFT JOIN floors f ON ds.floor_id = f.id
+         LEFT JOIN users cashier ON ds.cashier_id = cashier.id
+         WHERE ds.outlet_id = ? AND ds.floor_id = ?
+         ORDER BY ds.status = 'open' DESC, ds.id DESC
+         LIMIT 1`,
+        [shiftId, floorId]
+      );
+      
+      if (floorShifts[0]) {
+        shifts = floorShifts;
+        logger.info(`[getShiftSummaryById] Resolved outletId ${shiftId} + floorId ${floorId} to shift ${floorShifts[0].id}`);
+      }
+    }
+
     if (!shifts[0]) {
       throw new Error('Shift not found');
     }
 
     const shift = shifts[0];
 
+    // If cashierId provided and floorId still doesn't match, block access for cashiers
+    if (floorId && shift.floor_id && parseInt(shift.floor_id) !== parseInt(floorId) && cashierId) {
+      throw new Error('Shift does not belong to the requested floor');
+    }
+
     // If cashierId provided, verify this shift belongs to the cashier
-    if (cashierId && shift.cashier_id && shift.cashier_id !== cashierId) {
+    if (cashierId && shift.cashier_id && parseInt(shift.cashier_id) !== parseInt(cashierId)) {
       throw new Error('You can only view your own shifts');
     }
 
@@ -3527,25 +3617,25 @@ const paymentService = {
 
     logger.info(`Shift ${shiftId} summary time range: ${shiftStartTime} to ${shiftEndTime} (status: ${shift.status})`);
 
-    const floorId = shift.floor_id;
+    const shiftFloorId = shift.floor_id;
 
     // Build query parts — takeaway/delivery with no floor → assign to shift's cashier to avoid double-counting
     let orderFloorCond = '';
     const orderParams = [shift.outlet_id, shiftStartTime, shiftEndTime];
-    if (floorId) {
+    if (shiftFloorId) {
       orderFloorCond = ` AND (floor_id = ? OR (floor_id IS NULL AND order_type IN ('takeaway', 'delivery') AND created_by = ?))`;
-      orderParams.push(floorId, shift.cashier_id);
+      orderParams.push(shiftFloorId, shift.cashier_id);
     }
 
     let paymentFloorCondition = '';
     const paymentParams = [shift.outlet_id, shiftStartTime, shiftEndTime];
     const splitParams = [shift.outlet_id, shiftStartTime, shiftEndTime];
     const dueCollParams = [shift.outlet_id, shiftStartTime, shiftEndTime];
-    if (floorId) {
+    if (shiftFloorId) {
       paymentFloorCondition = ` AND (t.floor_id = ? OR (o.table_id IS NULL AND o.order_type != 'dine_in' AND o.created_by = ?))`;
-      paymentParams.push(floorId, shift.cashier_id);
-      splitParams.push(floorId, shift.cashier_id);
-      dueCollParams.push(floorId, shift.cashier_id);
+      paymentParams.push(shiftFloorId, shift.cashier_id);
+      splitParams.push(shiftFloorId, shift.cashier_id);
+      dueCollParams.push(shiftFloorId, shift.cashier_id);
     }
 
     // Parallel: orderStats(only completed) + regularPayments(excl due) + splitPayments(excl due) + dueCollection
@@ -4155,18 +4245,45 @@ const paymentService = {
     const [customer] = await pool.query(customerQuery, customerParams);
     if (!customer[0]) return null;
 
-    // Get pending due orders with actual due amounts + NC computed from items
+    // Get pending due orders with actual due amounts
     const [pendingOrders] = await pool.query(
       `SELECT o.id, o.order_number, o.total_amount, o.paid_amount, o.due_amount, o.created_at,
-              i.id as invoice_id, i.invoice_number,
-              (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.is_nc = 1 AND oi.status != 'cancelled') as nc_item_count,
-              (SELECT COALESCE(SUM(oi.total_price), 0) FROM order_items oi WHERE oi.order_id = o.id AND oi.is_nc = 1 AND oi.status != 'cancelled') as nc_amount
+              i.id as invoice_id, i.invoice_number
        FROM orders o
        LEFT JOIN invoices i ON o.id = i.order_id AND i.is_cancelled = 0
        WHERE o.customer_id = ? AND o.due_amount > 0 AND o.status != 'cancelled'
        ORDER BY o.created_at DESC`,
       [customerId]
     );
+
+    // Batch-fetch NC counts and amounts for all pending orders in a single query
+    if (pendingOrders.length > 0) {
+      const orderIds = pendingOrders.map(o => o.id);
+      const [ncRows] = await pool.query(
+        `SELECT order_id,
+                COUNT(*) as nc_item_count,
+                COALESCE(SUM(total_price), 0) as nc_amount
+         FROM order_items
+         WHERE order_id IN (${orderIds.map(() => '?').join(',')})
+           AND is_nc = 1 AND status != 'cancelled'
+         GROUP BY order_id`,
+        orderIds
+      );
+
+      const ncByOrder = new Map();
+      for (const row of ncRows) {
+        ncByOrder.set(row.order_id, {
+          nc_item_count: parseInt(row.nc_item_count, 10) || 0,
+          nc_amount: parseFloat(row.nc_amount) || 0,
+        });
+      }
+
+      for (const order of pendingOrders) {
+        const nc = ncByOrder.get(order.id);
+        order.nc_item_count = nc ? nc.nc_item_count : 0;
+        order.nc_amount = nc ? nc.nc_amount : 0;
+      }
+    }
 
     // Calculate actual due from orders
     const actualDueBalance = pendingOrders.reduce((sum, o) => sum + (parseFloat(o.due_amount) || 0), 0);

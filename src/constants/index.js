@@ -235,6 +235,29 @@ const MEAL_SLOTS = {
 };
 
 // ========================
+// SUBSCRIPTION SYSTEM
+// ========================
+const SUBSCRIPTION_STATUS = {
+  TRIAL: 'trial',
+  ACTIVE: 'active',
+  GRACE_PERIOD: 'grace_period',
+  EXPIRED: 'expired',
+  SUSPENDED: 'suspended',
+};
+
+const SUBSCRIPTION_NOTIFICATION_TYPE = {
+  RENEWAL_REMINDER_10D: 'renewal_reminder_10d',
+  RENEWAL_REMINDER_3D: 'renewal_reminder_3d',
+  EXPIRED: 'expired',
+  GRACE_ENDING: 'grace_ending',
+  GRACE_ENDED: 'grace_ended',
+  MANUAL_ACTIVATION: 'manual_activation',
+  MANUAL_DEACTIVATION: 'manual_deactivation',
+};
+
+const GRACE_PERIOD_DAYS = 7;
+
+// ========================
 // SELF ORDER SYSTEM
 // ========================
 const SELF_ORDER = {
@@ -295,4 +318,7 @@ module.exports = {
   DAY_NAMES,
   MEAL_SLOTS,
   SELF_ORDER,
+  SUBSCRIPTION_STATUS,
+  SUBSCRIPTION_NOTIFICATION_TYPE,
+  GRACE_PERIOD_DAYS,
 };

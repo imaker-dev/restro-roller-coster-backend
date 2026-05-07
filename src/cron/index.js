@@ -5,6 +5,8 @@ const { addJob } = require('../queues');
 const { QUEUE_NAMES, REPORT_TYPE } = require('../constants');
 const dynoService = require('../services/dyno.service');
 const onlineOrderService = require('../services/onlineOrder.service');
+const subscriptionService = require('../services/subscription.service');
+const { SUBSCRIPTION_NOTIFICATION_TYPE } = require('../constants');
 
 const jobs = [];
 
@@ -77,6 +79,67 @@ const initializeCronJobs = () => {
     { scheduled: false }
   );
   jobs.push(selfOrderCleanup);
+
+  // Subscription renewal scan — daily at 9 AM
+  //   • 10-day reminder  • 3-day reminder  • Expiry → grace  • Grace end → hard stop
+  const subscriptionScan = cron.schedule(
+    '0 9 * * *',
+    async () => {
+      logger.info('Running subscription renewal scan');
+      try {
+        const result = await subscriptionService.scanExpiringSubscriptions();
+        const totalNotifications =
+          result.reminder10Days.length +
+          result.reminder3Days.length +
+          result.expiredToday.length +
+          result.graceEndedToday.length;
+
+        // Log notifications (downstream email/WhatsApp via BullMQ)
+        for (const item of result.reminder10Days) {
+          await subscriptionService.logNotification(
+            item.outletId,
+            SUBSCRIPTION_NOTIFICATION_TYPE.RENEWAL_REMINDER_10D,
+            'in_app',
+            { subscriptionEnd: item.subscriptionEnd }
+          );
+          await addJob(QUEUE_NAMES.NOTIFICATION, 'subscription-reminder-10d', { outletId: item.outletId });
+        }
+        for (const item of result.reminder3Days) {
+          await subscriptionService.logNotification(
+            item.outletId,
+            SUBSCRIPTION_NOTIFICATION_TYPE.RENEWAL_REMINDER_3D,
+            'in_app',
+            { subscriptionEnd: item.subscriptionEnd }
+          );
+          await addJob(QUEUE_NAMES.NOTIFICATION, 'subscription-reminder-3d', { outletId: item.outletId });
+        }
+        for (const item of result.expiredToday) {
+          await subscriptionService.logNotification(
+            item.outletId,
+            SUBSCRIPTION_NOTIFICATION_TYPE.EXPIRED,
+            'in_app',
+            { subscriptionEnd: item.subscriptionEnd }
+          );
+          await addJob(QUEUE_NAMES.NOTIFICATION, 'subscription-expired', { outletId: item.outletId });
+        }
+        for (const item of result.graceEndedToday) {
+          await subscriptionService.logNotification(
+            item.outletId,
+            SUBSCRIPTION_NOTIFICATION_TYPE.GRACE_ENDED,
+            'in_app',
+            { gracePeriodEnd: item.gracePeriodEnd }
+          );
+          await addJob(QUEUE_NAMES.NOTIFICATION, 'subscription-grace-ended', { outletId: item.outletId });
+        }
+
+        logger.info(`Subscription scan complete: ${totalNotifications} notifications queued`);
+      } catch (error) {
+        logger.error('Subscription scan cron failed:', error);
+      }
+    },
+    { scheduled: false }
+  );
+  jobs.push(subscriptionScan);
 
   // Start all jobs
   jobs.forEach((job) => job.start());

@@ -476,7 +476,7 @@ const customerService = {
               o.is_interstate, o.customer_gstin, o.customer_company_name,
               o.created_at, o.billed_at,
               t.table_number, t.name as table_name,
-              i.cgst_amount, i.sgst_amount, i.igst_amount, i.invoice_number,
+              i.cgst_amount, i.sgst_amount, i.igst_amount, i.invoice_number, i.token_number,
               i.paid_amount as invoice_paid_amount, i.due_amount as invoice_due_amount
        FROM orders o
        LEFT JOIN tables t ON o.table_id = t.id
@@ -518,6 +518,7 @@ const customerService = {
           customerGstin: o.customer_gstin || null,
           customerCompanyName: o.customer_company_name || null,
           invoiceNumber: o.invoice_number || null,
+          tokenNumber: o.token_number || null,
           tableNumber: o.table_number,
           tableName: o.table_name,
           createdAt: o.created_at,
@@ -736,7 +737,7 @@ const customerService = {
            o.created_at, o.updated_at, o.billed_at,
            t.id AS table_id, t.table_number, t.name AS table_name,
            f.id AS floor_id, f.name AS floor_name,
-           i.id AS invoice_id, i.invoice_number, i.invoice_date, i.invoice_time,
+           i.id AS invoice_id, i.invoice_number, i.token_number, i.invoice_date, i.invoice_time,
            i.grand_total AS invoice_grand_total, i.payment_status AS invoice_payment_status
          ${baseOrderSql}
          ORDER BY ${sortExpr} ${orderDir}, o.id DESC
@@ -752,7 +753,7 @@ const customerService = {
            o.created_at, o.updated_at, o.billed_at,
            t.id AS table_id, t.table_number, t.name AS table_name,
            f.id AS floor_id, f.name AS floor_name,
-           i.id AS invoice_id, i.invoice_number, i.invoice_date, i.invoice_time,
+           i.id AS invoice_id, i.invoice_number, i.token_number, i.invoice_date, i.invoice_time,
            i.grand_total AS invoice_grand_total, i.payment_status AS invoice_payment_status
          ${baseOrderSql}
          ORDER BY ${sortExpr} ${orderDir}, o.id DESC`;
@@ -877,6 +878,7 @@ const customerService = {
         invoice: o.invoice_id ? {
           id: o.invoice_id,
           invoiceNumber: o.invoice_number,
+          tokenNumber: o.token_number || null,
           invoiceDate: o.invoice_date || null,
           invoiceTime: o.invoice_time || null,
           grandTotal: parseFloat(o.invoice_grand_total) || 0,

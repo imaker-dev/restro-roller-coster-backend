@@ -324,26 +324,65 @@ const orderService = {
       let tableSessionId = null;
 
       if (tableId && orderType === 'dine_in') {
-        if (needNewSession) {
+        // Lock table row to serialize concurrent operations on same table
+        await connection.query('SELECT id FROM tables WHERE id = ? FOR UPDATE', [tableId]);
+
+        // Re-read session state under lock (pre-transaction read may be stale)
+        const [sessionResult] = await connection.query(
+          'SELECT * FROM table_sessions WHERE table_id = ? AND status = \'active\' ORDER BY id DESC LIMIT 1',
+          [tableId]
+        );
+        const lockedSession = sessionResult[0] || null;
+        let lockedNeedNewSession = false;
+
+        if (lockedSession) {
+          if (lockedSession.order_id) {
+            const [[existingOrder]] = await connection.query(
+              'SELECT id, status, payment_status FROM orders WHERE id = ?',
+              [lockedSession.order_id]
+            );
+            const orderStatus = existingOrder?.status;
+            const paymentStatus = existingOrder?.payment_status;
+            if (['paid', 'completed', 'cancelled'].includes(orderStatus) || paymentStatus === 'paid') {
+              lockedNeedNewSession = true;
+            } else if (isPrivileged) {
+              lockedNeedNewSession = true;
+            } else {
+              throw new Error(`Table already has an active order (Order ID: ${lockedSession.order_id}). Use existing order or end session first.`);
+            }
+          } else {
+            const sessionOwnerId = parseInt(lockedSession.started_by, 10);
+            const currentUserId = parseInt(createdBy, 10);
+            if (sessionOwnerId !== currentUserId && !isPrivileged) {
+              const [[sessionOwner]] = await connection.query('SELECT name FROM users WHERE id = ?', [sessionOwnerId]);
+              const ownerName = sessionOwner?.name || `User ID ${sessionOwnerId}`;
+              throw new Error(`This table session was started by ${ownerName}. Only they can create orders for this table, or contact a manager to transfer the table.`);
+            }
+          }
+        } else {
+          lockedNeedNewSession = true;
+        }
+
+        if (lockedNeedNewSession) {
           // End old session if it exists (inline — no nested transaction)
-          if (existingSession) {
+          if (lockedSession) {
             await connection.query(
               `UPDATE table_sessions SET status = 'completed', ended_at = NOW(), ended_by = ? WHERE id = ?`,
-              [createdBy, existingSession.id]
+              [createdBy, lockedSession.id]
             );
           }
           // Create new session inline (avoid nested tableService.startSession transaction)
-          const [sessionResult] = await connection.query(
+          const [sessionResult2] = await connection.query(
             `INSERT INTO table_sessions (table_id, guest_count, guest_name, guest_phone, started_by)
              VALUES (?, ?, ?, ?, ?)`,
             [tableId, guestCount, customerName || null, customerPhone || null, createdBy]
           );
-          tableSessionId = sessionResult.insertId;
+          tableSessionId = sessionResult2.insertId;
           // Set table to occupied
           await connection.query('UPDATE tables SET status = \'occupied\' WHERE id = ?', [tableId]);
-        } else if (existingSession) {
+        } else if (lockedSession) {
           // Reuse existing session
-          tableSessionId = existingSession.id;
+          tableSessionId = lockedSession.id;
         }
       }
 
@@ -1461,7 +1500,7 @@ const orderService = {
     const pool = getPool();
     const {
       search, sortBy = 'created_at', sortOrder = 'DESC',
-      status, cashierId, userRoles = []
+      status, startDate, endDate, cashierId, userRoles = []
     } = filters;
     const page = Math.max(1, parseInt(filters.page) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(filters.limit) || 20));
@@ -1495,16 +1534,31 @@ const orderService = {
       whereClause += ` AND o.status NOT IN ('paid', 'completed', 'cancelled')`;
     }
 
+    // Date range filter (business hours: 4am to 4am)
+    if (startDate && endDate) {
+      const { startDt, endDt } = businessDayRange(startDate, endDate);
+      whereClause += ` AND o.created_at >= ? AND o.created_at < ?`;
+      params.push(startDt, endDt);
+    } else if (startDate) {
+      const { startDt } = businessDayRange(startDate, startDate);
+      whereClause += ` AND o.created_at >= ?`;
+      params.push(startDt);
+    } else if (endDate) {
+      const { endDt } = businessDayRange(endDate, endDate);
+      whereClause += ` AND o.created_at < ?`;
+      params.push(endDt);
+    }
+
     if (search) {
-      whereClause += ` AND (o.order_number LIKE ? OR o.customer_name LIKE ? OR o.customer_phone LIKE ?)`;
+      whereClause += ` AND (o.order_number LIKE ? OR o.customer_name LIKE ? OR o.customer_phone LIKE ? OR i.token_number LIKE ?)`;
       const s = `%${search}%`;
-      params.push(s, s, s);
+      params.push(s, s, s, s);
     }
 
     // Step 1: Parallel fetch — count + orders (fast, uses indexes on orders table)
     const dataQuery = `SELECT o.*,
         u.name as created_by_name,
-        i.id as invoice_id, i.invoice_number, i.grand_total as invoice_total, i.payment_status as invoice_payment_status
+        i.id as invoice_id, i.invoice_number, i.token_number, i.grand_total as invoice_total, i.payment_status as invoice_payment_status
        FROM orders o
        LEFT JOIN users u ON o.created_by = u.id
        LEFT JOIN invoices i ON i.order_id = o.id AND i.is_cancelled = 0
@@ -1513,7 +1567,7 @@ const orderService = {
        LIMIT ? OFFSET ?`;
 
     const [countResult, dataResult] = await Promise.all([
-      pool.query(`SELECT COUNT(*) as total FROM orders o ${whereClause}`, params),
+      pool.query(`SELECT COUNT(DISTINCT o.id) as total FROM orders o LEFT JOIN invoices i ON i.order_id = o.id AND i.is_cancelled = 0 ${whereClause}`, params),
       pool.query(dataQuery, [...params, limit, offset])
     ]);
     const total = countResult[0][0].total;
@@ -1795,6 +1849,7 @@ const orderService = {
     const invoice = inv ? {
       id: inv.id,
       invoiceNumber: inv.invoice_number,
+      tokenNumber: inv.token_number || null,
       subtotal: parseFloat(inv.subtotal) || 0,
       discountAmount: parseFloat(inv.discount_amount) || 0,
       taxableAmount: parseFloat(inv.taxable_amount) || 0,
@@ -2395,14 +2450,63 @@ const orderService = {
         logger.info(`Cancel order ${orderId}: ${reversedCount} items reversed, ${wastageCount} items wastage`);
       }
 
-      // Release table if dine-in - end session and set to available
+      // Release table if dine-in - end session and set to available (INLINE, same transaction)
       if (order.table_id) {
-        // End session first (this also sets table to available)
-        try {
-          await tableService.endSession(order.table_id, userId);
-        } catch (e) {
-          // If no active session, just update table status
-          await tableService.updateStatus(order.table_id, 'available', userId);
+        // Get active session inline (same transaction)
+        const [sessions] = await connection.query(
+          'SELECT * FROM table_sessions WHERE table_id = ? AND status = "active"',
+          [order.table_id]
+        );
+
+        if (sessions.length > 0) {
+          const session = sessions[0];
+
+          // End session
+          await connection.query(
+            'UPDATE table_sessions SET status = "completed", ended_at = NOW(), ended_by = ? WHERE id = ?',
+            [userId, session.id]
+          );
+
+          // Unmerge any merged tables and restore capacity
+          const [activeMerges] = await connection.query(
+            `SELECT tm.merged_table_id, t.capacity
+             FROM table_merges tm
+             JOIN tables t ON tm.merged_table_id = t.id
+             WHERE tm.primary_table_id = ? AND tm.unmerged_at IS NULL`,
+            [order.table_id]
+          );
+
+          if (activeMerges.length > 0) {
+            await connection.query(
+              'UPDATE table_merges SET unmerged_at = NOW(), unmerged_by = ? WHERE primary_table_id = ? AND tm.unmerged_at IS NULL',
+              [userId, order.table_id]
+            );
+            const mergedIds = activeMerges.map(m => m.merged_table_id);
+            await connection.query(
+              'UPDATE tables SET status = "available" WHERE id IN (?)',
+              [mergedIds]
+            );
+            const capacityToRemove = activeMerges.reduce((sum, m) => sum + (m.capacity || 0), 0);
+            if (capacityToRemove > 0) {
+              await connection.query(
+                'UPDATE tables SET capacity = GREATEST(1, capacity - ?) WHERE id = ?',
+                [capacityToRemove, order.table_id]
+              );
+            }
+          }
+        }
+
+        // Only free table if no OTHER active orders remain on it
+        const [[otherActiveOrders]] = await connection.query(
+          `SELECT COUNT(*) as cnt FROM orders
+           WHERE table_id = ? AND id != ? AND status NOT IN ('paid', 'completed', 'cancelled')`,
+          [order.table_id, orderId]
+        );
+        if (Number(otherActiveOrders.cnt) === 0) {
+          await connection.query(
+            'UPDATE tables SET status = "available" WHERE id = ?',
+            [order.table_id]
+          );
         }
       }
 
@@ -2551,7 +2655,7 @@ const orderService = {
         ts.started_at as session_started_at, ts.ended_at as session_ended_at,
         u.name as created_by_name,
         inv.grand_total as invoice_grand_total, inv.is_nc as invoice_is_nc,
-        inv.nc_amount as invoice_nc_amount, inv.invoice_number
+        inv.nc_amount as invoice_nc_amount, inv.invoice_number, inv.token_number
       FROM orders o
       LEFT JOIN tables t ON o.table_id = t.id
       LEFT JOIN floors f ON o.floor_id = f.id
@@ -2570,10 +2674,21 @@ const orderService = {
       params.push(captainId);
     }
 
-    // Floor restriction - for cashiers, shows only orders from their assigned floors
+    // Floor restriction - include takeaway/delivery orders (floor_id IS NULL)
     if (filters.floorIds && filters.floorIds.length > 0) {
-      query += ` AND o.floor_id IN (${filters.floorIds.map(() => '?').join(',')})`;
-      params.push(...filters.floorIds);
+      if (!viewAllFloorOrders) {
+        // Captain: own orders on assigned floors + own takeaway/delivery
+        query += ` AND (o.floor_id IN (${filters.floorIds.map(() => '?').join(',')}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery') AND o.created_by = ?))`;
+        params.push(...filters.floorIds, captainId);
+      } else if (!filters.isPrivileged) {
+        // Cashier: all orders on floors + own takeaway/delivery only
+        query += ` AND (o.floor_id IN (${filters.floorIds.map(() => '?').join(',')}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery') AND o.created_by = ?))`;
+        params.push(...filters.floorIds, captainId);
+      } else {
+        // Admin/manager: all orders on floors + all takeaway/delivery
+        query += ` AND (o.floor_id IN (${filters.floorIds.map(() => '?').join(',')}) OR (o.floor_id IS NULL AND o.order_type IN ('takeaway', 'delivery')))`;
+        params.push(...filters.floorIds);
+      }
     }
 
     // Status filter
@@ -2596,13 +2711,14 @@ const orderService = {
     // Search filter
     if (search) {
       query += ` AND (
-        o.order_number LIKE ? OR 
-        t.table_number LIKE ? OR 
+        o.order_number LIKE ? OR
+        t.table_number LIKE ? OR
         o.customer_name LIKE ? OR
-        o.customer_phone LIKE ?
+        o.customer_phone LIKE ? OR
+        inv.token_number LIKE ?
       )`;
       const searchPattern = `%${search}%`;
-      params.push(searchPattern, searchPattern, searchPattern, searchPattern);
+      params.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
     }
 
     // Date range filter (business hours: 4am to 4am)
@@ -2635,7 +2751,7 @@ const orderService = {
     const sortColumn = validSortColumns.includes(sortBy) ? sortBy : 'created_at';
     const order = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
 
-    const countQuery = query.replace(/SELECT[\s\S]*?FROM orders/, 'SELECT COUNT(*) as total FROM orders');
+    const countQuery = query.replace(/SELECT[\s\S]*?FROM orders/, 'SELECT COUNT(DISTINCT o.id) as total FROM orders');
     const dataQuery = query + ` ORDER BY o.${sortColumn} ${order} LIMIT ? OFFSET ?`;
     const dataParams = [...params, parseInt(limit), (parseInt(page) - 1) * parseInt(limit)];
 
@@ -3552,18 +3668,25 @@ const orderService = {
         );
         sourceOrderCancelled = true;
 
-        // End session and free source table
+        // End session and free source table (only if no OTHER active orders remain)
         if (srcOrder.table_id) {
-          await connection.query(
-            `UPDATE table_sessions SET status = 'completed', ended_at = NOW(), ended_by = ?
-             WHERE table_id = ? AND status = 'active'`,
-            [userId, srcOrder.table_id]
+          const [[otherActiveOrders]] = await connection.query(
+            `SELECT COUNT(*) as cnt FROM orders
+             WHERE table_id = ? AND id != ? AND status NOT IN ('paid', 'completed', 'cancelled')`,
+            [srcOrder.table_id, sourceOrderId]
           );
-          await connection.query(
-            `UPDATE tables SET status = 'available' WHERE id = ?`,
-            [srcOrder.table_id]
-          );
-          sourceTableFreed = true;
+          if (Number(otherActiveOrders.cnt) === 0) {
+            await connection.query(
+              `UPDATE table_sessions SET status = 'completed', ended_at = NOW(), ended_by = ?
+               WHERE table_id = ? AND status = 'active'`,
+              [userId, srcOrder.table_id]
+            );
+            await connection.query(
+              `UPDATE tables SET status = 'available' WHERE id = ?`,
+              [srcOrder.table_id]
+            );
+            sourceTableFreed = true;
+          }
         }
       }
 
@@ -3793,17 +3916,25 @@ const orderService = {
       page = 1,
       limit = 20,
       sortBy = 'created_at',
-      sortOrder = 'DESC'
+      sortOrder = 'DESC',
+      allowedOutletIds = null, // Array of outlet IDs for super_admin scope enforcement
     } = params;
 
     const offset = (page - 1) * limit;
     const conditions = [];
     const queryParams = [];
 
-    // Outlet filter
+    // Outlet filter — respects super_admin scope
     if (outletId) {
       conditions.push('o.outlet_id = ?');
       queryParams.push(outletId);
+    } else if (allowedOutletIds && allowedOutletIds.length > 0) {
+      // No specific outlet requested: restrict to allowed outlets
+      conditions.push(`o.outlet_id IN (?)`);
+      queryParams.push(allowedOutletIds);
+    } else if (allowedOutletIds && allowedOutletIds.length === 0) {
+      // super_admin with zero outlets — return nothing
+      return { orders: [], total: 0, page: parseInt(page), limit: parseInt(limit), totalPages: 0 };
     }
 
     // Status filter
@@ -4093,15 +4224,22 @@ const orderService = {
       minAmount = null,
       maxAmount = null,
       sortBy = 'created_at',
-      sortOrder = 'DESC'
+      sortOrder = 'DESC',
+      allowedOutletIds = null, // Array of outlet IDs for super_admin scope enforcement
     } = params;
 
     const conditions = [];
     const queryParams = [];
 
+    // Outlet filter — respects super_admin scope
     if (outletId) {
       conditions.push('o.outlet_id = ?');
       queryParams.push(outletId);
+    } else if (allowedOutletIds && allowedOutletIds.length > 0) {
+      conditions.push(`o.outlet_id IN (?)`);
+      queryParams.push(allowedOutletIds);
+    } else if (allowedOutletIds && allowedOutletIds.length === 0) {
+      return { orders: [] };
     }
     if (status && status !== 'all') {
       conditions.push('o.status = ?');

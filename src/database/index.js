@@ -17,6 +17,8 @@ const initializeDatabase = async () => {
     enableKeepAlive: dbConfig.enableKeepAlive,
     keepAliveInitialDelay: dbConfig.keepAliveInitialDelay,
     idleTimeout: dbConfig.idleTimeout,
+    connectTimeout: dbConfig.connectTimeout,
+    acquireTimeout: dbConfig.acquireTimeout,
     timezone: dbConfig.timezone,
     dateStrings: dbConfig.dateStrings,
     charset: dbConfig.charset,

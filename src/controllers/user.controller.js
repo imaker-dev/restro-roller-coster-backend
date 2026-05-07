@@ -1,17 +1,29 @@
 const userService = require('../services/user.service');
+const { getSuperAdminOutletIds } = require('../utils/helpers');
 const logger = require('../utils/logger');
 
 /**
  * GET /api/v1/users
  * Get all users with pagination and filters
- * Outlet-wise: super_admin sees all, others see only their outlet's users
+ * Outlet-wise: super_admin sees only their own outlets' users
  */
 const getUsers = async (req, res, next) => {
   try {
-    // Pass user context for outlet-wise filtering
+    const userId = req.user.userId;
+    const roles  = req.user.roles || [];
+
+    // If a specific outletId is requested, verify super_admin owns it
+    const requestedOutletId = req.query.outletId ? parseInt(req.query.outletId, 10) : null;
+    if (requestedOutletId) {
+      const allowedOutletIds = await getSuperAdminOutletIds(userId, roles);
+      if (allowedOutletIds !== null && !allowedOutletIds.includes(requestedOutletId)) {
+        return res.status(403).json({ success: false, message: 'You do not have access to this outlet' });
+      }
+    }
+
     const userContext = {
-      userId: req.user.userId,
-      roles: req.user.roles || [],
+      userId,
+      roles,
       outletId: req.user.outletId,
     };
 

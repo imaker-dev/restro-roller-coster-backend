@@ -159,6 +159,36 @@ const getUserFloorIds = async (userId, outletId) => {
   return result;
 };
 
+/**
+ * Returns the outlet IDs a super_admin may access:
+ *   - outlets they created (created_by = userId)
+ *   - outlets explicitly assigned via user_roles
+ * Returns null for master (unrestricted) and non-super_admin users.
+ * Returns [] when super_admin has no outlets yet.
+ *
+ * @param {number} userId
+ * @param {string[]} roles  - e.g. req.user.roles
+ * @returns {Promise<number[]|null>}
+ */
+const getSuperAdminOutletIds = async (userId, roles) => {
+  const isMaster = roles.includes('master');
+  if (isMaster) return null;
+  if (!roles.includes('super_admin')) return null;
+  const { getPool } = require('../database');
+  const pool = getPool();
+  const [rows] = await pool.query(
+    `SELECT DISTINCT o.id
+     FROM outlets o
+     WHERE o.is_active = 1
+       AND (o.created_by = ? OR o.id IN (
+         SELECT ur.outlet_id FROM user_roles ur
+         WHERE ur.user_id = ? AND ur.is_active = 1 AND ur.outlet_id IS NOT NULL
+       ))`,
+    [userId, userId]
+  );
+  return rows.map(r => r.id);
+};
+
 module.exports = {
   generateUUID,
   generateCode,
@@ -180,4 +210,5 @@ module.exports = {
   sanitizeInput,
   prefixImageUrl,
   getUserFloorIds,
+  getSuperAdminOutletIds,
 };

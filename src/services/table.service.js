@@ -889,6 +889,25 @@ const tableService = {
       }
     }
 
+    // Auto-repair: tables with active orders but status 'available' → set to 'running'
+    const repairTableIds = tables
+      .filter(t => t.current_order_id && t.status === 'available')
+      .map(t => t.id);
+    if (repairTableIds.length > 0) {
+      pool.query(
+        `UPDATE tables SET status = 'running' WHERE id IN (?) AND status = 'available'`,
+        [repairTableIds]
+      ).then(() => {
+        logger.info(`[getByFloor] Auto-repaired ${repairTableIds.length} table(s) with orphaned orders: ${repairTableIds.join(',')}`);
+      }).catch(err => {
+        logger.error('[getByFloor] Auto-repair failed:', err.message);
+      });
+      // Update in-memory status for this response
+      for (const t of tables) {
+        if (repairTableIds.includes(t.id)) t.status = 'running';
+      }
+    }
+
     const activeOrderIds = tables.filter(t => t.current_order_id).map(t => t.current_order_id);
 
     // Parallel batch queries
@@ -1125,6 +1144,18 @@ const tableService = {
 
     const oldStatus = table.status;
 
+    // Guard: prevent setting 'available' if active orders exist on this table
+    if (status === 'available') {
+      const [[activeCheck]] = await pool.query(
+        `SELECT COUNT(*) as active_count FROM orders
+         WHERE table_id = ? AND status NOT IN ('paid', 'completed', 'cancelled')`,
+        [id]
+      );
+      if (activeCheck.active_count > 0) {
+        throw new Error(`Cannot set table to available: ${activeCheck.active_count} active order(s) still on this table`);
+      }
+    }
+
     await pool.query('UPDATE tables SET status = ? WHERE id = ?', [status, id]);
 
     // Fire-and-forget: log + cache (don't block response)
@@ -1224,12 +1255,39 @@ const tableService = {
     try {
       await connection.beginTransaction();
 
-      // Close any existing active sessions for this table to prevent duplicates
-      await connection.query(
-        `UPDATE table_sessions SET status = 'closed', ended_at = NOW() 
-         WHERE table_id = ? AND status = 'active'`,
+      // Lock table row to serialize concurrent session starts on same table
+      await connection.query('SELECT id FROM tables WHERE id = ? FOR UPDATE', [tableId]);
+
+      // Re-read table status under lock (pre-transaction read may be stale)
+      const [[lockedTable]] = await connection.query(
+        `SELECT id, table_number, name, status, floor_id, outlet_id
+         FROM tables WHERE id = ? AND is_active = 1`,
         [tableId]
       );
+      if (!lockedTable) throw new Error('Table not found');
+      if (lockedTable.status !== 'available' && lockedTable.status !== 'reserved') {
+        throw new Error(`Table is currently ${lockedTable.status}`);
+      }
+
+      // Close any existing active sessions for this table to prevent duplicates
+      // But ONLY if they have no active orders (guard against orphaning orders)
+      const [staleSessions] = await connection.query(
+        `SELECT ts.id FROM table_sessions ts
+         WHERE ts.table_id = ? AND ts.status = 'active'
+           AND NOT EXISTS (
+             SELECT 1 FROM orders o
+             WHERE o.table_id = ? AND o.status NOT IN ('paid', 'completed', 'cancelled')
+           )`,
+        [tableId, tableId]
+      );
+      if (staleSessions.length > 0) {
+        const staleIds = staleSessions.map(s => s.id);
+        await connection.query(
+          `UPDATE table_sessions SET status = 'closed', ended_at = NOW()
+           WHERE id IN (?)`,
+          [staleIds]
+        );
+      }
 
       // Create session
       const [result] = await connection.query(
@@ -1309,6 +1367,16 @@ const tableService = {
       if (sessions.length === 0) throw new Error('No active session found');
 
       const session = sessions[0];
+
+      // Guard: check for active orders on this table before ending session
+      const [[activeOrderCheck]] = await connection.query(
+        `SELECT COUNT(*) as active_count FROM orders
+         WHERE table_id = ? AND status NOT IN ('paid', 'completed', 'cancelled')`,
+        [tableId]
+      );
+      if (activeOrderCheck.active_count > 0) {
+        throw new Error(`Cannot end session: ${activeOrderCheck.active_count} active order(s) still on this table`);
+      }
 
       // End session
       await connection.query(
@@ -1396,18 +1464,35 @@ const tableService = {
   async getCurrentSession(tableId) {
     const pool = getPool();
     const [sessions] = await pool.query(
-      `SELECT ts.*, 
+      `SELECT ts.*,
         u.name as captain_name, u.employee_code as captain_code,
-        o.id as order_id, o.order_number, o.total_amount, o.status as order_status,
-        (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) as item_count,
-        (SELECT COUNT(*) FROM kot_tickets kt WHERE kt.order_id = o.id AND kt.status IN ('pending', 'preparing')) as pending_kots
+        o.id as order_id, o.order_number, o.total_amount, o.status as order_status
        FROM table_sessions ts
        LEFT JOIN users u ON ts.started_by = u.id
        LEFT JOIN orders o ON ts.order_id = o.id
        WHERE ts.table_id = ? AND ts.status = 'active'`,
       [tableId]
     );
-    return sessions[0] || null;
+
+    if (!sessions[0]) return null;
+
+    const orderId = sessions[0].order_id;
+    if (orderId) {
+      // Batch-fetch item count + pending KOT count in a single query
+      const [[counts]] = await pool.query(
+        `SELECT
+          (SELECT COUNT(*) FROM order_items WHERE order_id = ?) as item_count,
+          (SELECT COUNT(*) FROM kot_tickets WHERE order_id = ? AND status IN ('pending', 'preparing')) as pending_kots`,
+        [orderId, orderId]
+      );
+      sessions[0].item_count = parseInt(counts.item_count, 10) || 0;
+      sessions[0].pending_kots = parseInt(counts.pending_kots, 10) || 0;
+    } else {
+      sessions[0].item_count = 0;
+      sessions[0].pending_kots = 0;
+    }
+
+    return sessions[0];
   },
 
   /**
@@ -2172,11 +2257,18 @@ const tableService = {
         // Existing KOT history stays intact, new KOTs will get new table number from order
       }
 
-      // 9. Update source table status to available
-      await connection.query(
-        `UPDATE tables SET status = 'available' WHERE id = ?`,
-        [sourceTableId]
+      // 9. Update source table status to available (only if no OTHER active orders remain)
+      const [[otherActiveOrders]] = await connection.query(
+        `SELECT COUNT(*) as cnt FROM orders
+         WHERE table_id = ? AND id != ? AND status NOT IN ('paid', 'completed', 'cancelled')`,
+        [sourceTableId, session.order_id]
       );
+      if (Number(otherActiveOrders.cnt) === 0) {
+        await connection.query(
+          `UPDATE tables SET status = 'available' WHERE id = ?`,
+          [sourceTableId]
+        );
+      }
 
       // 10. Update target table status to match source's previous status
       await connection.query(

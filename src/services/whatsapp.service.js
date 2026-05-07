@@ -414,6 +414,36 @@ const sendOrderUpdate = (to, order, outletName = 'Restaurant') => {
   return sendText(to, message);
 };
 
+/**
+ * Generate subscription receipt PDF in memory and send it as a WhatsApp document.
+ * @param {string} to
+ * @param {object} receiptData - { receiptNo, date, outletName, baseAmount, gstAmount, totalAmount, gstPercentage, subscriptionStart, subscriptionEnd, paymentMode, paymentId }
+ * @param {object} outlet  - { name, address, phone, email, gstin }
+ * @param {string} caption - Optional caption text
+ */
+const sendSubscriptionReceiptPDF = async (to, receiptData, outlet = {}, caption = '') => {
+  const { generateSubscriptionReceiptPDF } = require('../utils/subscription-receipt-pdf');
+  const pdfBuffer = await generateSubscriptionReceiptPDF(receiptData, outlet);
+
+  const filename = `Subscription-Receipt-${receiptData.receiptNo || 'receipt'}.pdf`;
+  const mediaId = await uploadMedia(pdfBuffer, filename);
+
+  const messageCaption = caption ||
+    `🧾 Subscription Receipt #${receiptData.receiptNo}\n` +
+    `Amount Paid: ₹${parseFloat(receiptData.totalAmount).toFixed(2)}\n` +
+    `Valid Until: ${receiptData.subscriptionEnd || 'N/A'}\n` +
+    `Thank you!`;
+
+  return sendMessage(to, {
+    type: 'document',
+    document: {
+      id: mediaId,
+      filename,
+      caption: messageCaption,
+    },
+  });
+};
+
 module.exports = {
   sendMessage,
   sendText,
@@ -428,5 +458,6 @@ module.exports = {
   sendBillingSummary,
   sendBillingTemplate,
   sendOrderUpdate,
+  sendSubscriptionReceiptPDF,
   normalizePhone,
 };

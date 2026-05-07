@@ -73,14 +73,15 @@ const outletService = {
 
   /**
    * Get all outlets (filtered by user's assigned outlets)
-   * super_admin: all active outlets
+   * master:       all active outlets (global access)
+   * super_admin:  outlets they created OR are explicitly assigned via user_roles
    * admin/manager: only outlets assigned via user_roles
    */
   async getAll(filters = {}, userId = null, userRoles = []) {
     const pool = getPool();
     
-    // Check if user is master or super_admin
-    const isSuperAdmin = userRoles && (userRoles.includes('master') || userRoles.includes('super_admin'));
+    const isMaster      = userRoles && userRoles.includes('master');
+    const isSuperAdmin  = !isMaster && userRoles && userRoles.includes('super_admin');
     
     let query = `
       SELECT o.*, 
@@ -91,8 +92,17 @@ const outletService = {
     `;
     const params = [];
 
-    // Filter by user's assigned outlets (unless super_admin)
-    if (!isSuperAdmin && userId) {
+    if (isMaster) {
+      // master: no restriction — sees every outlet
+    } else if (isSuperAdmin && userId) {
+      // super_admin: outlets they created OR are assigned via user_roles
+      query += ` AND (o.created_by = ? OR o.id IN (
+        SELECT ur.outlet_id FROM user_roles ur
+        WHERE ur.user_id = ? AND ur.is_active = 1 AND ur.outlet_id IS NOT NULL
+      ))`;
+      params.push(userId, userId);
+    } else if (userId) {
+      // admin/manager: only outlets assigned via user_roles
       query += ` AND o.id IN (
         SELECT DISTINCT ur.outlet_id 
         FROM user_roles ur 

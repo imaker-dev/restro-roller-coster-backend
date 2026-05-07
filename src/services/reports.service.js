@@ -6139,9 +6139,9 @@ const reportsService = {
 
     const whereClause = 'WHERE ' + conditions.join(' AND ');
 
-    // Get actual running orders as array
+    // Query 1: Fetch running orders (no correlated subqueries)
     const [orders] = await pool.query(
-      `SELECT 
+      `SELECT
         o.id, o.order_number, o.order_type, o.status, o.payment_status,
         o.table_id, o.floor_id, o.customer_name, o.customer_phone,
         o.guest_count, o.subtotal, o.total_amount, o.discount_amount,
@@ -6150,8 +6150,6 @@ const reportsService = {
         t.table_number, t.name as table_name,
         f.name as floor_name,
         u.name as created_by_name,
-        (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.status != 'cancelled') as item_count,
-        (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id AND oi.status = 'ready') as ready_count,
         i.id as invoice_id, i.invoice_number, i.grand_total as invoice_total
        FROM orders o
        LEFT JOIN tables t ON o.table_id = t.id
@@ -6162,6 +6160,39 @@ const reportsService = {
        ORDER BY o.is_priority DESC, o.created_at DESC`,
       params
     );
+
+    if (orders.length === 0) {
+      return [];
+    }
+
+    // Query 2: Batch-fetch item counts for all returned orders in a single query
+    const orderIds = orders.map(o => o.id);
+    const [itemCounts] = await pool.query(
+      `SELECT
+        order_id,
+        COUNT(CASE WHEN status != 'cancelled' THEN 1 END) as item_count,
+        COUNT(CASE WHEN status = 'ready'   THEN 1 END) as ready_count
+       FROM order_items
+       WHERE order_id IN (${orderIds.map(() => '?').join(',')})
+       GROUP BY order_id`,
+      orderIds
+    );
+
+    // Build lookup map for O(1) merge
+    const countsByOrder = new Map();
+    for (const row of itemCounts) {
+      countsByOrder.set(row.order_id, {
+        item_count: parseInt(row.item_count, 10) || 0,
+        ready_count: parseInt(row.ready_count, 10) || 0,
+      });
+    }
+
+    // Merge counts back into orders (preserves exact same return shape)
+    for (const order of orders) {
+      const counts = countsByOrder.get(order.id);
+      order.item_count = counts ? counts.item_count : 0;
+      order.ready_count = counts ? counts.ready_count : 0;
+    }
 
     return orders;
   },

@@ -9,9 +9,10 @@ const billingService = require('../services/billing.service');
 const paymentService = require('../services/payment.service');
 const reportsService = require('../services/reports.service');
 const userService = require('../services/user.service');
-const { getUserFloorIds } = require('../utils/helpers');
+const { getUserFloorIds, getSuperAdminOutletIds } = require('../utils/helpers');
 const logger = require('../utils/logger');
 const csvExport = require('../utils/csv-export');
+
 
 const costSnapshotService = require('../services/costSnapshot.service');
 const outsideCollectionService = require('../services/outsideCollection.service');
@@ -77,6 +78,8 @@ const orderController = {
         page: req.query.page,
         limit: req.query.limit,
         status: req.query.status,
+        startDate: req.query.startDate,
+        endDate: req.query.endDate,
         cashierId: req.user.userId,
         userRoles: req.user.roles || []
       };
@@ -613,9 +616,11 @@ const orderController = {
     try {
       const outletId = parseInt(req.params.outletId);
       const floorIds = await getUserFloorIds(req.user.userId, outletId);
+      const isPrivileged = req.user.roles?.includes('admin') || req.user.roles?.includes('manager') || req.user.roles?.includes('super_admin');
       const filters = {
         floorId: req.query.floorId,
-        floorIds: !req.query.floorId && floorIds.length > 0 ? floorIds : undefined,
+        // Admin sees all floors + takeaway; others see assigned floors only
+        floorIds: isPrivileged ? undefined : (!req.query.floorId && floorIds.length > 0 ? floorIds : undefined),
         search: req.query.search,
         sortBy: req.query.sortBy,
         sortOrder: req.query.sortOrder,
@@ -789,7 +794,7 @@ const orderController = {
   async getCashDrawerStatus(req, res) {
     try {
       const { outletId } = req.params;
-      const { floorId } = req.query;
+      const floorId = req.query.floorId || req.query.floor_id;
       const status = await paymentService.getCashDrawerStatus(
         outletId,
         floorId ? parseInt(floorId) : null,
@@ -1213,8 +1218,10 @@ const orderController = {
       const floorIds = await getUserFloorIds(req.user.userId, outletId);
       
       // Determine user role - cashiers/pos_users see all floor bills, captains see only their own
+      // Admin/manager/super_admin see all bills for all floors and all staff
       const isCashier = req.user.roles?.includes('cashier') || req.user.roles?.includes('pos_user');
       const isCaptain = req.user.roles?.includes('captain') || req.user.roles?.includes('waiter');
+      const isPrivileged = req.user.roles?.includes('admin') || req.user.roles?.includes('manager') || req.user.roles?.includes('super_admin');
       
       const filters = {
         status: req.query.status,
@@ -1223,8 +1230,10 @@ const orderController = {
         limit: req.query.limit,
         sortBy: req.query.sortBy,
         sortOrder: req.query.sortOrder,
-        floorIds: floorIds.length > 0 ? floorIds : undefined,
-        viewAllFloorOrders: isCashier && !isCaptain
+        // Admin: no floor restriction (sees all floors + takeaway)
+        floorIds: isPrivileged ? undefined : (floorIds.length > 0 ? floorIds : undefined),
+        viewAllFloorOrders: isPrivileged || (isCashier && !isCaptain),
+        isPrivileged
       };
       const result = await billingService.getCaptainBills(
         req.user.userId,
@@ -1248,9 +1257,10 @@ const orderController = {
       const floorIds = await getUserFloorIds(req.user.userId, outletId);
       
       // Determine user role - cashiers/pos_users see all floor orders, captains see only their own
-      // Note: req.user.roles is array of role strings like ['cashier', 'admin']
+      // Admin/manager/super_admin see all orders for all floors and all staff
       const isCashier = req.user.roles?.includes('cashier') || req.user.roles?.includes('pos_user');
       const isCaptain = req.user.roles?.includes('captain') || req.user.roles?.includes('waiter');
+      const isPrivileged = req.user.roles?.includes('admin') || req.user.roles?.includes('manager') || req.user.roles?.includes('super_admin');
       
       const filters = {
         status: req.query.status,
@@ -1261,9 +1271,11 @@ const orderController = {
         limit: req.query.limit,
         sortBy: req.query.sortBy,
         sortOrder: req.query.sortOrder,
-        floorIds: floorIds.length > 0 ? floorIds : undefined,
-        // Cashiers see all orders for their assigned floors, captains see only their own
-        viewAllFloorOrders: isCashier && !isCaptain,
+        // Admin: no floor restriction (sees all floors + takeaway)
+        floorIds: isPrivileged ? undefined : (floorIds.length > 0 ? floorIds : undefined),
+        // Admin/cashiers see all orders for their floors, captains see only their own
+        viewAllFloorOrders: isPrivileged || (isCashier && !isCaptain),
+        isPrivileged,
         hasOpenItems: req.query.hasOpenItems,
         hasNcItems: req.query.hasNcItems
       };
@@ -1330,7 +1342,7 @@ const orderController = {
   /**
    * Get shift history with pagination and filters
    * GET /api/v1/orders/shifts/:outletId/history
-   * @query floorId - Filter by floor ID
+   * @query floorId|floor_id - Filter by floor ID
    * @query cashierId - Filter by cashier ID
    * @query userId - Filter by user (opened_by, closed_by, or cashier_id)
    * @query startDate - Filter from date
@@ -1340,15 +1352,15 @@ const orderController = {
   async getShiftHistory(req, res) {
     try {
       const { outletId } = req.params;
+      const floorId = req.query.floorId || req.query.floor_id;
       const {
-        floorId,
         cashierId,
         userId,
         startDate,
         endDate,
         status,
         page = 1,
-        limit = 20,
+        limit = 10,
         sortBy = 'opening_time',
         sortOrder = 'DESC'
       } = req.query;
@@ -1408,15 +1420,17 @@ const orderController = {
    * Get single shift summary by ID with shift-time-based calculations
    * GET /api/v1/orders/shifts/:shiftId/summary
    * Cashiers can only view their own shifts
+   * @query floorId - Filter/verify by floor ID
    */
   async getShiftSummaryById(req, res) {
     try {
       const { shiftId } = req.params;
-      
+      const floorId = req.query.floorId || req.query.floor_id;
+
       // Allow all authorized roles to view shift summaries
       // Admin, manager, super_admin can view any shift
       // Cashiers can also view shifts (for their outlet/floor context)
-      const summary = await paymentService.getShiftSummaryById(shiftId, null);
+      const summary = await paymentService.getShiftSummaryById(shiftId, null, floorId ? parseInt(floorId) : null);
       res.json({ success: true, data: summary });
     } catch (error) {
       logger.error('Get shift summary by ID error:', error);
@@ -1499,6 +1513,14 @@ const orderController = {
         sortOrder = 'DESC'
       } = req.query;
 
+      const userRoles = req.user.roles || [];
+      const allowedOutletIds = await getSuperAdminOutletIds(req.user.userId, userRoles);
+
+      // If super_admin requests a specific outlet, verify they own it
+      if (allowedOutletIds !== null && outletId && !allowedOutletIds.includes(parseInt(outletId))) {
+        return res.status(403).json({ success: false, message: 'You do not have access to this outlet' });
+      }
+
       const result = await orderService.getAdminOrderList({
         outletId: outletId || null,
         status: status || null,
@@ -1518,7 +1540,8 @@ const orderController = {
         page: parseInt(page),
         limit: parseInt(limit),
         sortBy,
-        sortOrder
+        sortOrder,
+        allowedOutletIds,
       });
 
       res.json({ success: true, data: result });
@@ -1564,6 +1587,13 @@ const orderController = {
       // Use floorId filter if provided, otherwise use user's floor permissions
       const effectiveFloorId = floorId || (userFloorIds.length > 0 ? userFloorIds : null);
 
+      const exportUserRoles = req.user.roles || [];
+      const exportAllowedOutletIds = await getSuperAdminOutletIds(req.user.userId, exportUserRoles);
+
+      if (exportAllowedOutletIds !== null && outletId && !exportAllowedOutletIds.includes(parseInt(outletId))) {
+        return res.status(403).json({ success: false, message: 'You do not have access to this outlet' });
+      }
+
       // Get all orders without pagination for export
       const result = await orderService.getAdminOrderListForExport({
         outletId: outletId || null,
@@ -1580,7 +1610,8 @@ const orderController = {
         minAmount: minAmount ? parseFloat(minAmount) : null,
         maxAmount: maxAmount ? parseFloat(maxAmount) : null,
         sortBy,
-        sortOrder
+        sortOrder,
+        allowedOutletIds: exportAllowedOutletIds,
       });
 
       const csv = csvExport.adminOrderListCSV(result, { startDate, endDate, outletId });

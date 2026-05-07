@@ -280,7 +280,7 @@ const kotService = {
       }
       if (order.table_id && order.order_type === 'dine_in') {
         statusUpdates.push(connection.query(
-          `UPDATE tables SET status = 'running' WHERE id = ? AND status IN ('occupied', 'running')`,
+          `UPDATE tables SET status = 'running' WHERE id = ? AND status IN ('available', 'occupied', 'running')`,
           [order.table_id]
         ));
       }
