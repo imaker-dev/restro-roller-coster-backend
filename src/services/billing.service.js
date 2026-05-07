@@ -504,14 +504,14 @@ const billingService = {
       })),
       roundOff: invoice.roundOff !== undefined ? parseFloat(invoice.roundOff).toFixed(2) : null,
       grandTotal: parseFloat(invoice.grandTotal || 0).toFixed(2),
-      // ── Currency symbol: $ for Canadian taxes (HST/PST/QST), ₹ otherwise ──
+      // ── Currency symbol: $ for Canadian taxes (HST/PST/QST), Rs otherwise ──
       currencySymbol: (() => {
         const taxes = Object.values(invoice.taxBreakup || {});
         const hasCanadian = taxes.some(t => {
           const n = (t.name || '').toUpperCase();
           return n.includes('HST') || n.includes('PST') || n.includes('QST');
         });
-        return hasCanadian ? '$' : '₹';
+        return hasCanadian ? '$' : 'Rs';
       })(),
       // NC (No Charge) fields for print
       isNC: !!(invoice.isNC || invoice.is_nc),

@@ -1473,7 +1473,7 @@ const printerService = {
         const discAmt = parseFloat(disc.amount).toFixed(2);
         let label = 'Discount';
         if (disc.type === 'percentage') label += ' (' + disc.value + '%)';
-        else if (disc.value > 0) label += ' (Flat ' + (billData.currencySymbol || '₹') + parseFloat(disc.value).toFixed(0) + ')';
+        else if (disc.value > 0) label += ' (Flat ' + (billData.currencySymbol || 'Rs') + parseFloat(disc.value).toFixed(0) + ')';
         lines.push(this.padBetween(label + ':', '-' + discAmt, w));
       }
     } else if (billData.discount) {
@@ -1492,14 +1492,14 @@ const printerService = {
     const eqDash = '='.repeat(w);
     lines.push(eqDash);
     lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HW + 'GRAND TOTAL');
-    lines.push((billData.currencySymbol || '₹') + billData.grandTotal);
+    lines.push((billData.currencySymbol || 'Rs') + billData.grandTotal);
     // Restore FONT_A + zero char spacing + body spacing after DOUBLE_HW resets print mode
     lines.push(cmd.NORMAL + cmd.BOLD_OFF + FONT_A + CHAR_SPACE_0 + LS_BODY + cmd.ALIGN_LEFT + eqDash);
 
     // ── 7. PAYMENT (full width) ─────────────────
     if (billData.dueAmount && parseFloat(billData.dueAmount) > 0) {
-      lines.push(this.padBetween('PAID:', (billData.currencySymbol || '₹') + parseFloat(billData.paidAmount || 0).toFixed(2), w));
-      lines.push(this.padBetween('DUE:', (billData.currencySymbol || '₹') + parseFloat(billData.dueAmount).toFixed(2), w));
+      lines.push(this.padBetween('PAID:', (billData.currencySymbol || 'Rs') + parseFloat(billData.paidAmount || 0).toFixed(2), w));
+      lines.push(this.padBetween('DUE:', (billData.currencySymbol || 'Rs') + parseFloat(billData.dueAmount).toFixed(2), w));
       lines.push(dash);
     }
 
@@ -1510,7 +1510,7 @@ const printerService = {
         for (const sp of billData.splitBreakdown) {
           lines.push(this.padBetween(
             (sp.paymentMode || '').toUpperCase(),
-            (billData.currencySymbol || '₹') + parseFloat(sp.amount || 0).toFixed(2),
+            (billData.currencySymbol || 'Rs') + parseFloat(sp.amount || 0).toFixed(2),
             w
           ));
         }
@@ -1659,7 +1659,7 @@ const printerService = {
         const discAmt = parseFloat(disc.amount).toFixed(2);
         let label = 'Discount';
         if (disc.type === 'percentage') label += ' (' + disc.value + '%)';
-        else if (disc.value > 0) label += ' (Flat ' + (billData.currencySymbol || '₹') + parseFloat(disc.value).toFixed(0) + ')';
+        else if (disc.value > 0) label += ' (Flat ' + (billData.currencySymbol || 'Rs') + parseFloat(disc.value).toFixed(0) + ')';
         lines.push(this.padBetween(label + ':', '-' + discAmt, w));
       }
     } else if (billData.discount) {
@@ -1677,13 +1677,13 @@ const printerService = {
     // ── 7. GRAND TOTAL — [MPOS tweak 3] single bold line, no double-HW ──
     const eqDash = '='.repeat(w);
     lines.push(eqDash);
-    lines.push(cmd.BOLD_ON + this.padBetween('GRAND TOTAL:', (billData.currencySymbol || '₹') + billData.grandTotal, w) + cmd.BOLD_OFF);
+    lines.push(cmd.BOLD_ON + this.padBetween('GRAND TOTAL:', (billData.currencySymbol || 'Rs') + billData.grandTotal, w) + cmd.BOLD_OFF);
     lines.push(eqDash);
 
     // ── 8. PAYMENT (full width) ─────────────────
     if (billData.dueAmount && parseFloat(billData.dueAmount) > 0) {
-      lines.push(this.padBetween('PAID:', (billData.currencySymbol || '₹') + parseFloat(billData.paidAmount || 0).toFixed(2), w));
-      lines.push(this.padBetween('DUE:', (billData.currencySymbol || '₹') + parseFloat(billData.dueAmount).toFixed(2), w));
+      lines.push(this.padBetween('PAID:', (billData.currencySymbol || 'Rs') + parseFloat(billData.paidAmount || 0).toFixed(2), w));
+      lines.push(this.padBetween('DUE:', (billData.currencySymbol || 'Rs') + parseFloat(billData.dueAmount).toFixed(2), w));
       lines.push(dash);
     }
 
@@ -1694,7 +1694,7 @@ const printerService = {
         for (const sp of billData.splitBreakdown) {
           lines.push(this.padBetween(
             (sp.paymentMode || '').toUpperCase(),
-            (billData.currencySymbol || '₹') + parseFloat(sp.amount || 0).toFixed(2),
+            (billData.currencySymbol || 'Rs') + parseFloat(sp.amount || 0).toFixed(2),
             w
           ));
         }

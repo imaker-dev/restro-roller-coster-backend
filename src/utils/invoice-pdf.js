@@ -81,7 +81,7 @@ async function generateInvoicePDF(invoice, outlet = {}) {
     const n = (t.name || '').toUpperCase();
     return n.includes('HST') || n.includes('PST') || n.includes('QST');
   });
-  const currencySymbol = hasCanadianTax ? '$' : '₹';
+  const currencySymbol = hasCanadianTax ? '$' : 'Rs';
 
   function currency(amount) {
     return `${currencySymbol}${parseFloat(amount || 0).toFixed(2)}`;
