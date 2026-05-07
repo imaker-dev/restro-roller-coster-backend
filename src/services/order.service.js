@@ -1349,7 +1349,7 @@ const orderService = {
       igstAmount: parseFloat(igstAmount.toFixed(2)),
       vatAmount: parseFloat(vatAmount.toFixed(2)),
       cessAmount: parseFloat(cessAmount.toFixed(2)),
-      totalTax: parseFloat((cgstAmount + sgstAmount + igstAmount + vatAmount + cessAmount).toFixed(2)),
+      totalTax: parseFloat((Object.values(taxBreakup).reduce((sum, t) => sum + (t.taxAmount || 0), 0)).toFixed(2)),
       taxBreakup,
       
       // Calculated fields

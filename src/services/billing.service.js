@@ -1208,8 +1208,8 @@ const billingService = {
       taxBreakup[key].taxAmount = parseFloat(taxBreakup[key].taxAmount.toFixed(2));
     }
 
-    // totalTax: sum of individual tax amounts
-    let totalTax = cgstAmount + sgstAmount + igstAmount + vatAmount + cessAmount;
+    // totalTax: sum of ALL tax amounts from taxBreakup (includes HST/PST/QST etc.)
+    let totalTax = Object.values(taxBreakup).reduce((sum, t) => sum + (t.taxAmount || 0), 0);
 
     // Service charge (applied on taxable amount after discount)
     let serviceCharge = 0;
