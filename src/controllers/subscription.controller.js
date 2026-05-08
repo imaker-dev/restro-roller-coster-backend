@@ -677,7 +677,7 @@ const activateOfflineOutlet = async (req, res) => {
       .digest('hex');
 
     const [tokenRows] = await pool.query(
-      `SELECT id, license_id, outlet_id, token_type, plan, restaurant_name, email, phone,
+      `SELECT id, license_id, outlet_id, token_type, plan, restaurant_name, email,
               subscription_expiry, device_hash, used_at, created_at
        FROM token_generation_log
        WHERE license_id = ? AND token_hash = ? AND token_type = 'offline_activation'
@@ -691,7 +691,7 @@ const activateOfflineOutlet = async (req, res) => {
     } else {
       // Fallback: activationKey might be the hash itself
       const [hashRows] = await pool.query(
-        `SELECT id, license_id, outlet_id, token_type, plan, restaurant_name, email, phone,
+        `SELECT id, license_id, outlet_id, token_type, plan, restaurant_name, email,
                 subscription_expiry, device_hash, used_at, created_at
          FROM token_generation_log
          WHERE license_id = ? AND token_hash = ? AND token_type = 'offline_activation'
