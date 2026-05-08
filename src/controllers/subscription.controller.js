@@ -414,7 +414,14 @@ const getOutletPricingOverride = async (req, res) => {
     if (!outletId) return res.status(400).json({ success: false, message: 'Valid outletId required' });
 
     const pricing = await subscriptionService.getOutletPricingOverride(outletId);
-    return res.status(200).json({ success: true, pricing });
+
+    // Also resolve effective pricing (outlet → super_admin → global)
+    let resolvedPricing = null;
+    try {
+      resolvedPricing = await subscriptionService.resolveOutletPricing(outletId);
+    } catch (_) { /* no pricing configured at any level */ }
+
+    return res.status(200).json({ success: true, pricing, resolvedPricing });
   } catch (error) {
     logger.error('getOutletPricingOverride error:', error);
     return res.status(500).json({ success: false, message: 'Failed to fetch outlet pricing override' });

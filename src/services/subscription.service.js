@@ -204,8 +204,7 @@ const resolveOutletPricing = async (outletId) => {
        INNER JOIN (
          SELECT DISTINCT ur.user_id
          FROM user_roles ur
-         INNER JOIN roles r ON ur.role_id = r.id AND r.slug = 'super_admin'
-         WHERE ur.outlet_id = ? AND ur.is_active = 1
+         WHERE ur.outlet_id = ? AND ur.is_active = 1 AND ur.outlet_id IS NOT NULL
          UNION
          SELECT DISTINCT o.created_by
          FROM outlets o
@@ -293,10 +292,12 @@ const getAllSuperAdminPricings = async () => {
     const [rows] = await pool.query(
       `SELECT sap.id, sap.user_id, u.name as user_name, u.email as user_email, u.phone as user_phone,
               sap.base_price, sap.gst_percentage, sap.total_price, sap.notes, sap.created_at, sap.updated_at,
-              (SELECT COUNT(DISTINCT ur.outlet_id)
-               FROM user_roles ur
-               INNER JOIN roles r ON ur.role_id = r.id AND r.slug = 'super_admin'
-               WHERE ur.user_id = sap.user_id AND ur.is_active = 1 AND ur.outlet_id IS NOT NULL) as outlet_count
+              (SELECT COUNT(DISTINCT x.outlet_id) FROM (
+                SELECT ur.outlet_id FROM user_roles ur
+                WHERE ur.user_id = sap.user_id AND ur.is_active = 1 AND ur.outlet_id IS NOT NULL
+                UNION
+                SELECT o3.id FROM outlets o3 WHERE o3.created_by = sap.user_id
+              ) x) as outlet_count
        FROM super_admin_pricing sap
        JOIN users u ON sap.user_id = u.id
        WHERE sap.is_active = 1
@@ -356,7 +357,6 @@ const _invalidateSAOutletCaches = async (saUserId) => {
   const [rows] = await pool.query(
     `SELECT DISTINCT ur.outlet_id
      FROM user_roles ur
-     INNER JOIN roles r ON ur.role_id = r.id AND r.slug = 'super_admin'
      WHERE ur.user_id = ? AND ur.is_active = 1 AND ur.outlet_id IS NOT NULL
      UNION
      SELECT DISTINCT o.id FROM outlets o WHERE o.created_by = ?`,
@@ -403,7 +403,6 @@ const getAllSubscriptions = async (filters = {}, pagination = { page: 1, limit: 
   if (superAdminId) {
     where += ` AND os.outlet_id IN (
       SELECT DISTINCT ur.outlet_id FROM user_roles ur
-      INNER JOIN roles r ON ur.role_id = r.id AND r.slug = 'super_admin'
       WHERE ur.user_id = ? AND ur.is_active = 1 AND ur.outlet_id IS NOT NULL
       UNION
       SELECT DISTINCT o2.id FROM outlets o2 WHERE o2.created_by = ?
@@ -1128,7 +1127,6 @@ const getSuperAdminDashboardSubscriptions = async (saUserId, filters = {}, pagin
 
   let where = `WHERE os.outlet_id IN (
     SELECT DISTINCT ur.outlet_id FROM user_roles ur
-    INNER JOIN roles r ON ur.role_id = r.id AND r.slug = 'super_admin'
     WHERE ur.user_id = ? AND ur.is_active = 1 AND ur.outlet_id IS NOT NULL
     UNION
     SELECT DISTINCT o2.id FROM outlets o2 WHERE o2.created_by = ?
