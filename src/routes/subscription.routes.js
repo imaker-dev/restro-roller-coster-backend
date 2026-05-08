@@ -32,8 +32,8 @@ router.get('/dashboard', authenticate, authorize('super_admin', 'master'), subsc
 
 // ─── Outlet-facing APIs ─────────────────────────────────────────────────────
 router.get('/my', authenticate, subscriptionController.getMySubscription);
-router.post('/create-order', authenticate, subscriptionController.createPaymentOrder);
-router.post('/verify-payment', authenticate, subscriptionController.verifyPayment);
+router.post('/create-order', subscriptionController.createPaymentOrder);
+router.post('/verify-payment', subscriptionController.verifyPayment);
 
 // ─── Razorpay Webhook (public — signature verified server-side) ────────────────
 router.post('/webhook', subscriptionController.razorpayWebhook);

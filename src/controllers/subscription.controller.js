@@ -178,16 +178,17 @@ const getMySubscription = async (req, res) => {
 
 /**
  * POST /api/v1/subscriptions/create-order
- * Outlet admin/super_admin — create Razorpay order for payment
+ * Public — create Razorpay order for subscription payment (outletId from body)
  */
 const createPaymentOrder = async (req, res) => {
   try {
-    const outletId = req.user.outletId;
+    const outletId = parseInt(req.body.outletId, 10) || (req.user && req.user.outletId);
     if (!outletId) {
-      return res.status(400).json({ success: false, message: 'No outlet assigned' });
+      return res.status(400).json({ success: false, message: 'outletId is required' });
     }
 
-    const order = await subscriptionService.createRazorpayOrder(outletId, req.user.userId);
+    const userId = req.user ? req.user.userId : null;
+    const order = await subscriptionService.createRazorpayOrder(outletId, userId);
     return res.status(200).json({
       success: true,
       orderId: order.orderId,
@@ -208,8 +209,8 @@ const createPaymentOrder = async (req, res) => {
 
 /**
  * POST /api/v1/subscriptions/verify-payment
- * Outlet admin/super_admin — verify Razorpay payment + extend subscription
- * Body: { razorpayOrderId, razorpayPaymentId, razorpaySignature }
+ * Public — verify Razorpay payment + extend subscription
+ * Body: { outletId, razorpayOrderId, razorpayPaymentId, razorpaySignature }
  */
 const verifyPayment = async (req, res) => {
   try {
@@ -221,9 +222,9 @@ const verifyPayment = async (req, res) => {
       });
     }
 
-    const outletId = req.user.outletId;
+    const outletId = parseInt(req.body.outletId, 10) || (req.user && req.user.outletId);
     if (!outletId) {
-      return res.status(400).json({ success: false, message: 'No outlet assigned' });
+      return res.status(400).json({ success: false, message: 'outletId is required' });
     }
 
     const result = await subscriptionService.verifyAndExtendSubscription(
