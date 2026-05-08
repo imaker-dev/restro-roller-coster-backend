@@ -366,6 +366,33 @@ const getSuperAdminPricing = async (req, res) => {
 };
 
 /**
+ * GET /api/v1/subscriptions/pricing/super-admin/:userId/outlets
+ * Master only — list all outlets for a super admin with subscription details
+ * Query: ?page=1&limit=50&status=&search=
+ */
+const getSuperAdminOutlets = async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId, 10);
+    if (!userId) return res.status(400).json({ success: false, message: 'Valid userId required' });
+
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const filters = {
+      status: req.query.status || null,
+      search: req.query.search || null,
+    };
+
+    const result = await subscriptionService.getSuperAdminOutletsWithSubscriptions(
+      userId, filters, { page, limit }
+    );
+    return res.status(200).json({ success: true, ...result });
+  } catch (error) {
+    logger.error('getSuperAdminOutlets error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to fetch super admin outlets' });
+  }
+};
+
+/**
  * POST /api/v1/subscriptions/pricing/super-admin/:userId
  * Master only — set custom pricing for a super admin
  * Body: { basePrice: number, gstPercentage: number, notes?: string }
@@ -926,6 +953,7 @@ module.exports = {
   resolveOutletPricing,
   getAllSuperAdminPricings,
   getSuperAdminPricing,
+  getSuperAdminOutlets,
   setSuperAdminPricing,
   removeSuperAdminPricing,
   getOutletPricingOverride,

@@ -10,6 +10,7 @@ router.post('/pricing', authenticate, authorize('master'), subscriptionControlle
 // ─── Master-only: Hierarchical pricing — Super Admin level ──────────────────
 router.get('/pricing/super-admin', authenticate, authorize('master'), subscriptionController.getAllSuperAdminPricings);
 router.get('/pricing/super-admin/:userId', authenticate, authorize('master'), subscriptionController.getSuperAdminPricing);
+router.get('/pricing/super-admin/:userId/outlets', authenticate, authorize('master'), subscriptionController.getSuperAdminOutlets);
 router.post('/pricing/super-admin/:userId', authenticate, authorize('master'), subscriptionController.setSuperAdminPricing);
 router.delete('/pricing/super-admin/:userId', authenticate, authorize('master'), subscriptionController.removeSuperAdminPricing);
 

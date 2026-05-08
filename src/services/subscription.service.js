@@ -292,14 +292,22 @@ const getAllSuperAdminPricings = async () => {
     const [rows] = await pool.query(
       `SELECT sap.id, sap.user_id, u.name as user_name, u.email as user_email, u.phone as user_phone,
               sap.base_price, sap.gst_percentage, sap.total_price, sap.notes, sap.created_at, sap.updated_at,
-              (SELECT COUNT(DISTINCT x.outlet_id) FROM (
-                SELECT ur.outlet_id FROM user_roles ur
-                WHERE ur.user_id = sap.user_id AND ur.is_active = 1 AND ur.outlet_id IS NOT NULL
-                UNION
-                SELECT o3.id FROM outlets o3 WHERE o3.created_by = sap.user_id
-              ) x) as outlet_count
+              COALESCE(oc.outlet_count, 0) as outlet_count
        FROM super_admin_pricing sap
        JOIN users u ON sap.user_id = u.id
+       LEFT JOIN (
+         SELECT x.user_id, COUNT(DISTINCT x.outlet_id) as outlet_count
+         FROM (
+           SELECT ur.user_id, ur.outlet_id
+           FROM user_roles ur
+           WHERE ur.is_active = 1 AND ur.outlet_id IS NOT NULL
+           UNION
+           SELECT o.created_by, o.id
+           FROM outlets o
+           WHERE o.created_by IS NOT NULL
+         ) x
+         GROUP BY x.user_id
+       ) oc ON oc.user_id = sap.user_id
        WHERE sap.is_active = 1
        ORDER BY u.name`
     );
@@ -1182,6 +1190,96 @@ const getSuperAdminDashboardSubscriptions = async (saUserId, filters = {}, pagin
   };
 };
 
+// ─── Master: List all outlets for a super admin with subscription details ─────
+const getSuperAdminOutletsWithSubscriptions = async (saUserId, filters = {}, pagination = { page: 1, limit: 50 }) => {
+  const pool = getPool();
+  const { status, search } = filters;
+  const { page, limit } = pagination;
+  const offset = (page - 1) * limit;
+
+  // 1. Super admin info + pricing (single row)
+  const [[saInfo]] = await pool.query(
+    `SELECT sap.id, sap.user_id, u.name as user_name, u.email as user_email, u.phone as user_phone,
+            sap.base_price, sap.gst_percentage, sap.total_price, sap.notes, sap.created_at, sap.updated_at
+     FROM super_admin_pricing sap
+     JOIN users u ON sap.user_id = u.id
+     WHERE sap.user_id = ? AND sap.is_active = 1
+     LIMIT 1`,
+    [saUserId]
+  );
+
+  if (!saInfo) {
+    const [[user]] = await pool.query(
+      `SELECT id, name, email, phone FROM users WHERE id = ? LIMIT 1`, [saUserId]
+    );
+    return {
+      superAdmin: user || null,
+      pricing: null,
+      outlets: [],
+      pagination: { page: parseInt(page), limit: parseInt(limit), total: 0, totalPages: 0 },
+    };
+  }
+
+  // 2. Build WHERE for outlets under this super admin
+  let where = `WHERE os.outlet_id IN (
+    SELECT DISTINCT ur.outlet_id FROM user_roles ur
+    WHERE ur.user_id = ? AND ur.is_active = 1 AND ur.outlet_id IS NOT NULL
+    UNION
+    SELECT DISTINCT o.id FROM outlets o WHERE o.created_by = ?
+  )`;
+  const params = [saUserId, saUserId];
+
+  if (status) {
+    where += ' AND os.status = ?';
+    params.push(status);
+  }
+  if (search) {
+    where += ' AND (o.name LIKE ? OR o.code LIKE ?)';
+    params.push(`%${search}%`, `%${search}%`);
+  }
+
+  // 3. Outlet + subscription data (single query)
+  const [data] = await pool.query(
+    `SELECT os.id, os.outlet_id, os.status, os.subscription_start, os.subscription_end,
+            os.grace_period_end,
+            o.name as outlet_name, o.code as outlet_code, o.phone as outlet_phone,
+            o.city, o.state, o.email as outlet_email, o.is_active as outlet_is_active,
+            sp.total_amount as last_paid_amount, sp.paid_at as last_paid_at, sp.status as last_payment_status
+     FROM outlet_subscriptions os
+     JOIN outlets o ON os.outlet_id = o.id
+     LEFT JOIN subscription_payments sp ON os.last_payment_id = sp.id
+     ${where}
+     ORDER BY o.name
+     LIMIT ? OFFSET ?`,
+    [...params, parseInt(limit), parseInt(offset)]
+  );
+
+  // 4. Total count (reuse same WHERE)
+  const [[{ total }]] = await pool.query(
+    `SELECT COUNT(*) as total FROM outlet_subscriptions os JOIN outlets o ON os.outlet_id = o.id ${where}`,
+    params
+  );
+
+  return {
+    superAdmin: {
+      id: saInfo.user_id,
+      name: saInfo.user_name,
+      email: saInfo.user_email,
+      phone: saInfo.user_phone,
+    },
+    pricing: {
+      basePrice: parseFloat(saInfo.base_price),
+      gstPercentage: parseFloat(saInfo.gst_percentage),
+      totalPrice: parseFloat(saInfo.total_price),
+      notes: saInfo.notes,
+      createdAt: saInfo.created_at,
+      updatedAt: saInfo.updated_at,
+    },
+    outlets: data,
+    pagination: { page: parseInt(page), limit: parseInt(limit), total: parseInt(total), totalPages: Math.ceil(total / limit) },
+  };
+};
+
 module.exports = {
   getSubscriptionStatus,
   getActivePricing,
@@ -1205,5 +1303,6 @@ module.exports = {
   logNotification,
   processWebhook,
   getSuperAdminDashboardSubscriptions,
+  getSuperAdminOutletsWithSubscriptions,
   _invalidateCache, // exported for external cache invalidation
 };
