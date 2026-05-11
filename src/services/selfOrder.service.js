@@ -556,6 +556,7 @@ const selfOrderService = {
 
         const requestData = {
           id: session.id,
+          orderNumber,
           status: 'pending',
           outletId,
           tableId,
@@ -1569,7 +1570,8 @@ const selfOrderService = {
     // Get items
     const [items] = await pool.query(
       `SELECT oi.id, oi.item_name, oi.variant_name, oi.quantity, oi.unit_price,
-              oi.total_price, oi.status, oi.special_instructions, oi.item_type
+              oi.total_price, oi.status, oi.special_instructions, oi.item_type,
+              oi.tax_details
        FROM order_items oi WHERE oi.order_id = ? ORDER BY oi.id`,
       [session.orderId]
     );
@@ -1595,6 +1597,7 @@ const selfOrderService = {
           status: i.status,
           itemType: i.item_type,
           specialInstructions: i.special_instructions,
+          taxDetails: i.tax_details ? (typeof i.tax_details === 'string' ? JSON.parse(i.tax_details) : i.tax_details) : null,
         })),
       },
     };
