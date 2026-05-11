@@ -39,13 +39,13 @@ module.exports = {
         DB_QUEUE_LIMIT: 200,
         LOG_LEVEL: 'debug',
       },
-      env_production: {
-        NODE_ENV: 'production',
-        UV_THREADPOOL_SIZE: 16,
-        DB_CONNECTION_LIMIT: 20,
-        DB_QUEUE_LIMIT: 200,
-        LOG_LEVEL: 'warn',
-      },
+     env_production: {
+  NODE_ENV: 'production',
+  UV_THREADPOOL_SIZE: 16,
+  DB_CONNECTION_LIMIT: 10,    // ← reduce from 20 to 10
+  DB_QUEUE_LIMIT: 100,        // ← reduce from 200 to 100
+  LOG_LEVEL: 'warn',          // ← saves RAM
+},
       error_file: './logs/pm2-error.log',
       out_file: './logs/pm2-out.log',
       merge_logs: true,
