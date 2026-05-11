@@ -289,7 +289,7 @@ const generateActivationToken = async (req, res) => {
     const pool = getPool();
     await pool.query(
       `INSERT INTO token_generation_log
-        (license_id, token_type, plan, restaurant_name, email, phone, generated_by_user_id, token_hash)
+        (license_id, token_type, plan, restaurant_name, email, generated_by_user_id, token_hash)
        VALUES (?, 'activation', ?, ?, ?, ?, ?, ?)`,
       [
         licenseId,

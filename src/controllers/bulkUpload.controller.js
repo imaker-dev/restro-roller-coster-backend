@@ -297,14 +297,9 @@ const bulkUploadController = {
   async uploadSuperAdminTemplate(req, res) {
     try {
       const userId = req.user?.userId;
-      const userRole = req.user?.role;
 
       if (!userId) {
         return res.status(401).json({ success: false, message: 'Authentication required' });
-      }
-
-      if (userRole !== 'super_admin') {
-        return res.status(403).json({ success: false, message: 'Only super_admin can upload master templates' });
       }
 
       if (!req.file && !req.body.csvContent) {
@@ -347,14 +342,9 @@ const bulkUploadController = {
   async getSuperAdminTemplate(req, res) {
     try {
       const userId = req.user?.userId;
-      const userRole = req.user?.role;
 
       if (!userId) {
         return res.status(401).json({ success: false, message: 'Authentication required' });
-      }
-
-      if (userRole !== 'super_admin') {
-        return res.status(403).json({ success: false, message: 'Only super_admin can view master templates' });
       }
 
       const template = await bulkUploadService.getSuperAdminTemplate(userId);
@@ -379,14 +369,9 @@ const bulkUploadController = {
   async deleteSuperAdminTemplate(req, res) {
     try {
       const userId = req.user?.userId;
-      const userRole = req.user?.role;
 
       if (!userId) {
         return res.status(401).json({ success: false, message: 'Authentication required' });
-      }
-
-      if (userRole !== 'super_admin') {
-        return res.status(403).json({ success: false, message: 'Only super_admin can delete master templates' });
       }
 
       const result = await bulkUploadService.deleteSuperAdminTemplate(userId);
