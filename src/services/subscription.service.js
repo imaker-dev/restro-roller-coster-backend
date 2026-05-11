@@ -83,30 +83,38 @@ const getSubscriptionStatus = async (outletId) => {
   const pool = getPool();
   const row = await _ensureSubscriptionRow(pool, outletId);
 
-  const now = new Date();
   let status = row.status;
   let graceDaysRemaining = null;
   let isBlocked = false;
 
   // Auto-transition: active → grace_period → expired
+  // IMPORTANT: Use NOW() in SQL to avoid JS↔DB timezone mismatch (DB returns IST, JS uses UTC on production)
   if (status === SUBSCRIPTION_STATUS.ACTIVE && row.subscription_end) {
-    const end = new Date(row.subscription_end);
-    if (end < now) {
-      const graceEnd = new Date(end);
-      graceEnd.setDate(graceEnd.getDate() + GRACE_PERIOD_DAYS);
+    const [[{ is_past }]] = await pool.query(
+      `SELECT subscription_end < NOW() AS is_past FROM outlet_subscriptions WHERE outlet_id = ?`,
+      [outletId]
+    );
+    if (is_past) {
       status = SUBSCRIPTION_STATUS.GRACE_PERIOD;
       await pool.query(
-        `UPDATE outlet_subscriptions SET status = ?, grace_period_end = ? WHERE outlet_id = ?`,
-        [status, graceEnd.toISOString().split('T')[0], outletId]
+        `UPDATE outlet_subscriptions
+           SET status = ?, grace_period_end = DATE_ADD(subscription_end, INTERVAL ? DAY)
+         WHERE outlet_id = ?`,
+        [status, GRACE_PERIOD_DAYS, outletId]
       );
       await _invalidateCache(outletId);
     }
   }
 
   if (status === SUBSCRIPTION_STATUS.GRACE_PERIOD && row.grace_period_end) {
-    const graceEnd = new Date(row.grace_period_end);
-    graceDaysRemaining = Math.max(0, Math.ceil((graceEnd - now) / (1000 * 60 * 60 * 24)));
-    if (graceEnd < now) {
+    const [[graceInfo]] = await pool.query(
+      `SELECT GREATEST(0, DATEDIFF(grace_period_end, NOW())) AS days_remaining,
+              grace_period_end < NOW() AS is_past
+       FROM outlet_subscriptions WHERE outlet_id = ?`,
+      [outletId]
+    );
+    graceDaysRemaining = graceInfo?.days_remaining ?? 0;
+    if (graceInfo?.is_past) {
       status = SUBSCRIPTION_STATUS.EXPIRED;
       graceDaysRemaining = 0;
       await pool.query(
@@ -125,7 +133,7 @@ const getSubscriptionStatus = async (outletId) => {
     status,
     isBlocked,
     graceDaysRemaining,
-    subscriptionEnd: row.subscription_end ? row.subscription_end.toISOString?.() || row.subscription_end : null,
+    subscriptionEnd: row.subscription_end || null,
   };
 
   await cache.set(_cacheKey(outletId), result, 300); // 5-min TTL
