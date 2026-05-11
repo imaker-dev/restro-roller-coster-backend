@@ -437,7 +437,7 @@ const selfOrderService = {
    * 1. Validate session + settings
    * 2. Validate & price items (reuses menu engine for consistent pricing)
    * 3. Create order + order_items in single transaction
-   * 4. Auto-accept (KOT + table status) OR mark as pending_approval
+   * 4. Auto-accept (KOT + table status) OR mark as pending
    * 5. Emit socket events
    */
   async placeOrder(session, { customerName, customerPhone, specialInstructions, items }) {
@@ -476,6 +476,22 @@ const selfOrderService = {
       return this._addItemsToExistingOrder(session, { specialInstructions, items }, settings);
     }
 
+    // ── MANUAL mode guard: don't overwrite a pending request that's waiting for staff ──
+    if (settings.acceptMode !== SELF_ORDER.ACCEPT_MODE.AUTO) {
+      const [[existingCart]] = await pool.query(
+        `SELECT cart_data FROM self_order_cart WHERE session_id = ?`,
+        [session.id]
+      );
+      if (existingCart) {
+        const cart = typeof existingCart.cart_data === 'string'
+          ? JSON.parse(existingCart.cart_data)
+          : existingCart.cart_data;
+        if (cart && cart.isPlacedOrder) {
+          throw new Error('Your order request is waiting for staff approval. Please wait before placing a new order.');
+        }
+      }
+    }
+
     // ── Validate and price all items in parallel (no DB connection held) ──
     const [pricedItems, selfOrderUserId] = await Promise.all([
       this._validateAndPriceItems(outletId, items),
@@ -495,9 +511,81 @@ const selfOrderService = {
       const isAutoMode = settings.acceptMode === SELF_ORDER.ACCEPT_MODE.AUTO;
       const orderStatus = isAutoMode ? 'confirmed' : 'pending';
 
+      // ── MANUAL mode: don't create order/items/table-session until staff accepts ──
+      if (!isAutoMode) {
+        // Calculate totals from priced items
+        let subtotal = 0;
+        let totalTax = 0;
+        let grandTotal = 0;
+        for (const pi of pricedItems) {
+          subtotal += pi.totalPrice - pi.taxAmount;
+          totalTax += pi.taxAmount;
+          grandTotal += pi.totalPrice;
+        }
+
+        // Store the full priced request in cart so accept/reject can use it later
+        const pendingRequestData = {
+          items: pricedItems,
+          subtotal,
+          taxAmount: totalTax,
+          grandTotal,
+          specialInstructions,
+          customerName: finalName,
+          customerPhone: finalPhone,
+          placedAt: new Date().toISOString(),
+          isPlacedOrder: true,
+        };
+        await connection.query(
+          `INSERT INTO self_order_cart (session_id, outlet_id, table_id, cart_data)
+           VALUES (?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE cart_data = VALUES(cart_data), updated_at = NOW()`,
+          [session.id, outletId, tableId, JSON.stringify(pendingRequestData)]
+        );
+
+        // Update session: ordering state but NO order_id yet.
+        // Extend expires_at so the session doesn't expire while staff reviews the request.
+        await connection.query(
+          `UPDATE self_order_sessions SET status = 'ordering', order_id = NULL,
+           customer_name = COALESCE(?, customer_name), customer_phone = COALESCE(?, customer_phone),
+           expires_at = NOW() + INTERVAL 60 MINUTE
+           WHERE id = ?`,
+          [finalName, finalPhone, session.id]
+        );
+
+        await connection.commit();
+
+        const requestData = {
+          id: session.id,
+          status: 'pending',
+          outletId,
+          tableId,
+          tableNumber: session.tableNumber,
+          tableName: session.tableName,
+          floorId: session.floorId,
+          floorName: session.floorName,
+          customerName: finalName,
+          customerPhone: finalPhone,
+          orderSource: 'self_order',
+          subtotal,
+          taxAmount: totalTax,
+          totalAmount: grandTotal,
+          itemCount: pricedItems.length,
+          specialInstructions,
+          createdAt: new Date().toISOString(),
+        };
+
+        // Emit pending-approval notification (don't emit order:created since no order exists yet)
+        this._postOrderActions(requestData, settings, session, true).catch(err =>
+          logger.error('Self-order post-actions error:', err.message)
+        );
+        // DON'T clear cart in MANUAL mode — cart holds the pending request data
+
+        return requestData;
+      }
+
+      // ── AUTO mode: create order + items + table session immediately (unchanged) ──
+
       // Get or create table session
-      // In MANUAL mode: don't create table session or occupy table until staff accepts
-      // In AUTO mode: create table session + occupy table immediately
       let tableSessionId = null;
       const [existingSessions] = await connection.query(
         `SELECT id, order_id FROM table_sessions WHERE table_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1`,
@@ -507,10 +595,8 @@ const selfOrderService = {
       if (existingSessions[0] && !existingSessions[0].order_id) {
         tableSessionId = existingSessions[0].id;
       } else if (existingSessions[0]) {
-        // Table has active session with order — use same session
         tableSessionId = existingSessions[0].id;
-      } else if (isAutoMode) {
-        // AUTO mode: create table session + occupy table immediately
+      } else {
         const [sessionResult] = await connection.query(
           `INSERT INTO table_sessions (table_id, guest_count, guest_name, guest_phone, started_by)
            VALUES (?, 1, ?, ?, ?)`,
@@ -519,12 +605,10 @@ const selfOrderService = {
         tableSessionId = sessionResult.insertId;
         await connection.query(`UPDATE tables SET status = 'occupied' WHERE id = ?`, [tableId]);
       }
-      // MANUAL mode with no existing session: tableSessionId stays null — created on accept
 
       // Find or create customer record so self-order customers appear in /customers list
       let customerId = null;
       if (finalPhone || finalName) {
-        // Try to find existing customer by phone (exact match)
         if (finalPhone) {
           const [existingCustomers] = await connection.query(
             `SELECT id FROM customers WHERE outlet_id = ? AND phone = ? AND is_active = 1 LIMIT 1`,
@@ -532,7 +616,6 @@ const selfOrderService = {
           );
           if (existingCustomers[0]) {
             customerId = existingCustomers[0].id;
-            // Update name if changed and bump stats
             await connection.query(
               `UPDATE customers SET name = COALESCE(?, name), total_orders = total_orders + 1,
                last_order_at = NOW() WHERE id = ?`,
@@ -540,7 +623,6 @@ const selfOrderService = {
             );
           }
         }
-        // Create new customer if not found
         if (!customerId && finalName) {
           const [custResult] = await connection.query(
             `INSERT INTO customers (uuid, outlet_id, name, phone, total_orders, last_order_at)
@@ -610,7 +692,7 @@ const selfOrderService = {
         firstOrderItemId = insertResult.insertId;
       }
 
-      // Insert order_item_addons using pre-resolved addon data (no extra queries)
+      // Insert order_item_addons
       if (firstOrderItemId) {
         const addonInserts = [];
         for (let i = 0; i < pricedItems.length; i++) {
@@ -831,7 +913,7 @@ const selfOrderService = {
         customerName: session.customerName,
         orderSource: 'self_order',
         addedItems: pricedItems.length,
-        action: orderIsConfirmed ? 'items_added' : 'items_pending_approval',
+        action: orderIsConfirmed ? 'items_added' : 'items_pending',
       };
 
       if (orderIsConfirmed) {
@@ -878,6 +960,148 @@ const selfOrderService = {
     }
   },
 
+  /**
+   * Create a real order + items from a stored pending request (MANUAL mode accept).
+   * Called by acceptOrder when no orders row exists yet.
+   */
+  async _createOrderFromRequest(session, cartData, acceptedBy) {
+    const pool = getPool();
+    const selfOrderUserId = await getSelfOrderUserId();
+    const { items, subtotal, taxAmount, grandTotal, specialInstructions, customerName, customerPhone } = cartData;
+
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+
+      const orderNumber = await this._generateOrderNumber(session.outlet_id, connection);
+      const uuid = uuidv4();
+
+      // Create table session
+      let tableSessionId = null;
+      const [existingSessions] = await connection.query(
+        `SELECT id FROM table_sessions WHERE table_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1`,
+        [session.table_id]
+      );
+      if (existingSessions[0]) {
+        tableSessionId = existingSessions[0].id;
+      } else {
+        const [sessionResult] = await connection.query(
+          `INSERT INTO table_sessions (table_id, guest_count, guest_name, guest_phone, started_by)
+           VALUES (?, 1, ?, ?, ?)`,
+          [session.table_id, customerName || session.customer_name, customerPhone || session.customer_phone, selfOrderUserId]
+        );
+        tableSessionId = sessionResult.insertId;
+      }
+
+      // Create order
+      const [orderResult] = await connection.query(
+        `INSERT INTO orders (
+          uuid, outlet_id, order_number, order_type, order_source, self_order_session_id,
+          table_id, table_session_id, floor_id,
+          customer_name, customer_phone, guest_count,
+          status, payment_status, special_instructions, created_by
+        ) VALUES (?, ?, ?, 'dine_in', 'self_order', ?, ?, ?, ?, ?, ?, 1, 'pending', 'pending', ?, ?)`,
+        [
+          uuid, session.outlet_id, orderNumber, session.id,
+          session.table_id, tableSessionId, session.floor_id,
+          customerName || session.customer_name, customerPhone || session.customer_phone,
+          specialInstructions, selfOrderUserId
+        ]
+      );
+      const orderId = orderResult.insertId;
+
+      // Link table session
+      await connection.query(
+        `UPDATE table_sessions SET order_id = ? WHERE id = ? AND order_id IS NULL`,
+        [orderId, tableSessionId]
+      );
+
+      // Insert order items
+      const itemInserts = [];
+      for (const pi of items) {
+        itemInserts.push([
+          orderId, pi.itemId, pi.variantId, pi.itemName, pi.variantName,
+          pi.itemType, pi.quantity, pi.unitPrice, pi.basePrice,
+          0, pi.taxAmount, pi.totalPrice, pi.taxGroupId,
+          pi.taxDetails ? JSON.stringify(pi.taxDetails) : null,
+          pi.specialInstructions, 'pending', selfOrderUserId
+        ]);
+      }
+
+      let firstOrderItemId = null;
+      if (itemInserts.length > 0) {
+        const [insertResult] = await connection.query(
+          `INSERT INTO order_items (
+            order_id, item_id, variant_id, item_name, variant_name,
+            item_type, quantity, unit_price, base_price,
+            discount_amount, tax_amount, total_price, tax_group_id,
+            tax_details, special_instructions, status, created_by
+          ) VALUES ?`,
+          [itemInserts]
+        );
+        firstOrderItemId = insertResult.insertId;
+      }
+
+      // Insert addons
+      if (firstOrderItemId) {
+        const addonInserts = [];
+        for (let i = 0; i < items.length; i++) {
+          const pi = items[i];
+          const orderItemId = firstOrderItemId + i;
+          for (const addon of pi.addons) {
+            if (addon.addonName) {
+              addonInserts.push([
+                orderItemId, addon.addonId, addon.addonGroupId,
+                addon.addonName, addon.groupName, addon.quantity,
+                addon.price, addon.price * addon.quantity
+              ]);
+            }
+          }
+        }
+        if (addonInserts.length > 0) {
+          await connection.query(
+            `INSERT INTO order_item_addons (
+              order_item_id, addon_id, addon_group_id,
+              addon_name, addon_group_name, quantity, unit_price, total_price
+            ) VALUES ?`,
+            [addonInserts]
+          );
+        }
+      }
+
+      // Update order totals
+      await connection.query(
+        `UPDATE orders SET subtotal = ?, tax_amount = ?, total_amount = ?, due_amount = ? WHERE id = ?`,
+        [subtotal, taxAmount, grandTotal, grandTotal, orderId]
+      );
+
+      // Link session to order
+      await connection.query(
+        `UPDATE self_order_sessions SET order_id = ? WHERE id = ?`,
+        [orderId, session.id]
+      );
+
+      await connection.commit();
+
+      // Fetch the created order with joins
+      const [[order]] = await pool.query(
+        `SELECT o.*, t.table_number, t.name as table_name, f.name as floor_name
+         FROM orders o
+         LEFT JOIN tables t ON o.table_id = t.id
+         LEFT JOIN floors f ON o.floor_id = f.id
+         WHERE o.id = ?`,
+        [orderId]
+      );
+
+      return { order, orderId };
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  },
+
   // ========================
   // STAFF: ACCEPT / REJECT
   // ========================
@@ -885,19 +1109,56 @@ const selfOrderService = {
   /**
    * Accept a pending self-order (manual mode). Creates KOT and updates statuses.
    */
-  async acceptOrder(orderId, acceptedBy) {
+  async acceptOrder(orderOrSessionId, acceptedBy) {
     const pool = getPool();
 
-    const [[order]] = await pool.query(
+    let order;
+    let orderId;
+    let isSessionBased = false;
+
+    // ── 1. Try to find existing order ──
+    const [[existingOrder]] = await pool.query(
       `SELECT o.*, t.table_number, t.name as table_name, f.name as floor_name
        FROM orders o
        LEFT JOIN tables t ON o.table_id = t.id
        LEFT JOIN floors f ON o.floor_id = f.id
        WHERE o.id = ? AND o.order_source = 'self_order'`,
-      [orderId]
+      [orderOrSessionId]
     );
 
-    if (!order) throw new Error('Self-order not found');
+    if (existingOrder) {
+      order = existingOrder;
+      orderId = orderOrSessionId;
+    } else {
+      // ── 2. No order found — look for session-based pending request (MANUAL mode) ──
+      const [[session]] = await pool.query(
+        `SELECT s.*, t.table_number, t.name as table_name, f.name as floor_name
+         FROM self_order_sessions s
+         LEFT JOIN tables t ON s.table_id = t.id
+         LEFT JOIN floors f ON s.floor_id = f.id
+         WHERE s.id = ? AND s.status = 'ordering' AND s.order_id IS NULL`,
+        [orderOrSessionId]
+      );
+
+      if (!session) throw new Error('Self-order not found');
+
+      // Read stored cart data
+      const [[cartRow]] = await pool.query(
+        `SELECT cart_data FROM self_order_cart WHERE session_id = ?`,
+        [orderOrSessionId]
+      );
+
+      if (!cartRow) throw new Error('Order request data not found');
+
+      const cartData = typeof cartRow.cart_data === 'string' ? JSON.parse(cartRow.cart_data) : cartRow.cart_data;
+      if (!cartData.isPlacedOrder) throw new Error('Order request data not found');
+
+      // Create order + items + table session from stored request data
+      const result = await this._createOrderFromRequest(session, cartData, acceptedBy);
+      order = result.order;
+      orderId = result.orderId;
+      isSessionBased = true;
+    }
 
     // Check if order has pending items (new items needing approval on an existing confirmed order)
     const [[{ pendingCount }]] = await pool.query(
@@ -971,6 +1232,11 @@ const selfOrderService = {
       );
     }
 
+    // If session-based, clear the pending request cart
+    if (isSessionBased && order.self_order_session_id) {
+      this.clearCart(order.self_order_session_id).catch(() => {});
+    }
+
     // Emit events
     const eventData = {
       orderId,
@@ -1017,17 +1283,65 @@ const selfOrderService = {
    * - If order is confirmed/preparing but has pending items → partial rejection:
    *   cancel only the pending items, keep the order and accepted items running
    */
-  async rejectOrder(orderId, rejectedBy, reason = null) {
+  async rejectOrder(orderOrSessionId, rejectedBy, reason = null) {
     const pool = getPool();
 
     const [[order]] = await pool.query(
       `SELECT o.*, t.table_number FROM orders o
        LEFT JOIN tables t ON o.table_id = t.id
        WHERE o.id = ? AND o.order_source = 'self_order'`,
-      [orderId]
+      [orderOrSessionId]
     );
 
-    if (!order) throw new Error('Self-order not found');
+    if (!order) {
+      // ── Session-based reject: no orders row yet (MANUAL mode) ──
+      const [[session]] = await pool.query(
+        `SELECT s.*, t.table_number, t.name as table_name
+         FROM self_order_sessions s
+         LEFT JOIN tables t ON s.table_id = t.id
+         WHERE s.id = ? AND s.status = 'ordering' AND s.order_id IS NULL`,
+        [orderOrSessionId]
+      );
+
+      if (!session) throw new Error('Self-order not found');
+
+      // Clear the pending request cart
+      await this.clearCart(orderOrSessionId);
+
+      // Reset session so customer can place a new order
+      await pool.query(
+        `UPDATE self_order_sessions SET status = 'active', order_id = NULL WHERE id = ?`,
+        [orderOrSessionId]
+      );
+
+      const eventData = {
+        orderId: null,
+        orderNumber: null,
+        outletId: session.outlet_id,
+        tableId: session.table_id,
+        tableNumber: session.table_number,
+        customerName: session.customer_name,
+        action: 'rejected',
+        status: 'cancelled',
+        orderStatus: 'cancelled',
+        reason,
+        rejectedBy,
+      };
+
+      await Promise.all([
+        this._emitSelfOrderEvent('selforder:rejected', eventData),
+        this._logActivity(session.id, session.outlet_id, session.table_id, 'order_rejected', null),
+      ]).catch(() => {});
+
+      return {
+        orderId: null,
+        orderNumber: null,
+        status: 'cancelled',
+        message: 'Order request rejected',
+      };
+    }
+
+    const orderId = orderOrSessionId;
 
     // Count pending items to decide full vs partial rejection
     const [[{ pendingCount }]] = await pool.query(
@@ -1192,11 +1506,51 @@ const selfOrderService = {
    * Get order status for customer (lightweight, fast)
    */
   async getOrderStatus(session) {
+    const pool = getPool();
+
+    // ── No order_id yet — check for a pending request (MANUAL mode before accept) ──
     if (!session.orderId) {
+      const [[cartRow]] = await pool.query(
+        `SELECT cart_data FROM self_order_cart WHERE session_id = ?`,
+        [session.id]
+      );
+
+      if (cartRow) {
+        const cart = typeof cartRow.cart_data === 'string'
+          ? JSON.parse(cartRow.cart_data)
+          : cartRow.cart_data;
+
+        if (cart && cart.isPlacedOrder) {
+          return {
+            hasOrder: false,
+            pendingRequest: {
+              status: 'pending',
+              items: (cart.items || []).map(item => ({
+                id: null,
+                name: item.itemName,
+                variantName: item.variantName || null,
+                quantity: item.quantity,
+                unitPrice: parseFloat(item.unitPrice) || 0,
+                totalPrice: parseFloat(item.totalPrice) || 0,
+                itemType: item.itemType,
+                specialInstructions: item.specialInstructions || null,
+                status: 'pending',
+                taxDetails: item.taxDetails || null,
+              })),
+              subtotal: parseFloat(cart.subtotal) || 0,
+              taxAmount: parseFloat(cart.taxAmount) || 0,
+              totalAmount: parseFloat(cart.grandTotal) || 0,
+              specialInstructions: cart.specialInstructions || null,
+              itemCount: (cart.items || []).length,
+              placedAt: cart.placedAt || null,
+              message: 'Waiting for restaurant staff to accept your order',
+            },
+          };
+        }
+      }
+
       return { hasOrder: false };
     }
-
-    const pool = getPool();
 
     const [[order]] = await pool.query(
       `SELECT id, order_number, status, subtotal, tax_amount, total_amount,
@@ -1535,10 +1889,10 @@ const selfOrderService = {
     const pageSize = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
     const offset = (pageNum - 1) * pageSize;
 
+    // ── Part A: orders-based pending list (existing behavior) ──
     let where = `WHERE o.outlet_id = ? AND o.order_source = 'self_order'`;
     const params = [outletId];
 
-    // Status filter
     if (status === 'all') {
       where += ` AND o.status NOT IN ('cancelled')`;
     } else {
@@ -1546,7 +1900,6 @@ const selfOrderService = {
       params.push(status);
     }
 
-    // Date filter (business day range 4am-4am)
     if (fromDate && toDate && fromDate.length === 10 && toDate.length === 10) {
       const { startDt, endDt } = businessDayRange(fromDate, toDate);
       where += ` AND o.created_at >= ? AND o.created_at < ?`;
@@ -1561,7 +1914,6 @@ const selfOrderService = {
       params.push(endDt);
     }
 
-    // Search: order number, customer name, phone, table number
     if (search && search.trim()) {
       where += ` AND (o.order_number LIKE ? OR o.customer_name LIKE ? OR o.customer_phone LIKE ? OR t.table_number LIKE ?)`;
       const like = `%${search.trim()}%`;
@@ -1572,7 +1924,7 @@ const selfOrderService = {
        LEFT JOIN tables t ON o.table_id = t.id
        LEFT JOIN floors f ON o.floor_id = f.id`;
 
-    const [[{ total }]] = await pool.query(
+    const [[{ total: orderTotal }]] = await pool.query(
       `SELECT COUNT(*) as total ${fromClause} ${where}`,
       params
     );
@@ -1630,7 +1982,7 @@ const selfOrderService = {
       }
     }
 
-    const data = orders.map(o => ({
+    const orderData = orders.map(o => ({
       id: o.id,
       orderNumber: o.order_number,
       status: o.status,
@@ -1647,7 +1999,105 @@ const selfOrderService = {
       items: itemsByOrder[o.id] || [],
       createdAt: o.created_at,
       updatedAt: o.updated_at,
+      isPendingRequest: false,
     }));
+
+    // ── Part B: session-based pending requests (MANUAL mode, no orders row yet) ──
+    let sessionData = [];
+    let sessionTotal = 0;
+    if (status === 'pending' || status === 'all') {
+      let sessionWhere = `WHERE s.outlet_id = ? AND s.status = 'ordering' AND s.order_id IS NULL`;
+      const sessionParams = [outletId];
+
+      if (search && search.trim()) {
+        const like = `%${search.trim()}%`;
+        sessionWhere = `WHERE (s.customer_name LIKE ? OR s.customer_phone LIKE ? OR t.table_number LIKE ?) AND s.outlet_id = ? AND s.status = 'ordering' AND s.order_id IS NULL`;
+        sessionParams.unshift(like, like, like);
+      }
+
+      const [[{ total: sTotal }]] = await pool.query(
+        `SELECT COUNT(*) as total FROM self_order_sessions s
+         LEFT JOIN tables t ON s.table_id = t.id
+         ${sessionWhere}`,
+        sessionParams
+      );
+      sessionTotal = sTotal;
+
+      // Fetch ALL session-based pending requests (typically very few; always show them)
+      const [sessions] = await pool.query(
+        `SELECT s.id, s.customer_name, s.customer_phone,
+                s.table_id, s.outlet_id, s.floor_id, s.created_at, s.updated_at,
+                t.table_number, t.name as table_name,
+                f.name as floor_name
+         FROM self_order_sessions s
+         LEFT JOIN tables t ON s.table_id = t.id
+         LEFT JOIN floors f ON s.floor_id = f.id
+         ${sessionWhere}
+         ORDER BY s.created_at DESC`,
+        sessionParams
+      );
+
+      if (sessions.length > 0) {
+        const sessionIds = sessions.map(s => s.id);
+        const [cartRows] = await pool.query(
+          `SELECT session_id, cart_data FROM self_order_cart WHERE session_id IN (?)`,
+          [sessionIds]
+        );
+        const cartBySession = {};
+        for (const row of cartRows) {
+          const cart = typeof row.cart_data === 'string' ? JSON.parse(row.cart_data) : row.cart_data;
+          cartBySession[row.session_id] = cart;
+        }
+
+        for (const s of sessions) {
+          const cart = cartBySession[s.id];
+          if (!cart || !cart.isPlacedOrder) continue;
+
+          const items = (cart.items || []).map(item => ({
+            id: null,
+            name: item.itemName,
+            shortName: item.shortName || null,
+            variantName: item.variantName || null,
+            itemType: item.itemType,
+            quantity: item.quantity,
+            unitPrice: parseFloat(item.unitPrice) || 0,
+            totalPrice: parseFloat(item.totalPrice) || 0,
+            specialInstructions: item.specialInstructions || null,
+            status: 'pending',
+            taxDetails: item.taxDetails || null,
+          }));
+
+          sessionData.push({
+            id: s.id,
+            orderNumber: null,
+            status: 'pending',
+            customerName: s.customer_name,
+            customerPhone: s.customer_phone,
+            tableNumber: s.table_number,
+            tableName: s.table_name,
+            floorName: s.floor_name,
+            subtotal: parseFloat(cart.subtotal) || 0,
+            taxAmount: parseFloat(cart.taxAmount) || 0,
+            totalAmount: parseFloat(cart.grandTotal) || 0,
+            specialInstructions: cart.specialInstructions || null,
+            itemCount: items.length,
+            items,
+            createdAt: s.created_at,
+            updatedAt: s.updated_at,
+            isPendingRequest: true,
+          });
+        }
+      }
+    }
+
+    // Combine: session-based first (urgent), then order-based
+    let data = [...sessionData, ...orderData];
+    const total = orderTotal + sessionTotal;
+
+    // Ensure we never return more than pageSize items
+    if (data.length > pageSize) {
+      data = data.slice(0, pageSize);
+    }
 
     return {
       orders: data,
@@ -1888,21 +2338,23 @@ const selfOrderService = {
   /**
    * Post-order async actions (auto-KOT, socket events, logging)
    */
-  async _postOrderActions(orderData, settings, session) {
+  async _postOrderActions(orderData, settings, session, isManualMode = false) {
     const promises = [];
 
     // 1. Emit self-order notification to staff
     promises.push(this._emitSelfOrderEvent('selforder:new', {
       ...orderData,
       acceptMode: settings.acceptMode,
-      action: 'new_order',
+      action: isManualMode ? 'pending' : 'new_order',
     }));
 
-    // 2. Emit generic order update
-    promises.push(this._emitOrderUpdate(orderData.outletId, orderData.id, 'order:created'));
+    // 2. Emit generic order update (only if actual order was created)
+    if (!isManualMode) {
+      promises.push(this._emitOrderUpdate(orderData.outletId, orderData.id, 'order:created'));
+    }
 
-    // 3. Emit table update
-    if (orderData.tableId) {
+    // 3. Emit table update (only if actual order was created)
+    if (!isManualMode && orderData.tableId) {
       promises.push(publishMessage('table:update', {
         outletId: orderData.outletId,
         tableId: orderData.tableId,
@@ -1912,12 +2364,12 @@ const selfOrderService = {
 
     // 4. Log activity
     promises.push(this._logActivity(
-      session.id, orderData.outletId, orderData.tableId, 'order_placed', orderData.id, null,
+      session.id, orderData.outletId, orderData.tableId, 'order_placed', isManualMode ? null : orderData.id, null,
       { orderNumber: orderData.orderNumber, itemCount: orderData.itemCount, total: orderData.totalAmount }
     ));
 
-    // 5. Auto-accept: send KOT immediately
-    if (settings.acceptMode === SELF_ORDER.ACCEPT_MODE.AUTO) {
+    // 5. Auto-accept: send KOT immediately (AUTO mode only)
+    if (!isManualMode && settings.acceptMode === SELF_ORDER.ACCEPT_MODE.AUTO) {
       promises.push(this._autoSendKot(orderData.id));
     }
 
@@ -2029,6 +2481,12 @@ const selfOrderService = {
     );
     if (result.affectedRows > 0) {
       logger.info(`Expired ${result.affectedRows} stale self-order sessions`);
+      // Clean up orphaned cart rows for expired sessions
+      await pool.query(
+        `DELETE c FROM self_order_cart c
+         INNER JOIN self_order_sessions s ON c.session_id = s.id
+         WHERE s.status = 'expired'`
+      );
     }
     return result.affectedRows;
   },
@@ -2462,12 +2920,13 @@ const selfOrderService = {
     }
 
     // Rule 1: Sessions without order that exceeded idle timeout (default 10 min)
+    // Use updated_at (not created_at) so any activity resets the idle timer
     const expiredIdleCount = await pool.query(
       `UPDATE self_order_sessions s
        SET s.status = 'expired', s.updated_at = NOW()
        WHERE ${whereClause}
          AND s.order_id IS NULL
-         AND s.created_at < NOW() - INTERVAL COALESCE(s.idle_timeout_minutes, 10) MINUTE`,
+         AND s.updated_at < NOW() - INTERVAL COALESCE(s.idle_timeout_minutes, 10) MINUTE`,
       params
     );
 
@@ -2482,10 +2941,17 @@ const selfOrderService = {
     );
 
     const totalExpired = (expiredIdleCount[0]?.affectedRows || 0) + (expiredCompletedCount[0]?.affectedRows || 0);
-    
+
     if (totalExpired > 0) {
       logger.info(`Smart expiry: expired ${totalExpired} sessions (outlet: ${outletId || 'all'}, table: ${tableId || 'all'})`);
     }
+
+    // Clean up orphaned cart rows for expired sessions (fire-and-forget)
+    pool.query(
+      `DELETE c FROM self_order_cart c
+       INNER JOIN self_order_sessions s ON c.session_id = s.id
+       WHERE s.status = 'expired'`
+    ).catch(() => {});
 
     return { expiredCount: totalExpired };
   },
@@ -2534,13 +3000,13 @@ const selfOrderService = {
     if (session.status === 'expired') return { expired: true, reason: 'Session already expired' };
     if (session.status === 'completed') return { expired: true, reason: 'Session completed' };
 
-    // Rule 1: No order + exceeded idle timeout
+    // Rule 1: No order + exceeded idle timeout (use updated_at so activity resets timer)
     if (!session.order_id) {
       const idleTimeout = session.idle_timeout_minutes || 10;
-      const createdAt = new Date(session.created_at);
+      const lastActivityAt = new Date(session.updated_at);
       const now = new Date();
-      const minutesElapsed = (now - createdAt) / (1000 * 60);
-      
+      const minutesElapsed = (now - lastActivityAt) / (1000 * 60);
+
       if (minutesElapsed > idleTimeout) {
         return { expired: true, reason: `Idle timeout exceeded (${idleTimeout} minutes)` };
       }

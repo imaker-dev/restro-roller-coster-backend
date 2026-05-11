@@ -133,12 +133,15 @@ const cache = {
   },
 };
 
+// Build namespaced channel name so multiple deployments can share one Redis
+const _nsChannel = (channel) => redisConfig.namespace ? `${redisConfig.namespace}:${channel}` : channel;
+
 // Pub/Sub helpers (gracefully handle when Redis is not available)
 const pubsub = {
   async publish(channel, message) {
     if (!redisAvailable || !redisClient) return;
     try {
-      await redisClient.publish(channel, JSON.stringify(message));
+      await redisClient.publish(_nsChannel(channel), JSON.stringify(message));
     } catch (error) {
       logger.warn('Pubsub publish failed:', error.message);
     }
@@ -146,10 +149,11 @@ const pubsub = {
 
   subscribe(channel, callback) {
     if (!redisAvailable || !redisSubscriber) return;
+    const nsChannel = _nsChannel(channel);
     try {
-      redisSubscriber.subscribe(channel);
+      redisSubscriber.subscribe(nsChannel);
       redisSubscriber.on('message', (ch, message) => {
-        if (ch === channel) {
+        if (ch === nsChannel) {
           callback(JSON.parse(message));
         }
       });
@@ -161,7 +165,7 @@ const pubsub = {
   unsubscribe(channel) {
     if (!redisAvailable || !redisSubscriber) return;
     try {
-      redisSubscriber.unsubscribe(channel);
+      redisSubscriber.unsubscribe(_nsChannel(channel));
     } catch (error) {
       logger.warn('Pubsub unsubscribe failed:', error.message);
     }

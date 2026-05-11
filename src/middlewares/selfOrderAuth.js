@@ -47,7 +47,7 @@ const verifySelfOrderSession = async (req, res, next) => {
        SET s.status = 'expired', s.updated_at = NOW()
        WHERE s.token = ? AND s.status IN ('active', 'ordering')
          AND (
-           (s.order_id IS NULL AND s.created_at < NOW() - INTERVAL COALESCE(s.idle_timeout_minutes, 10) MINUTE)
+           (s.order_id IS NULL AND s.updated_at < NOW() - INTERVAL COALESCE(s.idle_timeout_minutes, 10) MINUTE)
            OR (s.order_completed_at IS NOT NULL AND s.order_completed_at < NOW() - INTERVAL COALESCE(s.completion_buffer_minutes, 1) MINUTE)
          )`,
       [token]
@@ -64,7 +64,7 @@ const verifySelfOrderSession = async (req, res, next) => {
        LEFT JOIN orders o ON s.order_id = o.id
        WHERE s.token = ? AND s.status IN ('active', 'ordering')
          AND s.expires_at > NOW()
-         AND NOT (s.order_id IS NULL AND s.created_at < NOW() - INTERVAL COALESCE(s.idle_timeout_minutes, 10) MINUTE)
+         AND NOT (s.order_id IS NULL AND s.updated_at < NOW() - INTERVAL COALESCE(s.idle_timeout_minutes, 10) MINUTE)
          AND NOT (s.order_completed_at IS NOT NULL AND s.order_completed_at < NOW() - INTERVAL COALESCE(s.completion_buffer_minutes, 1) MINUTE)
        LIMIT 1`,
       [token]

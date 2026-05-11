@@ -15,6 +15,7 @@ const taxService = require('./tax.service');
 const { prefixImageUrl } = require('../utils/helpers');
 const costSnapshotService = require('./costSnapshot.service');
 const stockDeductionService = require('./stockDeduction.service');
+const settingsService = require('./settings.service');
 
 // Order status flow
 const ORDER_STATUS = {
@@ -152,9 +153,10 @@ const orderService = {
 
     const user = users[0];
 
-    // Verify fixed password for post-bill modifications (restaurant requirement)
-    const FIXED_MODIFICATION_PASSWORD = '132564556';
-    if (password !== FIXED_MODIFICATION_PASSWORD) {
+    // Verify modification password from outlet settings (default: 000000)
+    const setting = await settingsService.get('modification_password', outletId);
+    const expectedPassword = setting?.value || '000000';
+    if (password !== expectedPassword) {
       logger.warn(`Post-bill modification: Invalid password attempt for cashier ${cashierId} (${user.name})`);
       throw new Error('Invalid modification password');
     }

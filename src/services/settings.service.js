@@ -82,6 +82,7 @@ class SettingsService {
     { key: 'default_order_type', value: 'dine_in', type: 'string', category: 'order', description: 'Default order type' },
     { key: 'order_number_prefix', value: 'ORD', type: 'string', category: 'order', description: 'Order number prefix' },
     { key: 'order_number_reset_daily', value: 'true', type: 'boolean', category: 'order', description: 'Reset order number daily' },
+    { key: 'modification_password', value: '000000', type: 'string', category: 'order', description: 'Password required for cashier to modify a billed order' },
     
     // Notification Settings
     { key: 'email_notifications_enabled', value: 'false', type: 'boolean', category: 'notification', description: 'Enable email notifications' },

@@ -864,10 +864,12 @@ const tableService = {
         [floorId]
       ),
       // Direct active orders by floor (fallback for session gaps) — uses floor_id JOIN, no table IDs needed
+      // Exclude pending self-orders (manual mode — not yet accepted by staff, should not occupy table)
       pool.query(
         `SELECT o.table_id, MAX(o.id) as order_id FROM orders o
          JOIN tables t ON o.table_id = t.id
          WHERE t.floor_id = ? AND t.is_active = 1 AND o.status NOT IN ('paid', 'completed', 'cancelled')
+           AND NOT (o.order_source = 'self_order' AND o.status = 'pending')
          GROUP BY o.table_id`,
         [floorId]
       )
