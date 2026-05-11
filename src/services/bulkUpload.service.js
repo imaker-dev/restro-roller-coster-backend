@@ -626,14 +626,99 @@ const bulkUploadService = {
     }
   },
 
+  // ========================
+  // SUPER ADMIN MENU TEMPLATE
+  // ========================
+
   /**
-   * Generate CSV template with sample data
-   * Reads from the Complete_BulkUpload.csv sample file if available
+   * Save or update a super admin's master menu template.
+   * Only super_admin role should call this.
    */
-  generateTemplate() {
-    // Try to read from sample data file first
+  async saveSuperAdminTemplate(userId, csvContent) {
+    const pool = getPool();
+    await pool.query(
+      `INSERT INTO super_admin_menu_templates (user_id, template_data)
+       VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE template_data = VALUES(template_data), updated_at = NOW()`,
+      [userId, csvContent]
+    );
+    return { success: true, message: 'Super admin template saved successfully' };
+  },
+
+  /**
+   * Get a super admin's master menu template by userId.
+   */
+  async getSuperAdminTemplate(userId) {
+    const pool = getPool();
+    const [[row]] = await pool.query(
+      'SELECT template_data FROM super_admin_menu_templates WHERE user_id = ?',
+      [userId]
+    );
+    return row ? row.template_data : null;
+  },
+
+  /**
+   * Delete a super admin's master menu template.
+   */
+  async deleteSuperAdminTemplate(userId) {
+    const pool = getPool();
+    const [result] = await pool.query(
+      'DELETE FROM super_admin_menu_templates WHERE user_id = ?',
+      [userId]
+    );
+    return { success: true, deleted: result.affectedRows > 0 };
+  },
+
+  /**
+   * Resolve outlet → super admin → template.
+   * Returns the template string if the outlet's super admin has one,
+   * otherwise null.
+   */
+  async getSuperAdminTemplateForOutlet(outletId) {
+    const pool = getPool();
+    // Find the super admin (created_by) for this outlet
+    const [[outlet]] = await pool.query(
+      'SELECT created_by FROM outlets WHERE id = ?',
+      [outletId]
+    );
+    if (!outlet || !outlet.created_by) return null;
+
+    const [[row]] = await pool.query(
+      'SELECT template_data FROM super_admin_menu_templates WHERE user_id = ?',
+      [outlet.created_by]
+    );
+    return row ? row.template_data : null;
+  },
+
+  /**
+   * Generate CSV template — outlet-specific if outletId provided,
+   * otherwise falls back to the sample/default template.
+   */
+  async generateTemplate(outletId) {
+    if (outletId) {
+      // Priority 1: Return the outlet's super admin master template (if set)
+      try {
+        const superAdminTemplate = await this.getSuperAdminTemplateForOutlet(outletId);
+        if (superAdminTemplate) {
+          logger.info(`Serving super admin template for outlet ${outletId}`);
+          return superAdminTemplate;
+        }
+      } catch (err) {
+        logger.warn(`Failed to fetch super admin template for outlet ${outletId}:`, err.message);
+      }
+
+      // Priority 2: Fall back to the outlet's current live menu export
+      try {
+        const outletTemplate = await this._generateOutletTemplate(outletId);
+        if (outletTemplate) return outletTemplate;
+      } catch (err) {
+        logger.warn(`Failed to generate outlet template for ${outletId}, falling back to default:`, err.message);
+      }
+    }
+
+    // Fallback: read from sample data file or use default template
     const sampleFilePath = path.join(__dirname, '../../menu-want/Complete_BulkUpload.csv');
-    
+
     try {
       if (fs.existsSync(sampleFilePath)) {
         const sampleData = fs.readFileSync(sampleFilePath, 'utf-8');
@@ -672,6 +757,204 @@ const bulkUploadService = {
     ];
 
     return header + '\n' + examples.join('\n');
+  },
+
+  /**
+   * Export an outlet's current menu into CSV template format.
+   * Returns null if outlet has no menu data.
+   */
+  async _generateOutletTemplate(outletId) {
+    const pool = getPool();
+    const header = 'Type,Name,Category,Price,ItemType,GST,VAT,Station,Description,Parent,ShortName,SKU,Default,SelectionType,Min,Max,Required,Group,Item,ServiceType';
+
+    const [catRows] = await pool.query(
+      `SELECT id, name, description, service_type, parent_id, display_order
+       FROM categories
+       WHERE outlet_id = ? AND deleted_at IS NULL
+       ORDER BY display_order, id`,
+      [outletId]
+    );
+
+    if (!catRows.length) return null;
+
+    const [itemRows] = await pool.query(
+      `SELECT i.id, i.name, i.sku, i.category_id, i.base_price, i.item_type,
+              i.description, i.short_name, i.service_type, i.kitchen_station_id,
+              i.tax_group_id, i.display_order, i.has_variants,
+              c.name AS category_name
+       FROM items i
+       LEFT JOIN categories c ON c.id = i.category_id
+       WHERE i.outlet_id = ? AND i.deleted_at IS NULL
+       ORDER BY i.category_id, i.display_order, i.id`,
+      [outletId]
+    );
+
+    const [variantRows] = await pool.query(
+      `SELECT v.id, v.item_id, v.name, v.sku, v.price, v.is_default,
+              v.display_order, i.name AS item_name
+       FROM variants v
+       JOIN items i ON i.id = v.item_id
+       WHERE i.outlet_id = ? AND v.is_active = 1
+       ORDER BY v.item_id, v.display_order, v.id`,
+      [outletId]
+    );
+
+    const [groupRows] = await pool.query(
+      `SELECT id, name, selection_type, min_selection, max_selection,
+              is_required, display_order
+       FROM addon_groups
+       WHERE outlet_id = ? AND is_active = 1
+       ORDER BY display_order, id`,
+      [outletId]
+    );
+
+    const [addonRows] = await pool.query(
+      `SELECT a.id, a.addon_group_id, a.name, a.price, a.item_type,
+              a.display_order, ag.name AS group_name
+       FROM addons a
+       JOIN addon_groups ag ON ag.id = a.addon_group_id
+       WHERE ag.outlet_id = ? AND a.is_active = 1
+       ORDER BY a.addon_group_id, a.display_order, a.id`,
+      [outletId]
+    );
+
+    // Build lookup maps
+    const catMap = new Map(catRows.map(c => [c.id, c]));
+    const itemMap = new Map(itemRows.map(i => [i.id, i]));
+
+    // Tax groups for GST/VAT lookup
+    const [taxRows] = await pool.query(
+      `SELECT id, code, total_rate FROM tax_groups
+       WHERE (outlet_id = ? OR outlet_id IS NULL) AND is_active = 1`,
+      [outletId]
+    );
+    const taxMap = new Map(taxRows.map(t => [t.id, t]));
+
+    // Kitchen stations for station name lookup
+    const [stationRows] = await pool.query(
+      `SELECT id, name FROM kitchen_stations
+       WHERE outlet_id = ? AND is_active = 1`,
+      [outletId]
+    );
+    const stationMap = new Map(stationRows.map(s => [s.id, s.name]));
+
+    const rows = [];
+
+    // Helper to safely escape CSV values
+    const esc = (v) => {
+      if (v === null || v === undefined) return '';
+      const s = String(v);
+      if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+        return '"' + s.replace(/"/g, '""') + '"';
+      }
+      return s;
+    };
+
+    const makeRow = (cols) => cols.map(esc).join(',');
+
+    // ── Categories (parents first so subcategories can reference them) ──
+    // Sort so parent categories appear before child categories
+    const sortedCats = [...catRows].sort((a, b) => {
+      const aParent = a.parent_id;
+      const bParent = b.parent_id;
+      if (!aParent && bParent) return -1;
+      if (aParent && !bParent) return 1;
+      return a.display_order - b.display_order || a.id - b.id;
+    });
+
+    rows.push('# CATEGORIES - ServiceType: restaurant, bar, both');
+    for (const c of sortedCats) {
+      rows.push(makeRow([
+        'CATEGORY', c.name, '', '', '', '', '', '',
+        c.description || '',
+        c.parent_id ? (catMap.get(c.parent_id)?.name || '') : '',
+        '', '', '', '', '', '', '', '', '', '',
+        c.service_type || 'both'
+      ]));
+    }
+
+    // ── Items ──
+    if (itemRows.length) {
+      rows.push('');
+      rows.push('# ITEMS - Station: Kitchen or Bar only');
+      for (const i of itemRows) {
+        let gst = '';
+        let vat = '';
+        const tax = taxMap.get(i.tax_group_id);
+        if (tax) {
+          if (tax.code && tax.code.startsWith('VAT_')) {
+            vat = tax.code.replace('VAT_', '');
+          } else if (tax.code && tax.code.startsWith('GST_')) {
+            gst = tax.code.replace('GST_', '');
+          } else {
+            // Fallback: match total_rate to known GST/VAT rates
+            const rate = String(tax.total_rate);
+            if (GST_RATES[rate] !== undefined) gst = rate;
+            else if (VAT_RATES[rate] !== undefined) vat = rate;
+          }
+        }
+
+        const stationName = stationMap.get(i.kitchen_station_id) || '';
+
+        rows.push(makeRow([
+          'ITEM', i.name, i.category_name || '',
+          i.has_variants ? '0' : (i.base_price || '0'),
+          i.item_type || 'veg',
+          gst, vat, stationName,
+          i.description || '', '',
+          i.short_name || '',
+          i.sku || '', '', '', '', '', '', '', '', '',
+          i.service_type || 'both'
+        ]));
+      }
+    }
+
+    // ── Variants ──
+    if (variantRows.length) {
+      rows.push('');
+      rows.push('# VARIANTS (Place after ITEM row, or specify Item column)');
+      for (const v of variantRows) {
+        const parentItem = itemMap.get(v.item_id);
+        rows.push(makeRow([
+          'VARIANT', v.name, '', v.price || '0', '', '', '', '', '', '', '', '',
+          v.is_default ? 'yes' : 'no',
+          '', '', '', '', '', '', '',
+          parentItem ? parentItem.name : ''
+        ]));
+      }
+    }
+
+    // ── Addon Groups ──
+    if (groupRows.length) {
+      rows.push('');
+      rows.push('# ADDON GROUPS');
+      for (const g of groupRows) {
+        rows.push(makeRow([
+          'ADDON_GROUP', g.name, '', '', '', '', '', '', '', '', '', '', '',
+          g.selection_type || 'multiple',
+          g.min_selection || '0',
+          g.max_selection || '10',
+          g.is_required ? 'yes' : 'no',
+          '', '', ''
+        ]));
+      }
+    }
+
+    // ── Addons ──
+    if (addonRows.length) {
+      rows.push('');
+      rows.push('# ADDONS (Group column references the ADDON_GROUP)');
+      for (const a of addonRows) {
+        rows.push(makeRow([
+          'ADDON', a.name, '', a.price || '0',
+          a.item_type || 'veg',
+          '', '', '', '', '', '', '', '', '', '', '', '',
+          a.group_name || '', '', ''
+        ]));
+      }
+    }
+
+    return header + '\n' + rows.join('\n');
   },
 
   /**

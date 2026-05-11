@@ -74,4 +74,26 @@ router.post('/menu', authenticate, authorize('super_admin', 'admin','manager'), 
  */
 router.get('/history', authenticate, authorize('super_admin', 'admin','manager'), bulkUploadController.getHistory);
 
+/**
+ * @route   POST /api/v1/bulk-upload/menu/super-admin-template
+ * @desc    Super admin uploads master menu template CSV
+ * @access  Private (super_admin only)
+ * @body    csvContent (string) OR file upload
+ */
+router.post('/menu/super-admin-template', authenticate, authorize('super_admin'), upload.single('file'), bulkUploadController.uploadSuperAdminTemplate);
+
+/**
+ * @route   GET /api/v1/bulk-upload/menu/super-admin-template
+ * @desc    Get super admin's current master template metadata
+ * @access  Private (super_admin only)
+ */
+router.get('/menu/super-admin-template', authenticate, authorize('super_admin'), bulkUploadController.getSuperAdminTemplate);
+
+/**
+ * @route   DELETE /api/v1/bulk-upload/menu/super-admin-template
+ * @desc    Delete super admin's master template
+ * @access  Private (super_admin only)
+ */
+router.delete('/menu/super-admin-template', authenticate, authorize('super_admin'), bulkUploadController.deleteSuperAdminTemplate);
+
 module.exports = router;

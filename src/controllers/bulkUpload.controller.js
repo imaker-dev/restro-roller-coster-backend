@@ -127,14 +127,17 @@ const bulkUploadController = {
 
   /**
    * GET /api/v1/bulk-upload/menu/template
-   * Download CSV template
+   * Download CSV template — outlet-specific if outletId provided,
+   * otherwise falls back to the sample/default template.
    */
   async getTemplate(req, res) {
     try {
-      const template = bulkUploadService.generateTemplate();
+      const outletId = parseInt(req.query.outletId || req.user?.outletId);
+      const template = await bulkUploadService.generateTemplate(outletId);
+      const filename = outletId ? `menu-template-outlet-${outletId}.csv` : 'menu-upload-template.csv';
 
       res.setHeader('Content-Type', 'text/csv');
-      res.setHeader('Content-Disposition', 'attachment; filename=menu-upload-template.csv');
+      res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
       res.send(template);
     } catch (error) {
       logger.error('Get template error:', error);
@@ -282,6 +285,114 @@ const bulkUploadController = {
       });
     } catch (error) {
       logger.error('Preview upload error:', error);
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
+
+  /**
+   * POST /api/v1/bulk-upload/menu/super-admin-template
+   * Super admin uploads their master menu template CSV.
+   * All outlets under this super_admin will receive this template on download.
+   */
+  async uploadSuperAdminTemplate(req, res) {
+    try {
+      const userId = req.user?.userId;
+      const userRole = req.user?.role;
+
+      if (!userId) {
+        return res.status(401).json({ success: false, message: 'Authentication required' });
+      }
+
+      if (userRole !== 'super_admin') {
+        return res.status(403).json({ success: false, message: 'Only super_admin can upload master templates' });
+      }
+
+      if (!req.file && !req.body.csvContent) {
+        return res.status(400).json({ success: false, message: 'CSV file or csvContent is required' });
+      }
+
+      const csvContent = req.file ? req.file.buffer.toString('utf-8') : req.body.csvContent;
+
+      // Basic CSV validation
+      const parseResult = bulkUploadService.parseCSV(csvContent);
+      if (!parseResult.success) {
+        return res.status(400).json({ success: false, message: parseResult.error });
+      }
+
+      // Optional: validate records structure (no DB needed, just format check)
+      const hasValidRows = parseResult.records.some(r => {
+        const type = (r.Type || r.type || '').toUpperCase().trim();
+        return ['CATEGORY', 'ITEM', 'VARIANT', 'ADDON_GROUP', 'ADDON'].includes(type);
+      });
+
+      if (!hasValidRows) {
+        return res.status(400).json({
+          success: false,
+          message: 'CSV must contain at least one valid row (CATEGORY, ITEM, VARIANT, ADDON_GROUP, or ADDON)'
+        });
+      }
+
+      const result = await bulkUploadService.saveSuperAdminTemplate(userId, csvContent);
+      res.status(200).json(result);
+    } catch (error) {
+      logger.error('Upload super admin template error:', error);
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
+
+  /**
+   * GET /api/v1/bulk-upload/menu/super-admin-template
+   * Get the current super admin's master template (metadata only, not CSV data).
+   */
+  async getSuperAdminTemplate(req, res) {
+    try {
+      const userId = req.user?.userId;
+      const userRole = req.user?.role;
+
+      if (!userId) {
+        return res.status(401).json({ success: false, message: 'Authentication required' });
+      }
+
+      if (userRole !== 'super_admin') {
+        return res.status(403).json({ success: false, message: 'Only super_admin can view master templates' });
+      }
+
+      const template = await bulkUploadService.getSuperAdminTemplate(userId);
+      res.json({
+        success: true,
+        data: {
+          exists: !!template,
+          sizeBytes: template ? Buffer.byteLength(template, 'utf-8') : 0,
+          rowCount: template ? (template.match(/\n/g) || []).length : 0
+        }
+      });
+    } catch (error) {
+      logger.error('Get super admin template error:', error);
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
+
+  /**
+   * DELETE /api/v1/bulk-upload/menu/super-admin-template
+   * Delete the current super admin's master template.
+   */
+  async deleteSuperAdminTemplate(req, res) {
+    try {
+      const userId = req.user?.userId;
+      const userRole = req.user?.role;
+
+      if (!userId) {
+        return res.status(401).json({ success: false, message: 'Authentication required' });
+      }
+
+      if (userRole !== 'super_admin') {
+        return res.status(403).json({ success: false, message: 'Only super_admin can delete master templates' });
+      }
+
+      const result = await bulkUploadService.deleteSuperAdminTemplate(userId);
+      res.json(result);
+    } catch (error) {
+      logger.error('Delete super admin template error:', error);
       res.status(500).json({ success: false, message: error.message });
     }
   }
