@@ -73,27 +73,59 @@ const outletService = {
 
   /**
    * Get all outlets (filtered by user's assigned outlets)
-   * master:       all active outlets (global access)
-   * super_admin:  outlets they created OR are explicitly assigned via user_roles
+   * master:        outlets with NO user_roles entries (truly unassigned / regular outlets)
+   * super_admin:   outlets they created OR are explicitly assigned via user_roles
    * admin/manager: only outlets assigned via user_roles
+   *
+   * Optimized: aggregate LEFT JOINs (one pass) + subscription plan object + creator name.
    */
   async getAll(filters = {}, userId = null, userRoles = []) {
     const pool = getPool();
-    
-    const isMaster      = userRoles && userRoles.includes('master');
-    const isSuperAdmin  = !isMaster && userRoles && userRoles.includes('super_admin');
-    
+
+    const isMaster     = userRoles && userRoles.includes('master');
+    const isSuperAdmin = !isMaster && userRoles && userRoles.includes('super_admin');
+
     let query = `
-      SELECT o.*, 
-        (SELECT COUNT(*) FROM floors f WHERE f.outlet_id = o.id) as floor_count,
-        (SELECT COUNT(*) FROM tables t WHERE t.outlet_id = o.id AND t.is_active = 1) as table_count
+      SELECT
+        o.*,
+        COALESCE(creator.name, 'System') AS created_by_name,
+        COALESCE(f.floor_count, 0)       AS floor_count,
+        COALESCE(t.table_count, 0)       AS table_count,
+        os.status                          AS subscription_status,
+        os.subscription_end,
+        os.grace_period_end,
+        sp.total_price                     AS subscription_plan_price,
+        sp.base_price,
+        sp.gst_percentage
       FROM outlets o
+      LEFT JOIN users creator ON creator.id = o.created_by AND creator.deleted_at IS NULL
+      LEFT JOIN (
+        SELECT outlet_id, COUNT(*) AS floor_count
+        FROM floors GROUP BY outlet_id
+      ) f ON f.outlet_id = o.id
+      LEFT JOIN (
+        SELECT outlet_id, COUNT(*) AS table_count
+        FROM tables WHERE is_active = 1 GROUP BY outlet_id
+      ) t ON t.outlet_id = o.id
+      LEFT JOIN outlet_subscriptions os ON os.outlet_id = o.id
+      LEFT JOIN subscription_pricing sp ON sp.id = os.current_pricing_id
       WHERE o.deleted_at IS NULL AND o.is_active = 1
     `;
     const params = [];
 
     if (isMaster) {
-      // master: no restriction — sees every outlet
+      // master: exclude outlets owned by or assigned to super_admins
+      // (1) created_by user is a super_admin, OR (2) outlet has explicit super_admin assignment
+      query += ` AND o.created_by NOT IN (
+        SELECT DISTINCT ur.user_id FROM user_roles ur
+        INNER JOIN roles r ON r.id = ur.role_id
+        WHERE r.slug = 'super_admin' AND ur.is_active = 1
+      )`;
+      query += ` AND o.id NOT IN (
+        SELECT ur.outlet_id FROM user_roles ur
+        INNER JOIN roles r ON r.id = ur.role_id
+        WHERE r.slug = 'super_admin' AND ur.is_active = 1 AND ur.outlet_id IS NOT NULL
+      )`;
     } else if (isSuperAdmin && userId) {
       // super_admin: outlets they created OR are assigned via user_roles
       query += ` AND (o.created_by = ? OR o.id IN (
@@ -104,8 +136,8 @@ const outletService = {
     } else if (userId) {
       // admin/manager: only outlets assigned via user_roles
       query += ` AND o.id IN (
-        SELECT DISTINCT ur.outlet_id 
-        FROM user_roles ur 
+        SELECT DISTINCT ur.outlet_id
+        FROM user_roles ur
         WHERE ur.user_id = ? AND ur.is_active = 1 AND ur.outlet_id IS NOT NULL
       )`;
       params.push(userId);
@@ -129,7 +161,35 @@ const outletService = {
 
     query += ' ORDER BY o.name ASC';
 
-    const [outlets] = await pool.query(query, params);
+    const [rows] = await pool.query(query, params);
+
+    // Post-process: replace created_by (id) with name, build subscription_plan object
+    const outlets = rows.map((row) => {
+      const outlet = { ...row };
+
+      // Replace numeric created_by with creator name
+      outlet.created_by = row.created_by_name;
+      delete outlet.created_by_name;
+
+      // Nest subscription plan fields
+      outlet.subscription_plan = {
+        status: row.subscription_status || null,
+        end_date: row.subscription_end || null,
+        grace_period_end: row.grace_period_end || null,
+        price: row.subscription_plan_price || null,
+        base_price: row.base_price || null,
+        gst_percentage: row.gst_percentage || null,
+      };
+      delete outlet.subscription_status;
+      delete outlet.subscription_end;
+      delete outlet.grace_period_end;
+      delete outlet.subscription_plan_price;
+      delete outlet.base_price;
+      delete outlet.gst_percentage;
+
+      return outlet;
+    });
+
     return outlets;
   },
 
@@ -642,6 +702,89 @@ const outletService = {
       filename: file.filename,
       originalName: file.originalname,
       size: file.size
+    };
+  },
+
+  /**
+   * Assign an unassigned outlet to a super_admin user.
+   * After assignment:
+   *   - master no longer sees the outlet (it has a user_roles entry)
+   *   - the super_admin sees it in GET /api/v1/outlets
+   */
+  async assignToSuperAdmin(outletId, superAdminId, assignedBy) {
+    const pool = getPool();
+
+    // 1. Verify outlet exists and is active
+    const [outlets] = await pool.query(
+      `SELECT id, name FROM outlets WHERE id = ? AND deleted_at IS NULL AND is_active = 1`,
+      [outletId]
+    );
+    if (outlets.length === 0) {
+      throw new Error('Outlet not found or inactive');
+    }
+
+    // 2. Verify outlet is NOT already assigned to any super_admin
+    const [existingSuperAdmin] = await pool.query(
+      `SELECT ur.id, u.name
+       FROM user_roles ur
+       INNER JOIN roles r ON r.id = ur.role_id
+       LEFT JOIN users u ON u.id = ur.user_id
+       WHERE ur.outlet_id = ? AND r.slug = 'super_admin' AND ur.is_active = 1
+       LIMIT 1`,
+      [outletId]
+    );
+    if (existingSuperAdmin.length > 0) {
+      throw new Error(`Outlet is already assigned to super admin: ${existingSuperAdmin[0].name}`);
+    }
+
+    // 3. Verify target user has super_admin role
+    const [superAdminRoles] = await pool.query(
+      `SELECT ur.role_id, r.name
+       FROM user_roles ur
+       INNER JOIN roles r ON r.id = ur.role_id
+       WHERE ur.user_id = ? AND r.slug = 'super_admin' AND ur.is_active = 1
+       LIMIT 1`,
+      [superAdminId]
+    );
+    if (superAdminRoles.length === 0) {
+      throw new Error('Target user is not a super admin');
+    }
+
+    const roleId = superAdminRoles[0].role_id;
+
+    // 4. Check if this exact assignment already exists (inactive) and reactivate
+    const [existingAssignment] = await pool.query(
+      `SELECT id, is_active FROM user_roles
+       WHERE user_id = ? AND role_id = ? AND outlet_id = ?`,
+      [superAdminId, roleId, outletId]
+    );
+
+    if (existingAssignment.length > 0) {
+      if (!existingAssignment[0].is_active) {
+        await pool.query(
+          `UPDATE user_roles SET is_active = 1, assigned_by = ? WHERE id = ?`,
+          [assignedBy, existingAssignment[0].id]
+        );
+      }
+    } else {
+      await pool.query(
+        `INSERT INTO user_roles (user_id, role_id, outlet_id, assigned_by)
+         VALUES (?, ?, ?, ?)`,
+        [superAdminId, roleId, outletId, assignedBy]
+      );
+    }
+
+    // 5. Invalidate caches
+    await cache.del('outlets:all');
+    await cache.del(`outlet:${outletId}`);
+
+    logger.info(`Outlet ${outletId} assigned to super admin ${superAdminId} by ${assignedBy}`);
+
+    return {
+      success: true,
+      message: 'Outlet assigned to super admin successfully',
+      outletId,
+      superAdminId,
     };
   }
 };

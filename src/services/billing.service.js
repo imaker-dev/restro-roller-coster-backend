@@ -11,6 +11,7 @@ const logger = require('../utils/logger');
 const orderService = require('./order.service');
 const taxService = require('./tax.service');
 const printerService = require('./printer.service');
+const settingsService = require('./settings.service');
 const { prefixImageUrl } = require('../utils/helpers');
 
 const BUSINESS_DAY_START_HOUR = 4;
@@ -2289,7 +2290,7 @@ const billingService = {
 
   /**
    * Apply manual discount to order (percentage or fixed)
-   * Requires security key validation (132564556)
+   * Requires security key validation against outlet's discount_security_key setting
    */
   async applyDiscount(orderId, data, userId) {
     const pool = getPool();
@@ -2298,14 +2299,15 @@ const billingService = {
       appliedOn = 'subtotal', orderItemId, approvedBy, approvalReason, securityKey
     } = data;
 
-    // Security key validation - must match authorized key
-    const AUTHORIZED_DISCOUNT_KEY = '132564556';
-    if (!securityKey || securityKey !== AUTHORIZED_DISCOUNT_KEY) {
-      throw new Error('Invalid security key. Discount cannot be applied.');
-    }
-
     const order = await orderService.getOrderWithItems(orderId);
     if (!order) throw new Error('Order not found');
+
+    // Security key validation — dynamic from outlet settings (default: 000000)
+    const setting = await settingsService.get('discount_security_key', order.outlet_id || null);
+    const authorizedKey = setting?.value ?? '000000';
+    if (!securityKey || String(securityKey) !== String(authorizedKey)) {
+      throw new Error('Invalid security key. Discount cannot be applied.');
+    }
 
     // Status check — can't discount paid/cancelled orders
     if (['paid', 'completed', 'cancelled'].includes(order.status)) {

@@ -44,7 +44,7 @@ router.get('/table-shapes', tableController.getTableShapes);
  * @desc    Get all outlets
  * @access  Private (admin, manager)
  */
-router.get('/', authorize('super_admin', 'admin', 'manager'), outletController.getOutlets);
+router.get('/', authorize('master', 'super_admin', 'admin', 'manager'), outletController.getOutlets);
 
 /**
  * @route   POST /api/v1/outlets
@@ -52,6 +52,14 @@ router.get('/', authorize('super_admin', 'admin', 'manager'), outletController.g
  * @access  Private (admin)
  */
 router.post('/', authorize('super_admin', 'admin'), validate(outletValidation.createOutlet), outletController.createOutlet);
+
+/**
+ * @route   POST /api/v1/outlets/:outletId/assign-super-admin
+ * @desc    Assign an unassigned outlet to a super_admin user (master only)
+ * @access  Private (master only)
+ * @body    { superAdminId: number }
+ */
+router.post('/:outletId/assign-super-admin', authorize('master'), outletController.assignOutletToSuperAdmin);
 
 /**
  * @route   GET /api/v1/outlets/:id

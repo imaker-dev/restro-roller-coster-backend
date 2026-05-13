@@ -28,6 +28,12 @@ router.post('/:outletId/activate', authenticate, authorize('master'), subscripti
 router.post('/:outletId/deactivate', authenticate, authorize('master'), subscriptionController.deactivateSubscription);
 router.post('/:outletId/extend', authenticate, authorize('master'), subscriptionController.extendSubscription);
 
+// ─── Master-only: Subscription transactions & invoices ──────────────────────
+router.get('/transactions', authenticate, authorize('master'), subscriptionController.getSubscriptionTransactions);
+router.get('/transactions/:id', authenticate, authorize('master'), subscriptionController.getSubscriptionTransactionById);
+router.get('/transactions/:id/invoice', authenticate, authorize('master'), subscriptionController.downloadTransactionInvoice);
+router.get('/transactions/:id/invoice/pdf', authenticate, authorize('master'), subscriptionController.downloadTransactionInvoicePDF);
+
 // ─── Super Admin: Read-only subscription dashboard ──────────────────────────
 router.get('/dashboard', authenticate, authorize('super_admin', 'master'), subscriptionController.getSuperAdminDashboard);
 

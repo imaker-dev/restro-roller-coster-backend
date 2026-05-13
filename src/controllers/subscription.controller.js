@@ -7,6 +7,7 @@
 
 const crypto = require('crypto');
 const subscriptionService = require('../services/subscription.service');
+const { generateSubscriptionInvoicePDF } = require('../utils/subscription-invoice-pdf');
 const logger = require('../utils/logger');
 const { getPool } = require('../database');
 
@@ -937,6 +938,153 @@ const activateOfflineOutlet = async (req, res) => {
   }
 };
 
+// ─── SUBSCRIPTION TRANSACTION APIs ──────────────────────────────────────────
+
+/**
+ * GET /api/v1/subscriptions/transactions
+ * Master only — paginated list of all subscription payments with filters, search & summary
+ * Query: ?page=1&limit=50&status=&paymentMethod=&dateFrom=&dateTo=&outletId=&superAdminId=&search=
+ */
+const _VALID_TX_STATUSES = ['pending', 'captured', 'failed', 'refunded', 'manual'];
+const _DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+const getSubscriptionTransactions = async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
+
+    // ── Validate numeric IDs ────────────────────────────────────────────────
+    const outletId = req.query.outletId ? parseInt(req.query.outletId, 10) : null;
+    const superAdminId = req.query.superAdminId ? parseInt(req.query.superAdminId, 10) : null;
+
+    if (req.query.outletId && !Number.isFinite(outletId)) {
+      return res.status(400).json({ success: false, message: 'Invalid outletId: must be a positive integer' });
+    }
+    if (req.query.superAdminId && !Number.isFinite(superAdminId)) {
+      return res.status(400).json({ success: false, message: 'Invalid superAdminId: must be a positive integer' });
+    }
+
+    // ── Validate status enum ────────────────────────────────────────────────
+    const status = req.query.status?.trim() || null;
+    if (status && !_VALID_TX_STATUSES.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid status. Allowed values: ${_VALID_TX_STATUSES.join(', ')}`,
+      });
+    }
+
+    // ── Validate date format and range ─────────────────────────────────────
+    const dateFrom = req.query.dateFrom?.trim() || null;
+    const dateTo = req.query.dateTo?.trim() || null;
+
+    if (dateFrom && !_DATE_RE.test(dateFrom)) {
+      return res.status(400).json({ success: false, message: 'Invalid dateFrom format. Use YYYY-MM-DD' });
+    }
+    if (dateTo && !_DATE_RE.test(dateTo)) {
+      return res.status(400).json({ success: false, message: 'Invalid dateTo format. Use YYYY-MM-DD' });
+    }
+    if (dateFrom && dateTo && dateFrom > dateTo) {
+      return res.status(400).json({ success: false, message: 'dateFrom must be on or before dateTo' });
+    }
+
+    const filters = {
+      status,
+      paymentMethod: req.query.paymentMethod?.trim() || null,
+      dateFrom,
+      dateTo,
+      outletId: Number.isFinite(outletId) ? outletId : null,
+      superAdminId: Number.isFinite(superAdminId) ? superAdminId : null,
+      search: req.query.search?.trim() || null,
+    };
+
+    const result = await subscriptionService.getSubscriptionTransactions(filters, { page, limit });
+    return res.status(200).json({ success: true, ...result });
+  } catch (error) {
+    logger.error('getSubscriptionTransactions error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to fetch subscription transactions' });
+  }
+};
+
+/**
+ * GET /api/v1/subscriptions/transactions/:id
+ * Master only — get single subscription transaction with full outlet details
+ */
+const getSubscriptionTransactionById = async (req, res) => {
+  try {
+    const transactionId = parseInt(req.params.id, 10);
+    if (!transactionId) {
+      return res.status(400).json({ success: false, message: 'Valid transaction ID required' });
+    }
+
+    const result = await subscriptionService.getSubscriptionTransactionById(transactionId);
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    if (error.message === 'Transaction not found') {
+      return res.status(404).json({ success: false, message: error.message });
+    }
+    logger.error('getSubscriptionTransactionById error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to fetch transaction' });
+  }
+};
+
+/**
+ * GET /api/v1/subscriptions/transactions/:id/invoice
+ * Master only — invoice JSON for client-side rendering / display
+ */
+const downloadTransactionInvoice = async (req, res) => {
+  try {
+    const transactionId = parseInt(req.params.id, 10);
+    if (!transactionId) {
+      return res.status(400).json({ success: false, message: 'Valid transaction ID required' });
+    }
+
+    const result = await subscriptionService.getTransactionInvoice(transactionId);
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    if (error.message === 'Transaction not found') {
+      return res.status(404).json({ success: false, message: error.message });
+    }
+    logger.error('downloadTransactionInvoice error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to generate invoice' });
+  }
+};
+
+/**
+ * GET /api/v1/subscriptions/transactions/:id/invoice/pdf
+ * Master only — download subscription invoice as a PDF file
+ */
+const downloadTransactionInvoicePDF = async (req, res) => {
+  try {
+    const transactionId = parseInt(req.params.id, 10);
+    if (!transactionId || !Number.isFinite(transactionId)) {
+      return res.status(400).json({ success: false, message: 'Valid transaction ID required' });
+    }
+
+    const invoiceData = await subscriptionService.getTransactionInvoice(transactionId);
+    const pdfStream = await generateSubscriptionInvoicePDF(invoiceData);
+
+    const filename = `${invoiceData.invoice.invoiceNumber.replace(/[^a-zA-Z0-9-]/g, '-')}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Cache-Control', 'no-cache, no-store');
+
+    pdfStream.on('error', (err) => {
+      logger.error('downloadTransactionInvoicePDF stream error:', err);
+      if (!res.headersSent) {
+        res.status(500).json({ success: false, message: 'Failed to generate invoice PDF' });
+      }
+    });
+
+    pdfStream.pipe(res);
+  } catch (error) {
+    if (error.message === 'Transaction not found') {
+      return res.status(404).json({ success: false, message: error.message });
+    }
+    logger.error('downloadTransactionInvoicePDF error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to generate invoice PDF' });
+  }
+};
+
 module.exports = {
   getPricing,
   setPricing,
@@ -961,6 +1109,11 @@ module.exports = {
   removeOutletPricingOverride,
   // Super Admin dashboard
   getSuperAdminDashboard,
+  // Subscription transactions
+  getSubscriptionTransactions,
+  getSubscriptionTransactionById,
+  downloadTransactionInvoice,
+  downloadTransactionInvoicePDF,
   // Offline POS sync
   syncOfflineSubscription,
   // Offline POS first-time activation

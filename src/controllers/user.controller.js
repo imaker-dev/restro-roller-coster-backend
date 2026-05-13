@@ -481,6 +481,32 @@ const toggleSuperAdminActive = async (req, res, next) => {
   }
 };
 
+/**
+ * GET /api/v1/users/super-admins/:id
+ * Get single super_admin with all outlets, pagination, filters and summary
+ */
+const getSuperAdminById = async (req, res, next) => {
+  try {
+    const superAdminId = parseInt(req.params.id, 10);
+
+    const result = await userService.getSuperAdminById(superAdminId, req.query);
+
+    res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    if (error.message === 'Super admin not found') {
+      return res.status(404).json({
+        success: false,
+        message: error.message,
+      });
+    }
+    logger.error('Get super admin by ID failed:', error);
+    next(error);
+  }
+};
+
 module.exports = {
   getUsers,
   getUserById,
@@ -497,6 +523,7 @@ module.exports = {
   removeStation,
   getStationPrinter,
   getSuperAdmins,
+  getSuperAdminById,
   createSuperAdmin,
   toggleSuperAdminActive,
 };

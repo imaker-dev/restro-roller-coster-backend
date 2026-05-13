@@ -1,20 +1,29 @@
 /**
  * Subscription Receipt PDF Generator
- * Generates a professional subscription payment receipt using pdfkit
+ * Generates a professional A4 tax invoice PDF for subscription payment receipts.
+ * Used for email attachments and WhatsApp document delivery.
+ *
+ * Signature unchanged: generateSubscriptionReceiptPDF(data, outlet) → Promise<Buffer>
+ *
+ * @param {object} data   - { receiptNo, date, outletName, outletAddress, baseAmount, gstAmount,
+ *                            totalAmount, gstPercentage, subscriptionStart, subscriptionEnd,
+ *                            paymentMode, paymentId, orderId }
+ * @param {object} outlet - { name, address, phone, email, gstin, logoUrl, logo }
  */
 
 const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const path = require('path');
+
 const DEFAULT_LOGO_PATH = path.resolve(__dirname, '../../public/assets/IR.png');
 
 function resolveLocalLogoPath(source) {
   if (!source || typeof source !== 'string') return null;
   if (fs.existsSync(source)) return source;
-  const relativeToCwd = path.resolve(process.cwd(), source.replace(/^\/+/ ,''));
+  const relativeToCwd = path.resolve(process.cwd(), source.replace(/^\/+/, ''));
   if (fs.existsSync(relativeToCwd)) return relativeToCwd;
   if (source.startsWith('/')) {
-    const relativeToPublic = path.resolve(process.cwd(), 'public', source.replace(/^\/+/ ,''));
+    const relativeToPublic = path.resolve(process.cwd(), 'public', source.replace(/^\/+/, ''));
     if (fs.existsSync(relativeToPublic)) return relativeToPublic;
   }
   return null;
@@ -22,25 +31,22 @@ function resolveLocalLogoPath(source) {
 
 async function fetchImageBuffer(url) {
   const response = await fetch(url);
-  if (!response.ok) throw new Error(`Failed to fetch image: ${response.status}`);
+  if (!response.ok) throw new Error(`Failed to fetch logo: ${response.status}`);
   return Buffer.from(await response.arrayBuffer());
 }
 
 function resolveLogoCandidates(outlet = {}) {
-  const sources = [outlet.logoUrl, outlet.logo].filter((s) => typeof s === 'string' && s.trim());
-  const cleaned = sources.map((s) => s.trim());
-  if (fs.existsSync(DEFAULT_LOGO_PATH)) cleaned.push(DEFAULT_LOGO_PATH);
-  return Array.from(new Set(cleaned));
+  const sources = [outlet.logoUrl, outlet.logo, DEFAULT_LOGO_PATH].filter(
+    (s) => typeof s === 'string' && s.trim(),
+  );
+  return Array.from(new Set(sources.map((s) => s.trim())));
 }
 
-function currency(amount) {
-  return `Rs.${parseFloat(amount || 0).toFixed(2)}`;
+function amt(value) {
+  return `Rs.${parseFloat(value || 0).toFixed(2)}`;
 }
 
 /**
- * Generate subscription receipt PDF
- * @param {object} data - { receiptNo, date, outletName, outletAddress, baseAmount, gstAmount, totalAmount, gstPercentage, subscriptionStart, subscriptionEnd, paymentMode, paymentId }
- * @param {object} outlet - { name, address, phone, email, gstin, logoUrl }
  * @returns {Promise<Buffer>}
  */
 async function generateSubscriptionReceiptPDF(data, outlet = {}) {
@@ -48,151 +54,193 @@ async function generateSubscriptionReceiptPDF(data, outlet = {}) {
 
   return new Promise(async (resolve, reject) => {
     const chunks = [];
-    doc.on('data', (chunk) => chunks.push(chunk));
+    doc.on('data', (c) => chunks.push(c));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
 
-    const left = 40;
-    const right = 555;
-    const width = right - left;
-    let y = 40;
+    const L = 40;    // left margin
+    const R = 555;   // right edge
+    const W = R - L; // usable width
 
-    // Logo
-    for (const logoSource of resolveLogoCandidates(outlet)) {
+    function drawLine(y, color = '#cccccc') {
+      doc.save().lineWidth(0.5).moveTo(L, y).lineTo(R, y).stroke(color).restore();
+    }
+
+    function drawThickLine(y) {
+      doc.save().lineWidth(1).moveTo(L, y).lineTo(R, y).stroke('#333333').restore();
+    }
+
+    let y = 40;
+    let logoWidth = 0;
+
+    // ── Logo ────────────────────────────────────────────────────────────────
+    for (const src of resolveLogoCandidates(outlet)) {
       try {
-        let logoBuffer = null;
-        if (logoSource.startsWith('http')) {
-          logoBuffer = await fetchImageBuffer(logoSource);
+        let buf = null;
+        if (src.startsWith('http://') || src.startsWith('https://')) {
+          buf = await fetchImageBuffer(src);
         } else {
-          const p = resolveLocalLogoPath(logoSource);
-          if (p) logoBuffer = fs.readFileSync(p);
+          const p = resolveLocalLogoPath(src);
+          if (p) buf = fs.readFileSync(p);
         }
-        if (logoBuffer) {
-          doc.image(logoBuffer, left, y, { fit: [60, 60], align: 'left' });
-          y += 70;
+        if (buf) {
+          doc.image(buf, L, y, { fit: [55, 55], align: 'left', valign: 'top' });
+          logoWidth = 65;
           break;
         }
-      } catch (_) { /* continue */ }
+      } catch (_) { /* try next */ }
     }
 
-    // Header with iMakerRestro branding
-    doc.font('Helvetica-Bold').fontSize(20).fillColor('#1a1a2e');
-    doc.text('iMakerRestro', left, y, { align: 'center', width });
-    y += 22;
-    doc.font('Helvetica').fontSize(12).fillColor('#555');
-    doc.text('SUBSCRIPTION RECEIPT', left, y, { align: 'center', width });
+    // ── Header: Company (left) + Invoice title (right) ──────────────────────
+    const hx = L + logoWidth;
+    doc.font('Helvetica-Bold').fontSize(16).fillColor('#1a1a2e').text('iMakerRestro', hx, y, { width: 220 });
+    y += 20;
+    doc.font('Helvetica').fontSize(9).fillColor('#666666').text('Subscription Management Platform', hx, y, { width: 250 });
+    y += 12;
+    doc.text('support@imakerrestro.com', hx, y, { width: 250 });
+
+    doc.font('Helvetica-Bold').fontSize(20).fillColor('#1a1a2e').text('TAX INVOICE', L, 40, { width: W, align: 'right' });
+    doc.font('Helvetica').fontSize(9).fillColor('#555555');
+    doc.text(`Invoice #: ${data.receiptNo || 'N/A'}`, L, 65, { width: W, align: 'right' });
+    doc.text(`Date: ${data.date || new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`, L, 78, { width: W, align: 'right' });
+
+    y = Math.max(y + 20, 112);
+    drawThickLine(y);
+    y += 10;
+
+    // ── Status badge + type ──────────────────────────────────────────────────
+    doc.roundedRect(L, y, 70, 18, 4).fill('#e8f5e9');
+    doc.font('Helvetica-Bold').fontSize(8).fillColor('#2e7d32').text('PAID', L, y + 4, { width: 70, align: 'center' });
+    doc.font('Helvetica').fontSize(9).fillColor('#555555').text('Type: Subscription Renewal', L, y + 4, { width: W, align: 'right' });
     y += 30;
 
-    doc.font('Helvetica').fontSize(9).fillColor('#555');
-    doc.text(`Receipt No: ${data.receiptNo || 'N/A'}`, left, y);
-    doc.text(`Date: ${data.date || new Date().toLocaleDateString('en-IN')}`, left, y, { align: 'right', width });
-    y += 20;
+    // ── Billed To ────────────────────────────────────────────────────────────
+    doc.font('Helvetica-Bold').fontSize(8).fillColor('#888888').text('BILLED TO', L, y);
+    y += 13;
 
-    // Separator
-    doc.moveTo(left, y).lineTo(right, y).stroke('#cccccc');
-    y += 12;
+    doc.font('Helvetica-Bold').fontSize(12).fillColor('#1a1a2e').text(
+      (outlet.name || data.outletName || 'N/A').toUpperCase(), L, y,
+    );
+    y += 17;
 
-    // Outlet Info
-    doc.font('Helvetica-Bold').fontSize(11).fillColor('#1a1a2e');
-    doc.text(outlet.name || data.outletName || 'Restaurant', left, y);
-    y += 16;
+    const address = outlet.address || data.outletAddress;
+    if (address) {
+      doc.font('Helvetica').fontSize(9).fillColor('#444444').text(address, L, y, { width: W * 0.65 });
+      y += doc.heightOfString(address, { width: W * 0.65 }) + 5;
+    }
 
-    if (outlet.address || data.outletAddress) {
-      doc.font('Helvetica').fontSize(9).fillColor('#555');
-      doc.text(outlet.address || data.outletAddress, left, y, { width: width * 0.7 });
-      y += 14;
+    const infoItems = [
+      outlet.phone && `Phone: ${outlet.phone}`,
+      outlet.email && `Email: ${outlet.email}`,
+      outlet.gstin && `GSTIN: ${outlet.gstin}`,
+    ].filter(Boolean);
+
+    doc.font('Helvetica').fontSize(9).fillColor('#444444');
+    for (let i = 0; i < infoItems.length; i += 2) {
+      doc.text(infoItems[i], L, y, { width: W / 2 - 10 });
+      if (infoItems[i + 1]) doc.text(infoItems[i + 1], L + W / 2, y, { width: W / 2 });
+      y += 13;
     }
-    if (outlet.phone) {
-      doc.text(`Phone: ${outlet.phone}`, left, y);
-      y += 14;
-    }
-    if (outlet.gstin) {
-      doc.text(`GSTIN: ${outlet.gstin}`, left, y);
-      y += 14;
-    }
+
     y += 8;
+    drawThickLine(y);
+    y += 10;
 
-    // Separator
-    doc.moveTo(left, y).lineTo(right, y).stroke('#cccccc');
-    y += 12;
+    // ── Line Items Table ─────────────────────────────────────────────────────
+    const colNo    = L;
+    const colDesc  = L + 24;
+    const colQty   = R - 175;
+    const colPrice = R - 115;
+    const colAmt   = R - 55;
+    const descW    = colQty - colDesc - 8;
 
-    // Title
-    doc.font('Helvetica-Bold').fontSize(12).fillColor('#1a1a2e');
-    doc.text('Subscription Payment Details', left, y);
-    y += 20;
+    doc.font('Helvetica-Bold').fontSize(8).fillColor('#333333');
+    doc.text('#',           colNo,    y, { width: 20 });
+    doc.text('Description', colDesc,  y, { width: descW });
+    doc.text('Qty',         colQty,   y, { width: 55, align: 'right' });
+    doc.text('Unit Price',  colPrice, y, { width: 55, align: 'right' });
+    doc.text('Amount',      colAmt,   y, { width: 55, align: 'right' });
+    y += 14;
+    drawLine(y);
+    y += 6;
 
-    // Table header
-    const col1 = left;
-    const col2 = right - 120;
-    doc.font('Helvetica-Bold').fontSize(10).fillColor('#333');
-    doc.text('Description', col1, y);
-    doc.text('Amount', col2, y, { align: 'right', width: 120 });
+    const baseAmount = parseFloat(data.baseAmount || 0);
+    doc.font('Helvetica').fontSize(10).fillColor('#333333');
+    doc.text('1',                          colNo,    y, { width: 20 });
+    doc.text('Annual Subscription Plan',   colDesc,  y, { width: descW });
+    doc.text('1',                          colQty,   y, { width: 55, align: 'right' });
+    doc.text(amt(baseAmount),              colPrice, y, { width: 55, align: 'right' });
+    doc.text(amt(baseAmount),              colAmt,   y, { width: 55, align: 'right' });
     y += 18;
 
-    // Row 1: Base Amount
-    doc.font('Helvetica').fontSize(10).fillColor('#333');
-    doc.text('Subscription Base Amount', col1, y);
-    doc.text(currency(data.baseAmount), col2, y, { align: 'right', width: 120 });
-    y += 16;
-
-    // Row 2: GST
-    doc.text(`GST (${data.gstPercentage || 18}%)`, col1, y);
-    doc.text(currency(data.gstAmount), col2, y, { align: 'right', width: 120 });
-    y += 16;
-
-    // Separator before total
-    doc.moveTo(col2, y).lineTo(right, y).stroke('#999');
+    y += 4;
+    drawThickLine(y);
     y += 10;
 
-    // Total
-    doc.font('Helvetica-Bold').fontSize(11).fillColor('#1a1a2e');
-    doc.text('Total Amount Paid', col1, y);
-    doc.text(currency(data.totalAmount), col2, y, { align: 'right', width: 120 });
-    y += 24;
+    // ── Totals (right-aligned) ───────────────────────────────────────────────
+    const gstAmount  = parseFloat(data.gstAmount  || 0);
+    const totalAmount = parseFloat(data.totalAmount || 0);
+    const gstPct     = parseFloat(data.gstPercentage || 18);
 
-    // Separator
-    doc.moveTo(left, y).lineTo(right, y).stroke('#cccccc');
-    y += 12;
+    const totLabelX = R - 250;
+    const totLabelW = 175;
+    const totValX   = R - 70;
+    const totValW   = 70;
 
-    // Subscription Period
-    doc.font('Helvetica-Bold').fontSize(11).fillColor('#1a1a2e');
-    doc.text('Subscription Period', left, y);
-    y += 16;
-
-    doc.font('Helvetica').fontSize(10).fillColor('#333');
-    doc.text(`Valid From:  ${data.subscriptionStart || 'N/A'}`, left, y);
-    y += 14;
-    doc.text(`Expires On:  ${data.subscriptionEnd || 'N/A'}`, left, y);
-    y += 20;
-
-    // Payment Info
-    doc.font('Helvetica-Bold').fontSize(11).fillColor('#1a1a2e');
-    doc.text('Payment Information', left, y);
-    y += 16;
-
-    doc.font('Helvetica').fontSize(10).fillColor('#333');
-    doc.text(`Payment Mode: ${data.paymentMode || 'Online (Razorpay)'}`, left, y);
-    y += 14;
-    if (data.paymentId) {
-      doc.text(`Payment ID:   ${data.paymentId}`, left, y);
-      y += 14;
+    function totalRow(label, value, opts = {}) {
+      doc
+        .font(opts.bold ? 'Helvetica-Bold' : 'Helvetica')
+        .fontSize(opts.fontSize || 9)
+        .fillColor(opts.color || '#444444');
+      doc.text(label, totLabelX, y, { width: totLabelW, align: 'right' });
+      doc.text(value, totValX,   y, { width: totValW,   align: 'right' });
+      y += opts.spacing || 14;
     }
-    if (data.orderId) {
-      doc.text(`Order ID:     ${data.orderId}`, left, y);
-      y += 14;
-    }
-    y += 20;
 
-    // Footer
-    doc.moveTo(left, y).lineTo(right, y).stroke('#cccccc');
-    y += 12;
+    totalRow('Taxable Amount:',          amt(baseAmount));
+    totalRow(`CGST (${gstPct / 2}%):`,  amt(gstAmount / 2));
+    totalRow(`SGST (${gstPct / 2}%):`,  amt(gstAmount / 2));
+    drawLine(y, '#999999');
+    y += 6;
+    totalRow('GRAND TOTAL:', amt(totalAmount), { bold: true, fontSize: 12, color: '#1a1a2e', spacing: 18 });
 
-    doc.font('Helvetica-Oblique').fontSize(9).fillColor('#888');
-    doc.text('This is a computer-generated receipt. No signature required.', left, y, { align: 'center', width });
-    y += 14;
-    doc.text('iMakerRestro • Powered by iMaker Technology', left, y, { align: 'center', width });
+    y += 8;
+    drawThickLine(y);
     y += 10;
-    doc.text('support@imakerrestro.com', left, y, { align: 'center', width });
+
+    // ── Payment Details ──────────────────────────────────────────────────────
+    doc.font('Helvetica-Bold').fontSize(8).fillColor('#888888').text('PAYMENT DETAILS', L, y);
+    y += 13;
+
+    const payRows = [
+      ['Payment Method',  data.paymentMode  || 'Online (Razorpay)'],
+      data.paymentId && ['Transaction ID',   data.paymentId],
+      data.orderId   && ['Order ID',         data.orderId],
+      ['Status',          'CAPTURED'],
+    ].filter(Boolean);
+
+    // Add subscription period in payment section
+    if (data.subscriptionStart || data.subscriptionEnd) {
+      payRows.push(['Valid From', data.subscriptionStart || 'N/A']);
+      payRows.push(['Expires On', data.subscriptionEnd  || 'N/A']);
+    }
+
+    payRows.forEach(([label, value]) => {
+      doc.font('Helvetica').fontSize(9).fillColor('#666666').text(`${label}:`, L, y, { width: 120 });
+      doc.fillColor('#333333').text(String(value), L + 125, y, { width: W - 125 });
+      y += 13;
+    });
+
+    // ── Footer ───────────────────────────────────────────────────────────────
+    y = Math.max(y + 20, 730);
+    if (y > 790) { doc.addPage(); y = 730; }
+
+    drawLine(y);
+    y += 8;
+    doc.font('Helvetica-Oblique').fontSize(7.5).fillColor('#aaaaaa');
+    doc.text('This is a computer-generated invoice. No signature is required.', L, y, { width: W, align: 'center' });
+    y += 11;
+    doc.text('iMakerRestro \u2022 Powered by iMaker Technology \u2022 support@imakerrestro.com', L, y, { width: W, align: 'center' });
 
     doc.end();
   });

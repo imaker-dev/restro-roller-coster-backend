@@ -51,6 +51,9 @@ class SettingsService {
     { key: 'default_cess_rate', value: '0', type: 'number', category: 'tax', description: 'Default CESS rate (%)' },
     { key: 'tax_inclusive_pricing', value: 'false', type: 'boolean', category: 'tax', description: 'Prices include tax' },
     
+    // Discount Security
+    { key: 'discount_security_key', value: '000000', type: 'string', category: 'billing', description: 'Security key required to apply manual discounts at POS (default: 000000)' },
+
     // Service Charge Settings
     { key: 'service_charge_enabled', value: 'false', type: 'boolean', category: 'billing', description: 'Enable service charge' },
     { key: 'service_charge_percent', value: '10', type: 'number', category: 'billing', description: 'Service charge percentage' },

@@ -28,6 +28,13 @@ router.get('/super-admins', authorize('master'), userController.getSuperAdmins);
 router.post('/super-admins', authorize('master'), userController.createSuperAdmin);
 
 /**
+ * @route   GET /api/v1/users/super-admins/:id
+ * @desc    Get single super_admin with all outlets, pagination, filters and summary
+ * @access  Private (master only)
+ */
+router.get('/super-admins/:id', authorize('master'), userController.getSuperAdminById);
+
+/**
  * @route   PATCH /api/v1/users/super-admins/:id/toggle-active
  * @desc    Activate or deactivate a super_admin user
  * @access  Private (master only)

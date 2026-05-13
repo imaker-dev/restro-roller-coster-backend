@@ -936,11 +936,18 @@ class UserService {
       `SELECT DISTINCT u.id, u.uuid, u.employee_code, u.name, u.email, u.phone,
               u.avatar_url, u.is_active, u.is_verified, u.last_login_at, u.created_at,
               u.raw_password,
-              GROUP_CONCAT(DISTINCT o.name SEPARATOR ', ') as assigned_outlets
+              (SELECT COUNT(DISTINCT o2.id)
+               FROM outlets o2
+               WHERE o2.deleted_at IS NULL
+                 AND (o2.created_by = u.id OR o2.id IN (
+                   SELECT ur2.outlet_id FROM user_roles ur2
+                   INNER JOIN roles r2 ON r2.id = ur2.role_id
+                   WHERE ur2.user_id = u.id AND r2.slug = 'super_admin' AND ur2.is_active = 1
+                 ))
+              ) AS outlet_count
        FROM users u
        JOIN user_roles ur ON u.id = ur.user_id AND ur.is_active = 1
        JOIN roles r ON ur.role_id = r.id
-       LEFT JOIN outlets o ON ur.outlet_id = o.id AND o.is_active = 1
        ${whereClause}
        GROUP BY u.id
        ORDER BY u.created_at DESC
@@ -963,9 +970,178 @@ class UserService {
         createdAt: u.created_at,
         role: 'super_admin',
         rawPassword: u.raw_password || null,
-        assignedOutlets: u.assigned_outlets || null,
+        outletCount: u.outlet_count || 0,
       })),
       pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
+  }
+
+  /**
+   * Get single super_admin by ID with all outlets, pagination, filters and summary.
+   * master-only
+   */
+  async getSuperAdminById(userId, options = {}) {
+    const pool = getPool();
+    const {
+      page = 1,
+      limit = 20,
+      search = '',
+      outletType = null,
+      isActive = null,
+      sortBy = 'name',
+      sortOrder = 'ASC',
+    } = options;
+    const offset = (page - 1) * limit;
+
+    // 1. Verify user exists and is super_admin
+    const [users] = await pool.query(
+      `SELECT u.id, u.uuid, u.employee_code, u.name, u.email, u.phone,
+              u.avatar_url, u.is_active, u.is_verified, u.last_login_at, u.created_at,
+              u.raw_password
+       FROM users u
+       JOIN user_roles ur ON u.id = ur.user_id AND ur.is_active = 1
+       JOIN roles r ON ur.role_id = r.id
+       WHERE u.id = ? AND u.deleted_at IS NULL AND r.slug = 'super_admin'
+       LIMIT 1`,
+      [userId]
+    );
+
+    if (users.length === 0) {
+      throw new Error('Super admin not found');
+    }
+
+    const superAdmin = users[0];
+
+    // 2. Build outlet query (same optimized LEFT JOINs as outletService.getAll)
+    const allowedSort = ['name', 'code', 'city', 'created_at'];
+    const sortColumn = allowedSort.includes(sortBy) ? sortBy : 'name';
+    const order = sortOrder.toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
+
+    let where = `
+      WHERE o.deleted_at IS NULL
+        AND (o.created_by = ? OR o.id IN (
+          SELECT ur.outlet_id FROM user_roles ur
+          INNER JOIN roles r ON r.id = ur.role_id
+          WHERE ur.user_id = ? AND r.slug = 'super_admin' AND ur.is_active = 1
+        ))
+    `;
+    const params = [userId, userId];
+
+    if (isActive !== undefined && isActive !== null) {
+      where += ' AND o.is_active = ?';
+      params.push(isActive ? 1 : 0);
+    }
+
+    if (outletType) {
+      where += ' AND o.outlet_type = ?';
+      params.push(outletType);
+    }
+
+    if (search) {
+      where += ' AND (o.name LIKE ? OR o.code LIKE ? OR o.city LIKE ?)';
+      const s = `%${search}%`;
+      params.push(s, s, s);
+    }
+
+    // 3. Count total
+    const [countResult] = await pool.query(
+      `SELECT COUNT(*) AS total FROM outlets o ${where}`,
+      params
+    );
+    const total = countResult[0].total;
+
+    // 4. Get outlets with full details
+    const [outletRows] = await pool.query(
+      `SELECT
+        o.*,
+        COALESCE(creator.name, 'System') AS created_by_name,
+        COALESCE(f.floor_count, 0)       AS floor_count,
+        COALESCE(t.table_count, 0)       AS table_count,
+        os.status                          AS subscription_status,
+        os.subscription_end,
+        os.grace_period_end,
+        sp.total_price                     AS subscription_plan_price,
+        sp.base_price,
+        sp.gst_percentage
+      FROM outlets o
+      LEFT JOIN users creator ON creator.id = o.created_by AND creator.deleted_at IS NULL
+      LEFT JOIN (
+        SELECT outlet_id, COUNT(*) AS floor_count FROM floors GROUP BY outlet_id
+      ) f ON f.outlet_id = o.id
+      LEFT JOIN (
+        SELECT outlet_id, COUNT(*) AS table_count
+        FROM tables WHERE is_active = 1 GROUP BY outlet_id
+      ) t ON t.outlet_id = o.id
+      LEFT JOIN outlet_subscriptions os ON os.outlet_id = o.id
+      LEFT JOIN subscription_pricing sp ON sp.id = os.current_pricing_id
+      ${where}
+      ORDER BY o.${sortColumn} ${order}
+      LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
+
+    // 5. Post-process outlets
+    const outlets = outletRows.map((row) => {
+      const o = { ...row };
+      o.created_by = row.created_by_name;
+      delete o.created_by_name;
+      o.subscription_plan = {
+        status: row.subscription_status || null,
+        end_date: row.subscription_end || null,
+        grace_period_end: row.grace_period_end || null,
+        price: row.subscription_plan_price || null,
+        base_price: row.base_price || null,
+        gst_percentage: row.gst_percentage || null,
+      };
+      delete o.subscription_status;
+      delete o.subscription_end;
+      delete o.grace_period_end;
+      delete o.subscription_plan_price;
+      delete o.base_price;
+      delete o.gst_percentage;
+      return o;
+    });
+
+    // 6. Summary
+    const summary = {
+      totalOutlets: total,
+      totalFloors: outlets.reduce((sum, o) => sum + (o.floor_count || 0), 0),
+      totalTables: outlets.reduce((sum, o) => sum + (o.table_count || 0), 0),
+      outletsBySubscriptionStatus: outlets.reduce((acc, o) => {
+        const status = o.subscription_plan?.status || 'unknown';
+        acc[status] = (acc[status] || 0) + 1;
+        return acc;
+      }, {}),
+      totalSubscriptionValue: outlets.reduce(
+        (sum, o) => sum + (parseFloat(o.subscription_plan?.price) || 0),
+        0
+      ),
+    };
+
+    return {
+      superAdmin: {
+        id: superAdmin.id,
+        uuid: superAdmin.uuid,
+        employeeCode: superAdmin.employee_code,
+        name: superAdmin.name,
+        email: superAdmin.email,
+        phone: superAdmin.phone,
+        avatarUrl: superAdmin.avatar_url,
+        isActive: Boolean(superAdmin.is_active),
+        isVerified: Boolean(superAdmin.is_verified),
+        lastLoginAt: superAdmin.last_login_at,
+        createdAt: superAdmin.created_at,
+        rawPassword: superAdmin.raw_password || null,
+        role: 'super_admin',
+      },
+      outlets,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+      summary,
     };
   }
 

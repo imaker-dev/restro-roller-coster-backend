@@ -392,6 +392,40 @@ const outletController = {
     } catch (error) {
       next(error);
     }
+  },
+
+  /**
+   * Assign an unassigned outlet to a super_admin user.
+   * @route POST /api/v1/outlets/:outletId/assign-super-admin
+   * @access Private (master only)
+   * @body { superAdminId: number }
+   */
+  async assignOutletToSuperAdmin(req, res, next) {
+    try {
+      const outletId = parseInt(req.params.outletId, 10);
+      const { superAdminId } = req.body;
+
+      if (!superAdminId || isNaN(Number(superAdminId))) {
+        return res.status(400).json({ success: false, message: 'superAdminId (number) is required' });
+      }
+
+      const result = await outletService.assignToSuperAdmin(
+        outletId,
+        Number(superAdminId),
+        req.user.userId
+      );
+
+      res.status(200).json(result);
+    } catch (error) {
+      if (error.message === 'Outlet not found or inactive') {
+        return res.status(404).json({ success: false, message: error.message });
+      }
+      if (error.message.includes('already assigned') || error.message.includes('not a super admin')) {
+        return res.status(409).json({ success: false, message: error.message });
+      }
+      logger.error('Assign outlet to super admin failed:', error);
+      next(error);
+    }
   }
 };
 

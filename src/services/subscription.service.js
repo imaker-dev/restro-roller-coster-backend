@@ -1288,6 +1288,402 @@ const getSuperAdminOutletsWithSubscriptions = async (saUserId, filters = {}, pag
   };
 };
 
+// ─── Master: Subscription transactions (payments) ───────────────────────────
+
+const getSubscriptionTransactions = async (filters = {}, pagination = { page: 1, limit: 50 }) => {
+  const pool = getPool();
+  const {
+    status, paymentMethod, dateFrom, dateTo, outletId, superAdminId, search,
+  } = filters;
+
+  // page/limit are already validated integers from the controller
+  const page = parseInt(pagination.page, 10) || 1;
+  const limit = parseInt(pagination.limit, 10) || 50;
+  const offset = (page - 1) * limit;
+
+  let where = 'WHERE 1=1';
+  const params = [];
+
+  if (status) {
+    where += ' AND sp.status = ?';
+    params.push(status);
+  }
+  if (paymentMethod) {
+    where += ' AND sp.payment_method = ?';
+    params.push(paymentMethod);
+  }
+  // Filter by payment date (paid_at when available, fallback to created_at for pending)
+  if (dateFrom) {
+    where += ' AND DATE(COALESCE(sp.paid_at, sp.created_at)) >= ?';
+    params.push(dateFrom);
+  }
+  if (dateTo) {
+    where += ' AND DATE(COALESCE(sp.paid_at, sp.created_at)) <= ?';
+    params.push(dateTo);
+  }
+  // outletId/superAdminId already validated as finite integers by controller
+  if (outletId) {
+    where += ' AND sp.outlet_id = ?';
+    params.push(outletId);
+  }
+  if (superAdminId) {
+    where += ` AND sp.outlet_id IN (
+      SELECT DISTINCT ur.outlet_id FROM user_roles ur
+      WHERE ur.user_id = ? AND ur.is_active = 1 AND ur.outlet_id IS NOT NULL
+      UNION
+      SELECT DISTINCT o2.id FROM outlets o2 WHERE o2.created_by = ?
+    )`;
+    params.push(superAdminId, superAdminId);
+  }
+  if (search) {
+    const s = `%${search}%`;
+    where += ` AND (
+      o.name LIKE ? OR o.code LIKE ? OR o.email LIKE ?
+      OR sp.razorpay_order_id LIKE ? OR sp.razorpay_payment_id LIKE ?
+      OR EXISTS (
+        SELECT 1 FROM users u
+        JOIN user_roles ur3 ON ur3.user_id = u.id AND ur3.outlet_id = o.id AND ur3.is_active = 1
+        JOIN roles r3 ON r3.id = ur3.role_id AND r3.slug = 'super_admin'
+        WHERE u.name LIKE ? OR u.email LIKE ?
+      )
+    )`;
+    params.push(s, s, s, s, s, s, s);
+  }
+
+  // 1. Count total (Number() cast: mysql2 v3 returns COUNT as BigInt/string)
+  const [[countRow]] = await pool.query(
+    `SELECT COUNT(*) AS total
+     FROM subscription_payments sp
+     JOIN outlets o ON o.id = sp.outlet_id
+     ${where}`,
+    params
+  );
+  const total = Number(countRow.total);
+
+  // 2. Fetch paginated transactions
+  const [rows] = await pool.query(
+    `SELECT
+      sp.id,
+      sp.outlet_id,
+      sp.subscription_id,
+      sp.razorpay_order_id,
+      sp.razorpay_payment_id,
+      sp.base_amount,
+      sp.gst_amount,
+      sp.total_amount,
+      sp.amount_paid,
+      sp.status,
+      sp.payment_method,
+      sp.paid_at,
+      sp.notes,
+      sp.created_at,
+      sp.updated_at,
+      o.name  AS outlet_name,
+      o.code  AS outlet_code,
+      o.email AS outlet_email,
+      o.phone AS outlet_phone,
+      o.address_line1,
+      o.address_line2,
+      o.city,
+      o.state,
+      o.postal_code,
+      o.gstin,
+      o.legal_name,
+      (SELECT u.name FROM users u
+       JOIN user_roles ur2 ON ur2.user_id = u.id AND ur2.outlet_id = o.id AND ur2.is_active = 1
+       JOIN roles r2 ON r2.id = ur2.role_id AND r2.slug = 'super_admin'
+       LIMIT 1) AS super_admin_name,
+      (SELECT u.email FROM users u
+       JOIN user_roles ur2 ON ur2.user_id = u.id AND ur2.outlet_id = o.id AND ur2.is_active = 1
+       JOIN roles r2 ON r2.id = ur2.role_id AND r2.slug = 'super_admin'
+       LIMIT 1) AS super_admin_email
+    FROM subscription_payments sp
+    JOIN outlets o ON o.id = sp.outlet_id
+    ${where}
+    ORDER BY sp.created_at DESC
+    LIMIT ? OFFSET ?`,
+    [...params, limit, offset]
+  );
+
+  // 3. Summary stats — revenue counts only successful (captured + manual) payments
+  const [[summary]] = await pool.query(
+    `SELECT
+      COUNT(*) AS totalTransactions,
+      COALESCE(SUM(CASE WHEN sp.status IN ('captured','manual') THEN sp.total_amount ELSE 0 END), 0) AS totalRevenue,
+      COALESCE(SUM(CASE WHEN sp.status IN ('captured','manual') THEN sp.base_amount  ELSE 0 END), 0) AS totalBaseAmount,
+      COALESCE(SUM(CASE WHEN sp.status IN ('captured','manual') THEN sp.gst_amount   ELSE 0 END), 0) AS totalGstAmount,
+      COUNT(CASE WHEN sp.status = 'captured' THEN 1 END) AS capturedCount,
+      COUNT(CASE WHEN sp.status = 'pending'  THEN 1 END) AS pendingCount,
+      COUNT(CASE WHEN sp.status = 'failed'   THEN 1 END) AS failedCount,
+      COUNT(CASE WHEN sp.status = 'refunded' THEN 1 END) AS refundedCount,
+      COUNT(CASE WHEN sp.status = 'manual'   THEN 1 END) AS manualCount
+    FROM subscription_payments sp
+    JOIN outlets o ON o.id = sp.outlet_id
+    ${where}`,
+    params
+  );
+
+  return {
+    transactions: rows.map((row) => ({
+      id: row.id,
+      outletId: row.outlet_id,
+      subscriptionId: row.subscription_id,
+      razorpayOrderId: row.razorpay_order_id,
+      razorpayPaymentId: row.razorpay_payment_id,
+      baseAmount: parseFloat(row.base_amount) || 0,
+      gstAmount: parseFloat(row.gst_amount) || 0,
+      totalAmount: parseFloat(row.total_amount) || 0,
+      amountPaid: row.amount_paid != null ? parseFloat(row.amount_paid) : null,
+      status: row.status,
+      paymentMethod: row.payment_method,
+      paidAt: row.paid_at,
+      notes: row.notes,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      outlet: {
+        id: row.outlet_id,
+        name: row.outlet_name,
+        code: row.outlet_code,
+        email: row.outlet_email,
+        phone: row.outlet_phone,
+        addressLine1: row.address_line1,
+        addressLine2: row.address_line2,
+        city: row.city,
+        state: row.state,
+        postalCode: row.postal_code,
+        gstin: row.gstin,
+        legalName: row.legal_name,
+      },
+      superAdmin: row.super_admin_name ? {
+        name: row.super_admin_name,
+        email: row.super_admin_email,
+      } : null,
+    })),
+    summary: {
+      totalTransactions: Number(summary.totalTransactions),
+      totalRevenue: parseFloat(summary.totalRevenue),
+      totalBaseAmount: parseFloat(summary.totalBaseAmount),
+      totalGstAmount: parseFloat(summary.totalGstAmount),
+      capturedCount: Number(summary.capturedCount),
+      pendingCount: Number(summary.pendingCount),
+      failedCount: Number(summary.failedCount),
+      refundedCount: Number(summary.refundedCount),
+      manualCount: Number(summary.manualCount),
+    },
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: total > 0 ? Math.ceil(total / limit) : 0,
+    },
+  };
+};
+
+const getSubscriptionTransactionById = async (transactionId) => {
+  const pool = getPool();
+
+  const [rows] = await pool.query(
+    `SELECT
+      sp.*,
+      o.name AS outlet_name, o.code AS outlet_code, o.email AS outlet_email,
+      o.phone AS outlet_phone, o.address_line1, o.address_line2, o.city,
+      o.state, o.postal_code, o.country, o.gstin, o.legal_name, o.pan_number,
+      o.fssai_number,
+      (SELECT u.name FROM users u
+       JOIN user_roles ur2 ON ur2.user_id = u.id AND ur2.outlet_id = o.id AND ur2.is_active = 1
+       JOIN roles r2 ON r2.id = ur2.role_id AND r2.slug = 'super_admin'
+       LIMIT 1) AS super_admin_name,
+      (SELECT u.email FROM users u
+       JOIN user_roles ur2 ON ur2.user_id = u.id AND ur2.outlet_id = o.id AND ur2.is_active = 1
+       JOIN roles r2 ON r2.id = ur2.role_id AND r2.slug = 'super_admin'
+       LIMIT 1) AS super_admin_email,
+      os.status AS subscription_status,
+      os.subscription_start,
+      os.subscription_end,
+      os.grace_period_end
+    FROM subscription_payments sp
+    JOIN outlets o ON o.id = sp.outlet_id
+    LEFT JOIN outlet_subscriptions os ON os.id = sp.subscription_id
+    WHERE sp.id = ?
+    LIMIT 1`,
+    [transactionId]
+  );
+
+  if (rows.length === 0) {
+    throw new Error('Transaction not found');
+  }
+
+  const row = rows[0];
+
+  return {
+    id: row.id,
+    outletId: row.outlet_id,
+    subscriptionId: row.subscription_id,
+    razorpayOrderId: row.razorpay_order_id,
+    razorpayPaymentId: row.razorpay_payment_id,
+    razorpaySignature: row.razorpay_signature,
+    baseAmount: parseFloat(row.base_amount) || 0,
+    gstAmount: parseFloat(row.gst_amount) || 0,
+    totalAmount: parseFloat(row.total_amount) || 0,
+    amountPaid: row.amount_paid ? parseFloat(row.amount_paid) : null,
+    status: row.status,
+    paymentMethod: row.payment_method,
+    paidAt: row.paid_at,
+    notes: row.notes,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    outlet: {
+      id: row.outlet_id,
+      name: row.outlet_name,
+      code: row.outlet_code,
+      email: row.outlet_email,
+      phone: row.outlet_phone,
+      addressLine1: row.address_line1,
+      addressLine2: row.address_line2,
+      city: row.city,
+      state: row.state,
+      country: row.country,
+      postalCode: row.postal_code,
+      gstin: row.gstin,
+      legalName: row.legal_name,
+      panNumber: row.pan_number,
+      fssaiNumber: row.fssai_number,
+    },
+    superAdmin: row.super_admin_name ? {
+      name: row.super_admin_name,
+      email: row.super_admin_email,
+    } : null,
+    subscription: {
+      status: row.subscription_status,
+      subscriptionStart: row.subscription_start,
+      subscriptionEnd: row.subscription_end,
+      gracePeriodEnd: row.grace_period_end,
+    },
+  };
+};
+
+const getTransactionInvoice = async (transactionId) => {
+  const pool = getPool();
+
+  const [rows] = await pool.query(
+    `SELECT
+      sp.id,
+      sp.outlet_id,
+      sp.base_amount,
+      sp.gst_amount,
+      sp.total_amount,
+      sp.amount_paid,
+      sp.status,
+      sp.payment_method,
+      sp.paid_at,
+      sp.notes,
+      sp.created_at,
+      sp.razorpay_order_id,
+      sp.razorpay_payment_id,
+      o.name AS outlet_name,
+      o.code AS outlet_code,
+      o.email AS outlet_email,
+      o.phone AS outlet_phone,
+      o.address_line1,
+      o.address_line2,
+      o.city,
+      o.state,
+      o.postal_code,
+      o.country,
+      o.gstin,
+      o.legal_name,
+      o.pan_number,
+      pr.base_price AS pricing_base_price,
+      pr.gst_percentage AS pricing_gst_percentage
+    FROM subscription_payments sp
+    JOIN outlets o ON o.id = sp.outlet_id
+    LEFT JOIN outlet_subscriptions os ON os.id = sp.subscription_id
+    LEFT JOIN subscription_pricing pr ON pr.id = os.current_pricing_id
+    WHERE sp.id = ?
+    LIMIT 1`,
+    [transactionId]
+  );
+
+  if (rows.length === 0) {
+    throw new Error('Transaction not found');
+  }
+
+  const row = rows[0];
+
+  // Build invoice object
+  const invoiceNumber = `INV-SUB-${String(row.id).padStart(6, '0')}`;
+  const invoiceDate = row.paid_at
+    ? new Date(row.paid_at).toISOString().split('T')[0]
+    : new Date(row.created_at).toISOString().split('T')[0];
+
+  const baseAmount = parseFloat(row.base_amount) || 0;
+  const gstAmount = parseFloat(row.gst_amount) || 0;
+  const totalAmount = parseFloat(row.total_amount) || 0;
+  const gstPercentage = row.pricing_gst_percentage || (baseAmount > 0 ? Math.round((gstAmount / baseAmount) * 100) : 18);
+
+  return {
+    invoice: {
+      invoiceNumber,
+      invoiceDate,
+      invoiceTime: row.paid_at ? new Date(row.paid_at).toISOString().split('T')[1].slice(0, 8) : null,
+      type: 'Subscription Renewal',
+      status: row.status,
+    },
+    billedTo: {
+      name: row.legal_name || row.outlet_name,
+      outletName: row.outlet_name,
+      outletCode: row.outlet_code,
+      email: row.outlet_email,
+      phone: row.outlet_phone,
+      address: {
+        line1: row.address_line1,
+        line2: row.address_line2,
+        city: row.city,
+        state: row.state,
+        postalCode: row.postal_code,
+        country: row.country,
+      },
+      gstin: row.gstin,
+      panNumber: row.pan_number,
+    },
+    lineItems: [
+      {
+        description: 'Annual Subscription Plan',
+        quantity: 1,
+        unitPrice: baseAmount,
+        amount: baseAmount,
+      },
+    ],
+    taxBreakdown: {
+      gstPercentage,
+      taxableAmount: baseAmount,
+      gstAmount,
+      cgst: gstAmount / 2,
+      sgst: gstAmount / 2,
+      totalTax: gstAmount,
+    },
+    totals: {
+      subtotal: baseAmount,
+      totalTax: gstAmount,
+      grandTotal: totalAmount,
+      amountPaid: row.amount_paid ? parseFloat(row.amount_paid) : totalAmount,
+      amountDue: row.amount_paid ? Math.max(0, totalAmount - parseFloat(row.amount_paid)) : 0,
+    },
+    payment: {
+      method: row.payment_method,
+      transactionId: row.razorpay_payment_id || row.razorpay_order_id,
+      paidAt: row.paid_at,
+      status: row.status,
+      notes: row.notes,
+    },
+    meta: {
+      transactionId: row.id,
+      outletId: row.outlet_id,
+      createdAt: row.created_at,
+    },
+  };
+};
+
 module.exports = {
   getSubscriptionStatus,
   getActivePricing,
@@ -1312,5 +1708,8 @@ module.exports = {
   processWebhook,
   getSuperAdminDashboardSubscriptions,
   getSuperAdminOutletsWithSubscriptions,
+  getSubscriptionTransactions,
+  getSubscriptionTransactionById,
+  getTransactionInvoice,
   _invalidateCache, // exported for external cache invalidation
 };
