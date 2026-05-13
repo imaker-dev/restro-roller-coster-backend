@@ -338,16 +338,30 @@ const bulkUploadController = {
   /**
    * GET /api/v1/bulk-upload/menu/super-admin-template
    * Get the current super admin's master template (metadata only, not CSV data).
+   * For super_admin — returns their own template.
+   * For admin/manager — resolves outlet's super admin and returns their template.
    */
   async getSuperAdminTemplate(req, res) {
     try {
       const userId = req.user?.userId;
+      const userRole = req.user?.role;
+      const outletId = parseInt(req.query.outletId || req.user?.outletId);
 
       if (!userId) {
         return res.status(401).json({ success: false, message: 'Authentication required' });
       }
 
-      const template = await bulkUploadService.getSuperAdminTemplate(userId);
+      let template;
+      if (userRole === 'super_admin') {
+        template = await bulkUploadService.getSuperAdminTemplate(userId);
+      } else {
+        // Admin/manager: resolve outlet → super admin → template
+        if (!outletId) {
+          return res.status(400).json({ success: false, message: 'outletId is required' });
+        }
+        template = await bulkUploadService.getSuperAdminTemplateForOutlet(outletId);
+      }
+
       res.json({
         success: true,
         data: {

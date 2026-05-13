@@ -1,7 +1,7 @@
 const { getPool } = require('../database');
 const logger = require('../utils/logger');
 
-const VALID_PLATFORMS = ['global', 'app_store', 'play_store', 'exe', 'mac_os'];
+const VALID_PLATFORMS = ['global', 'app_store', 'play_store', 'exe', 'mac_os', 'offline_exe'];
 
 const appVersionService = {
   /**
@@ -339,7 +339,7 @@ const appVersionService = {
 
     // Fallback to global record with legacy columns
     // Map platform names to database column prefixes (mac_url, mac_sha256, etc.)
-    const legacyMap = { app_store: 'ios', play_store: 'android', exe: 'windows', mac_os: 'mac' };
+    const legacyMap = { app_store: 'ios', play_store: 'android', exe: 'windows', mac_os: 'mac', offline_exe: 'windows' };
     const legacyKey = legacyMap[platform] || platform;
     const sha256Field = `${legacyKey}_sha256`;
     const urlField    = `${legacyKey}_url`;

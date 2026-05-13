@@ -85,9 +85,9 @@ router.post('/menu/super-admin-template', authenticate, authorize('super_admin')
 /**
  * @route   GET /api/v1/bulk-upload/menu/super-admin-template
  * @desc    Get super admin's current master template metadata
- * @access  Private (super_admin only)
+ * @access  Private (super_admin, admin, manager)
  */
-router.get('/menu/super-admin-template', authenticate, authorize('super_admin'), bulkUploadController.getSuperAdminTemplate);
+router.get('/menu/super-admin-template', authenticate, authorize('super_admin', 'admin', 'manager'), bulkUploadController.getSuperAdminTemplate);
 
 /**
  * @route   DELETE /api/v1/bulk-upload/menu/super-admin-template

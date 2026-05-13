@@ -1,14 +1,14 @@
 const appVersionService = require('../services/appVersion.service');
 const logger = require('../utils/logger');
 
-const VALID_PLATFORMS = appVersionService.VALID_PLATFORMS; // ['global','app_store','play_store','exe']
+const VALID_PLATFORMS = appVersionService.VALID_PLATFORMS; // ['global','app_store','play_store','exe','mac_os','offline_exe']
 const VERSION_REGEX = /^\d+\.\d+(\.\d+)?$/;
 
 const appVersionController = {
   /**
    * GET /api/v1/app/version
    * Public: Get latest version for a given platform and channel.
-   * Query: ?platform=app_store|play_store|exe|global  ?channel=stable|beta|alpha  ?version=1.0.0
+   * Query: ?platform=app_store|play_store|exe|mac_os|offline_exe|global  ?channel=stable|beta|alpha  ?version=1.0.0
    * Headers: x-platform, x-app-version (alternative to query params)
    * If ?version provided → returns full update-check result.
    * If no platform → returns latest per ALL platforms keyed by platform name.
@@ -48,7 +48,7 @@ const appVersionController = {
   /**
    * GET /api/v1/app/version/checksum
    * Get checksum for a specific platform and version.
-   * Query: ?platform=app_store|play_store|exe  ?version=1.0.0
+   * Query: ?platform=app_store|play_store|exe|mac_os|offline_exe  ?version=1.0.0
    */
   async getChecksum(req, res) {
     try {
@@ -80,7 +80,7 @@ const appVersionController = {
   /**
    * GET /api/v1/app/versions
    * Admin: List all versions with optional filters.
-   * Query: ?platform=app_store|play_store|exe|global  ?channel=stable|beta|alpha  ?is_active=1|0  ?limit=50  ?offset=0
+   * Query: ?platform=app_store|play_store|exe|mac_os|offline_exe|global  ?channel=stable|beta|alpha  ?is_active=1|0  ?limit=50  ?offset=0
    */
   async getAllVersions(req, res) {
     try {

@@ -103,6 +103,12 @@ const getSubscriptionStatus = async (outletId) => {
         [status, GRACE_PERIOD_DAYS, outletId]
       );
       await _invalidateCache(outletId);
+      // Re-fetch so grace period calculation below uses the updated grace_period_end
+      const [[updated]] = await pool.query(
+        `SELECT grace_period_end FROM outlet_subscriptions WHERE outlet_id = ?`,
+        [outletId]
+      );
+      if (updated) row.grace_period_end = updated.grace_period_end;
     }
   }
 
