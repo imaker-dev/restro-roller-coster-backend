@@ -420,6 +420,94 @@ const selfOrderController = {
   },
 
   /**
+   * GET /self-order/staff/qr/download/:outletId/:tableId
+   * Download single table QR as A4 PDF
+   */
+  async downloadSingleTableQrPDF(req, res) {
+    try {
+      const { outletId, tableId } = req.params;
+      const { generateSingleTableQrPDF } = require('../utils/table-qr-pdf');
+      const { getPool } = require('../database');
+
+      const pool = getPool();
+      const [[tableRow]] = await pool.query(
+        `SELECT t.id, t.table_number, t.name, t.qr_code, o.name AS outlet_name
+         FROM tables t
+         LEFT JOIN outlets o ON o.id = t.outlet_id
+         WHERE t.id = ? AND t.outlet_id = ? AND t.is_active = 1`,
+        [parseInt(tableId, 10), parseInt(outletId, 10)]
+      );
+
+      if (!tableRow) {
+        return res.status(404).json({ success: false, message: 'Table not found' });
+      }
+
+      const pdfBuffer = await generateSingleTableQrPDF({
+        tableId: tableRow.id,
+        tableNumber: tableRow.table_number,
+        tableName: tableRow.name,
+        qrCodePath: tableRow.qr_code,
+      }, tableRow.outlet_name);
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="table-${tableRow.table_number}-qr.pdf"`);
+      res.send(pdfBuffer);
+    } catch (error) {
+      logger.error('Download single table QR PDF error:', error);
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
+
+  /**
+   * GET /self-order/staff/qr/download-all/:outletId
+   * Download all table QRs as A4 PDF (3x3 grid, 9 per page)
+   */
+  async downloadAllTablesQrPDF(req, res) {
+    try {
+      const outletId = parseInt(req.params.outletId, 10);
+      const { generateAllTablesQrPDF } = require('../utils/table-qr-pdf');
+      const { getPool } = require('../database');
+
+      const pool = getPool();
+      const [[outletRow]] = await pool.query(
+        'SELECT name FROM outlets WHERE id = ? AND is_active = 1', [outletId]
+      );
+      if (!outletRow) {
+        return res.status(404).json({ success: false, message: 'Outlet not found' });
+      }
+
+      const [tables] = await pool.query(
+        `SELECT t.id, t.table_number, t.name, t.qr_code
+         FROM tables t
+         WHERE t.outlet_id = ? AND t.is_active = 1
+         ORDER BY t.table_number`,
+        [outletId]
+      );
+
+      if (tables.length === 0) {
+        return res.status(404).json({ success: false, message: 'No tables found for this outlet' });
+      }
+
+      const pdfBuffer = await generateAllTablesQrPDF(
+        tables.map((t) => ({
+          tableId: t.id,
+          tableNumber: t.table_number,
+          tableName: t.name,
+          qrCodePath: t.qr_code,
+        })),
+        outletRow.name
+      );
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="all-tables-qr-${outletId}.pdf"`);
+      res.send(pdfBuffer);
+    } catch (error) {
+      logger.error('Download all tables QR PDF error:', error);
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
+
+  /**
    * POST /self-order/staff/session/:sessionId/complete
    * Complete a session (QR codes are permanent — no rotation)
    */

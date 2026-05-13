@@ -231,6 +231,19 @@ router.post('/staff/qr/generate-all',
   selfOrderController.generateAllQrs
 );
 
+// QR code PDF downloads
+router.get('/staff/qr/download/:outletId/:tableId',
+  authenticate,
+  authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'),
+  selfOrderController.downloadSingleTableQrPDF
+);
+
+router.get('/staff/qr/download-all/:outletId',
+  authenticate,
+  authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'),
+  selfOrderController.downloadAllTablesQrPDF
+);
+
 // Complete session + rotate QR token
 router.post('/staff/session/:sessionId/complete',
   authenticate,

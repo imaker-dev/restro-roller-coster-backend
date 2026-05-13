@@ -76,22 +76,50 @@ router.get('/history', authenticate, authorize('super_admin', 'admin','manager')
 
 /**
  * @route   POST /api/v1/bulk-upload/menu/super-admin-template
- * @desc    Super admin uploads master menu template CSV
+ * @desc    Publish new version of super admin master menu template
  * @access  Private (super_admin only)
- * @body    csvContent (string) OR file upload
+ * @body    csvContent (string) OR file upload, label (optional)
  */
 router.post('/menu/super-admin-template', authenticate, authorize('super_admin'), upload.single('file'), bulkUploadController.uploadSuperAdminTemplate);
 
 /**
+ * @route   GET /api/v1/bulk-upload/menu/super-admin-template/versions
+ * @desc    List all template versions for the logged-in super admin
+ * @access  Private (super_admin only)
+ */
+router.get('/menu/super-admin-template/versions', authenticate, authorize('super_admin'), bulkUploadController.listSuperAdminTemplateVersions);
+
+/**
+ * @route   GET /api/v1/bulk-upload/menu/super-admin-template/versions/:version/download
+ * @desc    Download a specific version of the super admin's template
+ * @access  Private (super_admin only)
+ */
+router.get('/menu/super-admin-template/versions/:version/download', authenticate, authorize('super_admin'), bulkUploadController.downloadSuperAdminTemplateVersion);
+
+/**
+ * @route   PATCH /api/v1/bulk-upload/menu/super-admin-template/versions/:version/activate
+ * @desc    Set a specific version as the active (published) template
+ * @access  Private (super_admin only)
+ */
+router.patch('/menu/super-admin-template/versions/:version/activate', authenticate, authorize('super_admin'), bulkUploadController.activateSuperAdminTemplateVersion);
+
+/**
+ * @route   DELETE /api/v1/bulk-upload/menu/super-admin-template/versions/:version
+ * @desc    Delete a specific version of the super admin's template
+ * @access  Private (super_admin only)
+ */
+router.delete('/menu/super-admin-template/versions/:version', authenticate, authorize('super_admin'), bulkUploadController.deleteSuperAdminTemplateVersion);
+
+/**
  * @route   GET /api/v1/bulk-upload/menu/super-admin-template
- * @desc    Get super admin's current master template metadata
+ * @desc    Download active template (super_admin: own, admin/manager: their super admin's)
  * @access  Private (super_admin, admin, manager)
  */
 router.get('/menu/super-admin-template', authenticate, authorize('super_admin', 'admin', 'manager'), bulkUploadController.getSuperAdminTemplate);
 
 /**
  * @route   DELETE /api/v1/bulk-upload/menu/super-admin-template
- * @desc    Delete super admin's master template
+ * @desc    Delete ALL versions of super admin's template
  * @access  Private (super_admin only)
  */
 router.delete('/menu/super-admin-template', authenticate, authorize('super_admin'), bulkUploadController.deleteSuperAdminTemplate);

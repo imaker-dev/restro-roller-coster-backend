@@ -627,38 +627,149 @@ const bulkUploadService = {
   },
 
   // ========================
-  // SUPER ADMIN MENU TEMPLATE
+  // SUPER ADMIN MENU TEMPLATE (Versioned)
   // ========================
 
   /**
-   * Save or update a super admin's master menu template.
-   * Only super_admin role should call this.
+   * Publish a new versioned template for a super admin.
+   * Auto-increments version, sets it as active, deactivates previous active version.
    */
-  async saveSuperAdminTemplate(userId, csvContent) {
+  async saveSuperAdminTemplate(userId, csvContent, label = null) {
     const pool = getPool();
-    await pool.query(
-      `INSERT INTO super_admin_menu_templates (user_id, template_data)
-       VALUES (?, ?)
-       ON DUPLICATE KEY UPDATE template_data = VALUES(template_data), updated_at = NOW()`,
-      [userId, csvContent]
-    );
-    return { success: true, message: 'Super admin template saved successfully' };
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+
+      // Get next version number
+      const [[maxRow]] = await conn.query(
+        'SELECT COALESCE(MAX(version), 0) AS max_version FROM super_admin_menu_templates WHERE user_id = ?',
+        [userId]
+      );
+      const nextVersion = (maxRow.max_version || 0) + 1;
+
+      // Deactivate current active version
+      await conn.query(
+        'UPDATE super_admin_menu_templates SET is_active = 0 WHERE user_id = ? AND is_active = 1',
+        [userId]
+      );
+
+      // Insert new version as active
+      await conn.query(
+        `INSERT INTO super_admin_menu_templates (user_id, version, label, template_data, is_active)
+         VALUES (?, ?, ?, ?, 1)`,
+        [userId, nextVersion, label, csvContent]
+      );
+
+      await conn.commit();
+      return { success: true, version: nextVersion, message: `Template published as version ${nextVersion}` };
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
   },
 
   /**
-   * Get a super admin's master menu template by userId.
+   * List all template versions for a super admin.
+   */
+  async listSuperAdminTemplateVersions(userId) {
+    const pool = getPool();
+    const [rows] = await pool.query(
+      `SELECT id, version, label, is_active,
+              LENGTH(template_data) AS size_bytes,
+              created_at, updated_at
+       FROM super_admin_menu_templates
+       WHERE user_id = ?
+       ORDER BY version DESC`,
+      [userId]
+    );
+    return rows;
+  },
+
+  /**
+   * Get a super admin's active (published) template CSV data.
    */
   async getSuperAdminTemplate(userId) {
     const pool = getPool();
     const [[row]] = await pool.query(
-      'SELECT template_data FROM super_admin_menu_templates WHERE user_id = ?',
+      'SELECT template_data FROM super_admin_menu_templates WHERE user_id = ? AND is_active = 1 LIMIT 1',
       [userId]
     );
     return row ? row.template_data : null;
   },
 
   /**
-   * Delete a super admin's master menu template.
+   * Get a specific version of a super admin's template CSV data.
+   */
+  async getSuperAdminTemplateByVersion(userId, version) {
+    const pool = getPool();
+    const [[row]] = await pool.query(
+      'SELECT template_data, label, is_active FROM super_admin_menu_templates WHERE user_id = ? AND version = ?',
+      [userId, version]
+    );
+    return row || null;
+  },
+
+  /**
+   * Activate (publish) a specific version, deactivating all others.
+   */
+  async activateSuperAdminTemplateVersion(userId, version) {
+    const pool = getPool();
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [exists] = await conn.query(
+        'SELECT id FROM super_admin_menu_templates WHERE user_id = ? AND version = ?',
+        [userId, version]
+      );
+      if (!exists.length) throw new Error(`Version ${version} not found`);
+
+      await conn.query(
+        'UPDATE super_admin_menu_templates SET is_active = 0 WHERE user_id = ?',
+        [userId]
+      );
+      await conn.query(
+        'UPDATE super_admin_menu_templates SET is_active = 1 WHERE user_id = ? AND version = ?',
+        [userId, version]
+      );
+      await conn.commit();
+      return { success: true, message: `Version ${version} is now active` };
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
+  },
+
+  /**
+   * Delete a specific version of a super admin's template.
+   * Cannot delete the currently active version if it's the only one.
+   */
+  async deleteSuperAdminTemplateVersion(userId, version) {
+    const pool = getPool();
+    const [[row]] = await pool.query(
+      'SELECT id, is_active FROM super_admin_menu_templates WHERE user_id = ? AND version = ?',
+      [userId, version]
+    );
+    if (!row) throw new Error(`Version ${version} not found`);
+    if (row.is_active) {
+      const [[countRow]] = await pool.query(
+        'SELECT COUNT(*) AS cnt FROM super_admin_menu_templates WHERE user_id = ?',
+        [userId]
+      );
+      if (countRow.cnt <= 1) throw new Error('Cannot delete the only active template version');
+    }
+    await pool.query(
+      'DELETE FROM super_admin_menu_templates WHERE user_id = ? AND version = ?',
+      [userId, version]
+    );
+    return { success: true, message: `Version ${version} deleted` };
+  },
+
+  /**
+   * Delete ALL versions of a super admin's template.
    */
   async deleteSuperAdminTemplate(userId) {
     const pool = getPool();
@@ -676,16 +787,38 @@ const bulkUploadService = {
    */
   async getSuperAdminTemplateForOutlet(outletId) {
     const pool = getPool();
-    // Find the super admin (created_by) for this outlet
-    const [[outlet]] = await pool.query(
-      'SELECT created_by FROM outlets WHERE id = ?',
+
+    // Path 1: Check user_roles for an active super_admin explicitly assigned to this outlet
+    const [[assignedSuperAdmin]] = await pool.query(
+      `SELECT ur.user_id AS super_admin_id
+       FROM user_roles ur
+       INNER JOIN roles r ON r.id = ur.role_id
+       WHERE ur.outlet_id = ? AND r.slug = 'super_admin' AND ur.is_active = 1
+       LIMIT 1`,
       [outletId]
     );
-    if (!outlet || !outlet.created_by) return null;
+
+    // Path 2: Check outlets.created_by where creator is a super_admin
+    let creatorSuperAdminId = null;
+    if (!assignedSuperAdmin || !assignedSuperAdmin.super_admin_id) {
+      const [[outlet]] = await pool.query(
+        `SELECT o.created_by AS super_admin_id
+         FROM outlets o
+         INNER JOIN user_roles ur ON ur.user_id = o.created_by AND ur.is_active = 1
+         INNER JOIN roles r ON r.id = ur.role_id AND r.slug = 'super_admin'
+         WHERE o.id = ?
+         LIMIT 1`,
+        [outletId]
+      );
+      creatorSuperAdminId = outlet ? outlet.super_admin_id : null;
+    }
+
+    const superAdminId = (assignedSuperAdmin && assignedSuperAdmin.super_admin_id) || creatorSuperAdminId;
+    if (!superAdminId) return null;
 
     const [[row]] = await pool.query(
       'SELECT template_data FROM super_admin_menu_templates WHERE user_id = ?',
-      [outlet.created_by]
+      [superAdminId]
     );
     return row ? row.template_data : null;
   },
