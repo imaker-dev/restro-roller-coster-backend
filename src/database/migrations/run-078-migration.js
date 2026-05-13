@@ -7,8 +7,6 @@
 require('dotenv').config();
 const mysql = require('mysql2/promise');
 const dbConfig = require('../../config/database.config');
-const fs = require('fs');
-const path = require('path');
 
 async function runMigration() {
   console.log('Running migration 078: App Versions offline_exe platform...\n');
@@ -49,24 +47,12 @@ async function runMigration() {
       return;
     }
 
-    // Execute each statement separately
-    const sqlPath = path.join(__dirname, '078_app_versions_offline_exe_platform.sql');
-    const sql = fs.readFileSync(sqlPath, 'utf8');
-    const statements = sql.split(';');
-
-    for (const stmt of statements) {
-      const clean = stmt.replace(/^--.*$/gm, '').trim();
-      if (!clean) continue;
-      try {
-        await connection.query(clean);
-      } catch (err) {
-        if (err.message.includes('already exists') || err.message.includes('Duplicate')) {
-          console.log(`  Skipped (already exists): ${err.message.substring(0, 80)}`);
-        } else {
-          throw err;
-        }
-      }
-    }
+    // Execute ALTER TABLE directly (self-contained, no external file dependency)
+    await connection.query(
+      `ALTER TABLE app_versions
+       MODIFY COLUMN platform ENUM('global', 'app_store', 'play_store', 'exe', 'mac_os', 'offline_exe')
+       NOT NULL DEFAULT 'global'`
+    );
 
     console.log('- Added offline_exe to platform ENUM');
     console.log('- Valid platforms: global, app_store, play_store, exe, mac_os, offline_exe');
