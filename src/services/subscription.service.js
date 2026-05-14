@@ -190,7 +190,7 @@ const resolveOutletPricing = async (outletId) => {
   // 1. Check outlet-level override (gracefully skip if table doesn't exist yet)
   try {
     const [[outletOverride]] = await pool.query(
-      `SELECT id, base_price, gst_percentage, total_price FROM outlet_pricing_override WHERE outlet_id = ? AND is_active = 1 LIMIT 1`,
+      `SELECT id, base_price, gst_percentage, total_price FROM outlet_pricing_override WHERE outlet_id = ? LIMIT 1`,
       [outletId]
     );
     if (outletOverride) {
@@ -224,7 +224,6 @@ const resolveOutletPricing = async (outletId) => {
          FROM outlets o
          WHERE o.id = ? AND o.created_by IS NOT NULL
        ) sa ON sap.user_id = sa.user_id
-       WHERE sap.is_active = 1
        LIMIT 1`,
       [outletId, outletId]
     );
@@ -267,7 +266,7 @@ const getSuperAdminPricing = async (userId) => {
   try {
     const [[row]] = await pool.query(
       `SELECT id, user_id, base_price, gst_percentage, total_price, is_active, notes, created_by, created_at, updated_at
-       FROM super_admin_pricing WHERE user_id = ? AND is_active = 1 LIMIT 1`,
+       FROM super_admin_pricing WHERE user_id = ? LIMIT 1`,
       [userId]
     );
     return row || null;
@@ -281,21 +280,27 @@ const getSuperAdminPricing = async (userId) => {
 
 const setSuperAdminPricing = async (userId, basePrice, gstPercentage, createdBy, notes = null) => {
   const pool = getPool();
-  // Deactivate old pricing for this SA
-  await pool.query(`UPDATE super_admin_pricing SET is_active = 0 WHERE user_id = ? AND is_active = 1`, [userId]);
+  // Upsert: one row per user_id
   const [result] = await pool.query(
     `INSERT INTO super_admin_pricing (user_id, base_price, gst_percentage, is_active, notes, created_by)
-     VALUES (?, ?, ?, 1, ?, ?)`,
+     VALUES (?, ?, ?, 1, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       base_price = VALUES(base_price),
+       gst_percentage = VALUES(gst_percentage),
+       is_active = 1,
+       notes = VALUES(notes),
+       created_by = VALUES(created_by),
+       updated_at = CURRENT_TIMESTAMP`,
     [userId, basePrice, gstPercentage, notes, createdBy]
   );
   // Invalidate cache for all outlets under this SA
   await _invalidateSAOutletCaches(userId);
-  return { id: result.insertId, userId, basePrice, gstPercentage };
+  return { id: result.insertId || result.affectedRows, userId, basePrice, gstPercentage };
 };
 
 const deleteSuperAdminPricing = async (userId) => {
   const pool = getPool();
-  await pool.query(`UPDATE super_admin_pricing SET is_active = 0 WHERE user_id = ? AND is_active = 1`, [userId]);
+  await pool.query(`DELETE FROM super_admin_pricing WHERE user_id = ?`, [userId]);
   await _invalidateSAOutletCaches(userId);
   return { userId, deleted: true };
 };
@@ -322,7 +327,6 @@ const getAllSuperAdminPricings = async () => {
          ) x
          GROUP BY x.user_id
        ) oc ON oc.user_id = sap.user_id
-       WHERE sap.is_active = 1
        ORDER BY u.name`
     );
     return rows;
@@ -341,7 +345,7 @@ const getOutletPricingOverride = async (outletId) => {
   try {
     const [[row]] = await pool.query(
       `SELECT id, outlet_id, base_price, gst_percentage, total_price, is_active, notes, created_by, created_at, updated_at
-       FROM outlet_pricing_override WHERE outlet_id = ? AND is_active = 1 LIMIT 1`,
+       FROM outlet_pricing_override WHERE outlet_id = ? LIMIT 1`,
       [outletId]
     );
     return row || null;
@@ -355,20 +359,26 @@ const getOutletPricingOverride = async (outletId) => {
 
 const setOutletPricingOverride = async (outletId, basePrice, gstPercentage, createdBy, notes = null) => {
   const pool = getPool();
-  // Deactivate old override for this outlet
-  await pool.query(`UPDATE outlet_pricing_override SET is_active = 0 WHERE outlet_id = ? AND is_active = 1`, [outletId]);
+  // Upsert: one row per outlet_id
   const [result] = await pool.query(
     `INSERT INTO outlet_pricing_override (outlet_id, base_price, gst_percentage, is_active, notes, created_by)
-     VALUES (?, ?, ?, 1, ?, ?)`,
+     VALUES (?, ?, ?, 1, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       base_price = VALUES(base_price),
+       gst_percentage = VALUES(gst_percentage),
+       is_active = 1,
+       notes = VALUES(notes),
+       created_by = VALUES(created_by),
+       updated_at = CURRENT_TIMESTAMP`,
     [outletId, basePrice, gstPercentage, notes, createdBy]
   );
   await _invalidateCache(outletId);
-  return { id: result.insertId, outletId, basePrice, gstPercentage };
+  return { id: result.insertId || result.affectedRows, outletId, basePrice, gstPercentage };
 };
 
 const deleteOutletPricingOverride = async (outletId) => {
   const pool = getPool();
-  await pool.query(`UPDATE outlet_pricing_override SET is_active = 0 WHERE outlet_id = ? AND is_active = 1`, [outletId]);
+  await pool.query(`DELETE FROM outlet_pricing_override WHERE outlet_id = ?`, [outletId]);
   await _invalidateCache(outletId);
   return { outletId, deleted: true };
 };
