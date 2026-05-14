@@ -40,6 +40,31 @@ const outletController = {
     }
   },
 
+  async getMasterOutlets(req, res, next) {
+    try {
+      const filters = {
+        search: req.query.search || null,
+        isActive: req.query.isActive !== undefined ? req.query.isActive : undefined,
+        subscriptionStatus: req.query.subscriptionStatus || null,
+        pricingSource: req.query.pricingSource || null,
+        outletType: req.query.outletType || null,
+        superAdminId: req.query.superAdminId || null,
+        hasQrCodes: req.query.hasQrCodes !== undefined ? req.query.hasQrCodes : undefined,
+        sortBy: req.query.sortBy || 'o.created_at',
+        sortOrder: req.query.sortOrder || 'DESC',
+      };
+      const pagination = {
+        page: req.query.page || 1,
+        limit: req.query.limit || 50,
+      };
+      const result = await outletService.getAllForMaster(filters, pagination);
+      res.json({ success: true, data: result });
+    } catch (error) {
+      logger.error('Get master outlets error:', error);
+      next(error);
+    }
+  },
+
   async getOutletById(req, res, next) {
     try {
       const outlet = await outletService.getById(req.params.id);

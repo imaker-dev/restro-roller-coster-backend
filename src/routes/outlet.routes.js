@@ -54,6 +54,14 @@ router.get('/', authorize('master', 'super_admin', 'admin', 'manager'), outletCo
 router.post('/', authorize('super_admin', 'admin'), validate(outletValidation.createOutlet), outletController.createOutlet);
 
 /**
+ * @route   GET /api/v1/outlets/master-dashboard
+ * @desc    Get all outlets for master with full details (subscriptions, pricing, metrics)
+ * @access  Private (master only)
+ * @query   page, limit, search, isActive, subscriptionStatus, pricingSource, outletType, superAdminId, hasQrCodes, sortBy, sortOrder
+ */
+router.get('/master-dashboard', authorize('master'), outletController.getMasterOutlets);
+
+/**
  * @route   POST /api/v1/outlets/:outletId/assign-super-admin
  * @desc    Assign an unassigned outlet to a super_admin user (master only)
  * @access  Private (master only)

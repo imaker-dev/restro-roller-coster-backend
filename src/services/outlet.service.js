@@ -194,6 +194,331 @@ const outletService = {
   },
 
   /**
+   * Get all outlets for MASTER role.
+   * Comprehensive dashboard view: all outlets in the system with
+   * subscription status, pricing source, super admin info, and metrics.
+   *
+   * Supports: pagination, search, filters (status, subscription_status,
+   * pricing_source, outlet_type, superAdminId, hasQrCodes).
+   *
+   * Optimized: single COUNT + single data query with indexed LEFT JOINs.
+   */
+  async getAllForMaster(filters = {}, pagination = { page: 1, limit: 50 }) {
+    const pool = getPool();
+
+    const {
+      search,
+      isActive,
+      subscriptionStatus,
+      pricingSource,
+      outletType,
+      superAdminId,
+      hasQrCodes,
+      sortBy = 'o.created_at',
+      sortOrder = 'DESC',
+    } = filters;
+
+    const page = Math.max(1, parseInt(pagination.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(pagination.limit, 10) || 50));
+    const offset = (page - 1) * limit;
+
+    // Build WHERE clause
+    let where = 'WHERE o.deleted_at IS NULL';
+    const params = [];
+
+    if (isActive !== undefined) {
+      where += ' AND o.is_active = ?';
+      params.push(isActive === 'true' || isActive === true ? 1 : 0);
+    }
+
+    if (outletType) {
+      where += ' AND o.outlet_type = ?';
+      params.push(outletType);
+    }
+
+    if (subscriptionStatus) {
+      where += ' AND os.status = ?';
+      params.push(subscriptionStatus);
+    }
+
+    if (pricingSource) {
+      where += ' AND os.pricing_source = ?';
+      params.push(pricingSource);
+    }
+
+    if (superAdminId) {
+      where += ` AND o.id IN (
+        SELECT DISTINCT ur.outlet_id FROM user_roles ur
+        INNER JOIN roles r ON r.id = ur.role_id
+        WHERE ur.user_id = ? AND r.slug = 'super_admin' AND ur.is_active = 1 AND ur.outlet_id IS NOT NULL
+        UNION
+        SELECT o2.id FROM outlets o2 WHERE o2.created_by = ? AND o2.deleted_at IS NULL
+      )`;
+      params.push(parseInt(superAdminId, 10), parseInt(superAdminId, 10));
+    }
+
+    if (hasQrCodes !== undefined) {
+      const hasQr = hasQrCodes === 'true' || hasQrCodes === true;
+      where += hasQr
+        ? ` AND EXISTS (SELECT 1 FROM tables tq WHERE tq.outlet_id = o.id AND tq.qr_code IS NOT NULL AND tq.qr_code != '' AND tq.is_active = 1 LIMIT 1)`
+        : ` AND NOT EXISTS (SELECT 1 FROM tables tq WHERE tq.outlet_id = o.id AND tq.qr_code IS NOT NULL AND tq.qr_code != '' AND tq.is_active = 1 LIMIT 1)`;
+    }
+
+    if (search) {
+      where += ' AND (o.name LIKE ? OR o.code LIKE ? OR o.city LIKE ? OR o.phone LIKE ? OR o.email LIKE ?)';
+      const s = `%${search}%`;
+      params.push(s, s, s, s, s);
+    }
+
+    // Valid sort columns whitelist
+    const sortMap = {
+      'o.name': 'o.name',
+      'o.created_at': 'o.created_at',
+      'o.updated_at': 'o.updated_at',
+      'o.is_active': 'o.is_active',
+      'subscription_end': 'os.subscription_end',
+      'subscription_status': 'os.status',
+      'table_count': 'COALESCE(t.table_count, 0)',
+    };
+    const orderCol = sortMap[sortBy] || 'o.created_at';
+    const orderDir = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+
+    // ─── COUNT query ───
+    const countQuery = `SELECT COUNT(*) AS total FROM outlets o
+      LEFT JOIN outlet_subscriptions os ON os.outlet_id = o.id
+      ${where}`;
+    const [[{ total }]] = await pool.query(countQuery, params);
+
+    // ─── DATA query ───
+    // Super admin resolver: picks the first active super_admin via user_roles,
+    // falls back to created_by if that user has a super_admin role.
+    const dataQuery = `
+      SELECT
+        o.id, o.uuid, o.code, o.name, o.legal_name, o.outlet_type,
+        o.address_line1, o.address_line2, o.city, o.state, o.country, o.postal_code,
+        o.phone, o.email, o.gstin, o.fssai_number, o.pan_number,
+        o.logo_url, o.currency_code, o.timezone,
+        o.opening_time, o.closing_time, o.is_24_hours,
+        o.settings, o.is_active, o.created_by, o.created_at, o.updated_at,
+
+        -- Creator
+        COALESCE(creator.name, 'System') AS creator_name,
+        creator.email AS creator_email,
+
+        -- Super admin (resolved via user_roles first, then created_by fallback)
+        sa.super_admin_id,
+        sa.super_admin_name,
+        sa.super_admin_email,
+
+        -- Subscription
+        os.status AS subscription_status,
+        os.subscription_start,
+        os.subscription_end,
+        os.grace_period_end,
+        os.auto_renew,
+        os.pricing_source,
+        os.notes AS subscription_notes,
+
+        -- Resolved pricing (outlet_override > super_admin > global)
+        COALESCE(opo.base_price, sap.base_price, sp.base_price) AS resolved_base_price,
+        COALESCE(opo.gst_percentage, sap.gst_percentage, sp.gst_percentage) AS resolved_gst_percentage,
+        COALESCE(opo.total_price, sap.total_price, sp.total_price) AS resolved_total_price,
+        CASE
+          WHEN opo.id IS NOT NULL THEN 'outlet'
+          WHEN sap.id IS NOT NULL THEN 'super_admin'
+          WHEN sp.id IS NOT NULL THEN 'global'
+          ELSE NULL
+        END AS resolved_pricing_source,
+
+        -- Metrics
+        COALESCE(f.floor_count, 0) AS floor_count,
+        COALESCE(t.table_count, 0) AS table_count,
+        COALESCE(staff.staff_count, 0) AS staff_count,
+        COALESCE(qr_tables.qr_count, 0) AS qr_generated_count,
+        COALESCE(all_tables.total_table_count, 0) AS total_table_count
+
+      FROM outlets o
+
+      -- Creator info
+      LEFT JOIN users creator ON creator.id = o.created_by AND creator.deleted_at IS NULL
+
+      -- Super admin resolver (single row per outlet)
+      LEFT JOIN (
+        SELECT DISTINCT
+          o.id AS outlet_id,
+          u.id AS super_admin_id,
+          u.name AS super_admin_name,
+          u.email AS super_admin_email
+        FROM outlets o
+        INNER JOIN (
+          SELECT o2.id,
+            COALESCE(
+              (SELECT ur.user_id FROM user_roles ur
+                INNER JOIN roles r ON r.id = ur.role_id
+                WHERE ur.outlet_id = o2.id AND r.slug = 'super_admin' AND ur.is_active = 1
+                ORDER BY ur.id LIMIT 1),
+              (SELECT o2.created_by FROM outlets o2b WHERE o2b.id = o2.id AND o2b.created_by IN (
+                SELECT ur2.user_id FROM user_roles ur2 INNER JOIN roles r2 ON r2.id = ur2.role_id
+                WHERE r2.slug = 'super_admin' AND ur2.is_active = 1
+              ))
+            ) AS sa_user_id
+          FROM outlets o2
+          WHERE o2.deleted_at IS NULL
+        ) sa_resolve ON sa_resolve.id = o.id
+        LEFT JOIN users u ON u.id = sa_resolve.sa_user_id AND u.deleted_at IS NULL
+        WHERE sa_resolve.sa_user_id IS NOT NULL
+      ) sa ON sa.outlet_id = o.id
+
+      -- Subscription
+      LEFT JOIN outlet_subscriptions os ON os.outlet_id = o.id
+
+      -- Global pricing (always fetch latest active, not stale current_pricing_id)
+      LEFT JOIN (
+        SELECT id, base_price, gst_percentage, total_price
+        FROM subscription_pricing
+        WHERE is_active = 1
+        ORDER BY effective_from DESC
+        LIMIT 1
+      ) sp ON 1=1
+
+      -- Super admin pricing (linked to resolved SA)
+      LEFT JOIN super_admin_pricing sap ON sap.user_id = sa.super_admin_id AND sap.is_active = 1
+
+      -- Outlet pricing override
+      LEFT JOIN outlet_pricing_override opo ON opo.outlet_id = o.id AND opo.is_active = 1
+
+      -- Floor count
+      LEFT JOIN (
+        SELECT outlet_id, COUNT(*) AS floor_count FROM floors GROUP BY outlet_id
+      ) f ON f.outlet_id = o.id
+
+      -- Table count (active)
+      LEFT JOIN (
+        SELECT outlet_id, COUNT(*) AS table_count FROM tables WHERE is_active = 1 GROUP BY outlet_id
+      ) t ON t.outlet_id = o.id
+
+      -- Staff count (non-customer roles assigned)
+      LEFT JOIN (
+        SELECT ur.outlet_id, COUNT(DISTINCT ur.user_id) AS staff_count
+        FROM user_roles ur
+        INNER JOIN roles r ON r.id = ur.role_id
+        WHERE r.slug IN ('admin', 'manager', 'pos_user', 'cashier', 'captain', 'waiter', 'chef', 'super_admin')
+          AND ur.is_active = 1 AND ur.outlet_id IS NOT NULL
+        GROUP BY ur.outlet_id
+      ) staff ON staff.outlet_id = o.id
+
+      -- QR generated count
+      LEFT JOIN (
+        SELECT outlet_id, COUNT(*) AS qr_count
+        FROM tables
+        WHERE qr_code IS NOT NULL AND qr_code != '' AND is_active = 1
+        GROUP BY outlet_id
+      ) qr_tables ON qr_tables.outlet_id = o.id
+
+      -- Total table count
+      LEFT JOIN (
+        SELECT outlet_id, COUNT(*) AS total_table_count
+        FROM tables
+        WHERE is_active = 1
+        GROUP BY outlet_id
+      ) all_tables ON all_tables.outlet_id = o.id
+
+      ${where}
+      ORDER BY ${orderCol} ${orderDir}
+      LIMIT ? OFFSET ?
+    `;
+
+    const [rows] = await pool.query(dataQuery, [...params, parseInt(limit), parseInt(offset)]);
+
+    // Post-process: nest objects
+    const outlets = rows.map((row) => ({
+      id: row.id,
+      uuid: row.uuid,
+      code: row.code,
+      name: row.name,
+      legalName: row.legal_name,
+      outletType: row.outlet_type,
+      address: {
+        line1: row.address_line1,
+        line2: row.address_line2,
+        city: row.city,
+        state: row.state,
+        country: row.country,
+        postalCode: row.postal_code,
+      },
+      contact: {
+        phone: row.phone,
+        email: row.email,
+        gstin: row.gstin,
+        fssaiNumber: row.fssai_number,
+        panNumber: row.pan_number,
+      },
+      logoUrl: row.logo_url,
+      currencyCode: row.currency_code,
+      timezone: row.timezone,
+      operatingHours: {
+        openingTime: row.opening_time,
+        closingTime: row.closing_time,
+        is24Hours: !!row.is_24_hours,
+      },
+      settings: row.settings,
+      isActive: !!row.is_active,
+      createdBy: {
+        id: row.created_by,
+        name: row.creator_name,
+        email: row.creator_email,
+      },
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+
+      superAdmin: row.super_admin_id ? {
+        id: row.super_admin_id,
+        name: row.super_admin_name,
+        email: row.super_admin_email,
+      } : null,
+
+      subscription: row.subscription_status
+        ? {
+            status: row.subscription_status,
+            startDate: row.subscription_start,
+            endDate: row.subscription_end,
+            gracePeriodEnd: row.grace_period_end,
+            autoRenew: !!row.auto_renew,
+            pricingSource: row.resolved_pricing_source || row.pricing_source || null,
+            notes: row.subscription_notes,
+          }
+        : { status: 'no_subscription' },
+
+      pricing: row.resolved_pricing_source
+        ? {
+            source: row.resolved_pricing_source,
+            basePrice: row.resolved_base_price ? parseFloat(row.resolved_base_price) : null,
+            gstPercentage: row.resolved_gst_percentage ? parseFloat(row.resolved_gst_percentage) : null,
+            totalPrice: row.resolved_total_price ? parseFloat(row.resolved_total_price) : null,
+          }
+        : null,
+
+      metrics: {
+        floorCount: row.floor_count,
+        tableCount: row.table_count,
+        totalTableCount: row.total_table_count,
+        staffCount: row.staff_count,
+        qrGeneratedCount: row.qr_generated_count,
+      },
+    }));
+
+    return {
+      outlets,
+      pagination: {
+        page,
+        limit,
+        total: parseInt(total, 10),
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  },
+
+  /**
    * Get outlet by ID
    */
   async getById(id) {
