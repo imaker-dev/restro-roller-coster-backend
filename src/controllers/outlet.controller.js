@@ -67,7 +67,7 @@ const outletController = {
 
   async getOutletById(req, res, next) {
     try {
-      const outlet = await outletService.getById(req.params.id);
+      const outlet = await outletService.getByIdWithDetails(req.params.id);
       if (!outlet) {
         return res.status(404).json({ success: false, message: 'Outlet not found' });
       }
