@@ -38,7 +38,7 @@ async function runMigration() {
         DELETE opo1 FROM outlet_pricing_override opo1
         INNER JOIN outlet_pricing_override opo2
           ON opo1.outlet_id = opo2.outlet_id
-          AND opo1.updated_at < opo2.updated_at
+          AND (opo1.updated_at < opo2.updated_at OR (opo1.updated_at = opo2.updated_at AND opo1.id < opo2.id))
       `);
       console.log(`- Deduplicated outlet_pricing_override (${dedupOpo.affectedRows || 0} rows removed)`);
 
@@ -75,12 +75,12 @@ async function runMigration() {
     if (!sapBadUk) {
       console.log('✅ super_admin_pricing already fixed — uk_sa_user_active not found.');
     } else {
-      // Deduplicate: keep latest row per user (by updated_at)
+      // Deduplicate: keep latest row per user (by updated_at, then id)
       const [dedupSap] = await connection.query(`
         DELETE sap1 FROM super_admin_pricing sap1
         INNER JOIN super_admin_pricing sap2
           ON sap1.user_id = sap2.user_id
-          AND sap1.updated_at < sap2.updated_at
+          AND (sap1.updated_at < sap2.updated_at OR (sap1.updated_at = sap2.updated_at AND sap1.id < sap2.id))
       `);
       console.log(`- Deduplicated super_admin_pricing (${dedupSap.affectedRows || 0} rows removed)`);
 
