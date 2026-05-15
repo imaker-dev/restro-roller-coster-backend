@@ -42,45 +42,35 @@ async function generateSingleTableQrPDF(table, outletName = '') {
       doc.on('error', reject);
 
       const centerX = A4_W / 2;
-      let y = 60;
+      let y = 50;
 
-      // Outlet name (small header)
+      // Outlet name header
       if (outletName) {
-        doc.fontSize(14).fillColor('#888');
+        doc.fontSize(16).fillColor('#555').font('Helvetica-Bold');
         doc.text(outletName, 40, y, { align: 'center', width: A4_W - 80 });
-        y += 30;
-      }
-
-      // Title
-      doc.fontSize(36).fillColor('#222').font('Helvetica-Bold');
-      doc.text(`Table No. ${table.tableNumber || table.tableId}`, 40, y, {
-        align: 'center',
-        width: A4_W - 80,
-      });
-      y += 55;
-
-      // Subtitle
-      if (table.tableName) {
-        doc.fontSize(16).fillColor('#666').font('Helvetica');
-        doc.text(table.tableName, 40, y, { align: 'center', width: A4_W - 80 });
         y += 35;
       }
 
-      // QR image
+      // Decorative line
+      doc.strokeColor('#ddd').lineWidth(1);
+      doc.moveTo(100, y).lineTo(A4_W - 100, y).stroke();
+      y += 25;
+
+      // QR image (already contains table info + logo)
       const imgPath = resolveQrImagePath(table.qrCodePath);
       if (imgPath) {
-        const imgW = 360;
+        const imgW = 380;
         const imgX = (A4_W - imgW) / 2;
         doc.image(imgPath, imgX, y, { width: imgW });
-        y += imgW * (680 / 600) + 30; // maintain 600:680 aspect ratio
+        y += imgW * (670 / 600) + 25;
       } else {
         doc.fontSize(14).fillColor('#c00');
         doc.text('QR image not found — please regenerate.', 40, y, { align: 'center', width: A4_W - 80 });
       }
 
       // Footer hint
-      doc.fontSize(12).fillColor('#999');
-      doc.text('Scan to Order', 40, A4_H - 50, { align: 'center', width: A4_W - 80 });
+      doc.fontSize(11).fillColor('#bbb').font('Helvetica');
+      doc.text('Scan QR to place your order', 40, A4_H - 45, { align: 'center', width: A4_W - 80 });
 
       doc.end();
     } catch (err) {
@@ -153,22 +143,16 @@ async function generateAllTablesQrPDF(tables, outletName = '') {
         const imgY = cellY + 12;
         doc.image(imgPath, imgX, imgY, { width: QR_SIZE, height: QR_SIZE * (680 / 600) });
 
-        // Table number below image
-        const textY = imgY + QR_SIZE * (680 / 600) + 10;
-        doc.fontSize(18).fillColor('#222').font('Helvetica-Bold');
-        doc.text(`Table ${table.tableNumber || table.tableId}`, cellX, textY, {
+        // Table label below image (only if different from number)
+        const textY = imgY + QR_SIZE * (670 / 600) + 6;
+        const displayLabel = table.tableName && table.tableName !== String(table.tableNumber)
+          ? `${table.tableNumber} — ${table.tableName}`
+          : `Table ${table.tableNumber || table.tableId}`;
+        doc.fontSize(12).fillColor('#444').font('Helvetica-Bold');
+        doc.text(displayLabel, cellX, textY, {
           align: 'center',
           width: CELL_W,
         });
-
-        // Table name (optional)
-        if (table.tableName) {
-          doc.fontSize(11).fillColor('#666').font('Helvetica');
-          doc.text(table.tableName, cellX, textY + 22, {
-            align: 'center',
-            width: CELL_W,
-          });
-        }
       }
 
       doc.end();

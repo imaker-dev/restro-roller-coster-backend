@@ -2495,96 +2495,349 @@ const selfOrderService = {
   },
 
   // ========================
-  // QR CODE GENERATION
+  // QR CODE GENERATION  ←  ROUND-DOT FIX APPLIED HERE
   // ========================
 
   /**
    * Generate or regenerate the self-order QR code for a table.
-   * The QR encodes a static URL containing only outletId and tableId.
+   * Renders round circular dots (data modules) and rounded-rect finder corners.
    * QR codes are permanent and never expire.
    */
-  async generateTableQr(outletId, tableId, { baseUrl } = {}) {
-    const pool = getPool();
-    const QRCode = require('qrcode');
-    const sharp = require('sharp');
-    const path = require('path');
-    const fs = require('fs');
+//   async generateTableQr(outletId, tableId, { baseUrl } = {}) {
+//     const pool = getPool();
+//     const QRCode = require('qrcode');
+//     const sharp = require('sharp');
+//     const path = require('path');
+//     const fs = require('fs');
 
-    const [[table]] = await pool.query(
-      `SELECT t.id, t.table_number, t.name, t.qr_code, t.floor_id,
-              f.name as floor_name
-       FROM tables t
-       LEFT JOIN floors f ON t.floor_id = f.id
-       WHERE t.id = ? AND t.outlet_id = ?`,
-      [tableId, outletId]
-    );
-    if (!table) throw new Error('Table not found');
+//     const [[table]] = await pool.query(
+//       `SELECT t.id, t.table_number, t.name, t.qr_code, t.floor_id,
+//               f.name as floor_name
+//        FROM tables t
+//        LEFT JOIN floors f ON t.floor_id = f.id
+//        WHERE t.id = ? AND t.outlet_id = ?`,
+//       [tableId, outletId]
+//     );
+//     if (!table) throw new Error('Table not found');
 
-    // Build the static self-order URL (outlet + table only — no token)
-    const appUrl = baseUrl || process.env.SELF_ORDER_URL || process.env.APP_URL || 'http://localhost:3000';
-    const selfOrderUrl = `${appUrl}/self-order?outlet=${outletId}&table=${tableId}`;
+//     // Build the static self-order URL (outlet + table only — no token)
+//     const appUrl = baseUrl || process.env.SELF_ORDER_URL || process.env.APP_URL || 'http://localhost:3000';
+//     const selfOrderUrl = `${appUrl}/self-order?outlet=${outletId}&table=${tableId}`;
 
-    // Generate QR image
-    const uploadDir = process.env.UPLOAD_DIR || path.join(__dirname, '../../uploads');
-    const qrDir = path.join(uploadDir, 'self-order-qr');
-    if (!fs.existsSync(qrDir)) {
-      fs.mkdirSync(qrDir, { recursive: true });
+//     // ── Round-dot QR: build SVG with circles, then rasterise via sharp ──────────
+//     const qrMatrix = QRCode.create(selfOrderUrl, { errorCorrectionLevel: 'H' });
+//     const modules  = qrMatrix.modules;
+//     const size     = modules.size;        // number of modules (33-177 depending on URL length)
+//     const QR_PX    = 600;                 // output canvas size in px
+//     const cell     = QR_PX / (size + 4); // +4 adds a natural quiet-zone margin
+//     const margin   = (QR_PX - cell * size) / 2;
+//     const r        = cell * 0.45;         // dot radius — 90% of half-cell gives a visible gap
+
+//     /**
+//      * Returns true when (row, col) falls inside one of the three 8×8
+//      * finder-pattern zones (top-left, top-right, bottom-left).
+//      * Those modules are drawn as rounded rects to keep the pattern scannable.
+//      */
+//     function isFinderZone(row, col) {
+//       const inTL = row < 8 && col < 8;
+//       const inTR = row < 8 && col >= size - 8;
+//       const inBL = row >= size - 8 && col < 8;
+//       return inTL || inTR || inBL;
+//     }
+
+//     let dots = '';
+//     for (let row = 0; row < size; row++) {
+//       for (let col = 0; col < size; col++) {
+//         if (!modules.get(row, col)) continue; // light module — skip
+
+//         const cx = margin + col * cell + cell / 2;
+//         const cy = margin + row * cell + cell / 2;
+
+//         if (isFinderZone(row, col)) {
+//           // Finder corners → rounded squares (keeps scanner-friendly structure)
+//           const sq = cell * 0.85;
+//           const x  = cx - sq / 2;
+//           const y  = cy - sq / 2;
+//           const rx = sq * 0.25;
+//           dots += `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" `
+//                 + `width="${sq.toFixed(2)}" height="${sq.toFixed(2)}" `
+//                 + `rx="${rx.toFixed(2)}" ry="${rx.toFixed(2)}" fill="#000"/>`;
+//         } else {
+//           // Data modules → perfect circles  ← the key visual change
+//           dots += `<circle cx="${cx.toFixed(2)}" cy="${cy.toFixed(2)}" `
+//                 + `r="${r.toFixed(2)}" fill="#000"/>`;
+//         }
+//       }
+//     }
+
+//     const qrSvg = `<svg width="${QR_PX}" height="${QR_PX}" xmlns="http://www.w3.org/2000/svg">
+//   <rect width="${QR_PX}" height="${QR_PX}" fill="#fff"/>
+//   ${dots}
+// </svg>`;
+
+//     const qrBuffer = await sharp(Buffer.from(qrSvg)).png().toBuffer();
+//     // ── End round-dot QR ─────────────────────────────────────────────────────────
+
+//     // Prepare output directory
+//     const uploadDir = process.env.UPLOAD_DIR || path.join(__dirname, '../../uploads');
+//     const qrDir = path.join(uploadDir, 'self-order-qr');
+//     if (!fs.existsSync(qrDir)) {
+//       fs.mkdirSync(qrDir, { recursive: true });
+//     }
+
+//     const filename = `so_qr_${outletId}_${tableId}.png`;
+//     const qrFilePath = path.join(qrDir, filename);
+//     const relativePath = `uploads/self-order-qr/${filename}`;
+
+//     // ─── POS Logo overlay (centered on QR, transparent) ───
+//     const logoPath = path.join(__dirname, '../../public/assets/mainlogo.png');
+//     let logoOverlay = null;
+//     let logoW = 0;
+//     let logoH = 0;
+//     try {
+//       if (fs.existsSync(logoPath)) {
+//         // Trim whitespace, scale to fit 300×120, preserve transparency
+//         const processed = await sharp(logoPath)
+//           .trim()
+//           .resize(300, 120, { fit: 'inside', withoutEnlargement: false })
+//           .png()
+//           .toBuffer();
+//         const meta = await sharp(processed).metadata();
+//         logoOverlay = processed;
+//         logoW = meta.width;
+//         logoH = meta.height;
+//       }
+//     } catch (logoErr) {
+//       // Non-fatal: skip logo if anything goes wrong
+//     }
+
+//     // Add table label below QR — cleaner single-line design
+//     const labelSvg = `
+//       <svg width="600" height="70">
+//         <rect width="600" height="70" fill="white"/>
+//         <text x="300" y="42" font-family="Arial,sans-serif" font-size="26" font-weight="bold"
+//               text-anchor="middle" fill="#222">Table ${table.table_number}</text>
+//         <text x="300" y="62" font-family="Arial,sans-serif" font-size="14"
+//               text-anchor="middle" fill="#999">${table.floor_name ? table.floor_name + ' — ' : ''}Scan to Order</text>
+//       </svg>`;
+
+//     const composites = [
+//       { input: qrBuffer, top: 0, left: 0 },
+//     ];
+//     if (logoOverlay) {
+//       // Exact center on 600×600 QR
+//       composites.push({
+//         input: logoOverlay,
+//         top: Math.round((600 - logoH) / 2),
+//         left: Math.round((600 - logoW) / 2),
+//       });
+//     }
+//     composites.push({ input: Buffer.from(labelSvg), top: 600, left: 0 });
+
+//     await sharp({
+//       create: { width: 600, height: 670, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 1 } }
+//     })
+//       .composite(composites)
+//       .png()
+//       .toFile(qrFilePath);
+
+//     // Step 1: always update qr_code (safe on all MySQL versions)
+//     await pool.query(`UPDATE tables SET qr_code = ? WHERE id = ?`, [relativePath, tableId]);
+
+//     // Step 2: store the URL encoded in the QR (requires migration 071)
+//     // Silently skip if qr_url column not yet present on this server
+//     try {
+//       await pool.query(`UPDATE tables SET qr_url = ? WHERE id = ?`, [selfOrderUrl, tableId]);
+//     } catch (urlErr) {
+//       if (!urlErr.message.includes('Unknown column')) throw urlErr;
+//       // qr_url column missing — run migration 071 on production to fix this
+//     }
+
+//     return {
+//       tableId,
+//       tableNumber: table.table_number,
+//       tableName: table.name,
+//       floorName: table.floor_name,
+//       qrUrl: selfOrderUrl,
+//       qrImagePath: relativePath,
+//     };
+//   },
+
+
+
+async generateTableQr(outletId, tableId, { baseUrl } = {}) {
+  const pool = getPool();
+  const QRCode = require('qrcode');
+  const sharp = require('sharp');
+  const path = require('path');
+  const fs = require('fs');
+ 
+  const [[table]] = await pool.query(
+    `SELECT t.id, t.table_number, t.name, t.qr_code, t.floor_id,
+            f.name as floor_name
+     FROM tables t
+     LEFT JOIN floors f ON t.floor_id = f.id
+     WHERE t.id = ? AND t.outlet_id = ?`,
+    [tableId, outletId]
+  );
+  if (!table) throw new Error('Table not found');
+ 
+  // Build the static self-order URL (outlet + table only — no token)
+  const appUrl = baseUrl || process.env.SELF_ORDER_URL || process.env.APP_URL || 'http://localhost:3000';
+  const selfOrderUrl = `${appUrl}/self-order?outlet=${outletId}&table=${tableId}`;
+ 
+  const QR_PX = 600; // output canvas size in px
+ 
+  // ─── STEP 1: Process logo FIRST so we know its pixel dimensions ────────────
+  const logoPath = path.join(__dirname, '../../public/assets/mainlogo.png');
+  let logoOverlay = null;
+  let logoW = 0;
+  let logoH = 0;
+  try {
+    if (fs.existsSync(logoPath)) {
+      const processed = await sharp(logoPath)
+        .trim()
+        .resize(300, 120, { fit: 'inside', withoutEnlargement: false })
+        .png()
+        .toBuffer();
+      const meta = await sharp(processed).metadata();
+      logoOverlay = processed;
+      logoW = meta.width;
+      logoH = meta.height;
     }
-
-    const filename = `so_qr_${outletId}_${tableId}.png`;
-    const qrFilePath = path.join(qrDir, filename);
-    const relativePath = `uploads/self-order-qr/${filename}`;
-
-    const qrBuffer = await QRCode.toBuffer(selfOrderUrl, {
-      type: 'png',
-      width: 600,
-      margin: 2,
-      color: { dark: '#000000', light: '#FFFFFF' },
-      errorCorrectionLevel: 'H',
+  } catch (logoErr) {
+    // Non-fatal: skip logo if anything goes wrong
+  }
+ 
+  // ─── STEP 2: Compute logo clear-zone in pixel space (centred on QR canvas) ─
+  // A small padding keeps a clean white halo around the logo edges.
+  const logoClearLeft   = logoW > 0 ? Math.round((QR_PX - logoW) / 2)  : 0;
+  const logoClearTop    = logoH > 0 ? Math.round((QR_PX - logoH) / 2)  : 0;
+  const logoClearRight  = logoClearLeft + logoW;
+  const logoClearBottom = logoClearTop  + logoH;
+ 
+  // ─── STEP 3: Build QR matrix and dot geometry ─────────────────────────────
+  const qrMatrix = QRCode.create(selfOrderUrl, { errorCorrectionLevel: 'H' });
+  const modules  = qrMatrix.modules;
+  const size     = modules.size;
+  const cell     = QR_PX / (size + 4); // +4 adds natural quiet-zone margin
+  const margin   = (QR_PX - cell * size) / 2;
+  const r        = cell * 0.45;         // dot radius — 90 % of half-cell
+ 
+  // Extra padding around the logo so no dot edge grazes the logo boundary
+  const logoPad = cell * 0.6;
+ 
+  function isFinderZone(row, col) {
+    const inTL = row < 8 && col < 8;
+    const inTR = row < 8 && col >= size - 8;
+    const inBL = row >= size - 8 && col < 8;
+    return inTL || inTR || inBL;
+  }
+ 
+  // ─── STEP 4: Build SVG — skip dots that fall inside the logo clear-zone ────
+  let dots = '';
+  for (let row = 0; row < size; row++) {
+    for (let col = 0; col < size; col++) {
+      if (!modules.get(row, col)) continue; // light module — skip
+ 
+      const cx = margin + col * cell + cell / 2;
+      const cy = margin + row * cell + cell / 2;
+ 
+      // Skip this dot if its circle overlaps the logo bounding box (+padding)
+      if (
+        logoW > 0 &&
+        cx + r > logoClearLeft   - logoPad &&
+        cx - r < logoClearRight  + logoPad &&
+        cy + r > logoClearTop    - logoPad &&
+        cy - r < logoClearBottom + logoPad
+      ) {
+        continue; // ← dot suppressed → logo stays fully visible
+      }
+ 
+      if (isFinderZone(row, col)) {
+        // Finder corners → rounded squares (keeps scanner-friendly structure)
+        const sq = cell * 0.85;
+        const x  = cx - sq / 2;
+        const y  = cy - sq / 2;
+        const rx = sq * 0.25;
+        dots += `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" `
+              + `width="${sq.toFixed(2)}" height="${sq.toFixed(2)}" `
+              + `rx="${rx.toFixed(2)}" ry="${rx.toFixed(2)}" fill="#000"/>`;
+      } else {
+        // Data modules → perfect circles
+        dots += `<circle cx="${cx.toFixed(2)}" cy="${cy.toFixed(2)}" `
+              + `r="${r.toFixed(2)}" fill="#000"/>`;
+      }
+    }
+  }
+ 
+  const qrSvg = `<svg width="${QR_PX}" height="${QR_PX}" xmlns="http://www.w3.org/2000/svg">
+  <rect width="${QR_PX}" height="${QR_PX}" fill="#fff"/>
+  ${dots}
+</svg>`;
+ 
+  const qrBuffer = await sharp(Buffer.from(qrSvg)).png().toBuffer();
+  // ─── End round-dot QR (logo zone cleared) ─────────────────────────────────
+ 
+  // Prepare output directory
+  const uploadDir = process.env.UPLOAD_DIR || path.join(__dirname, '../../uploads');
+  const qrDir = path.join(uploadDir, 'self-order-qr');
+  if (!fs.existsSync(qrDir)) {
+    fs.mkdirSync(qrDir, { recursive: true });
+  }
+ 
+  const filename    = `so_qr_${outletId}_${tableId}.png`;
+  const qrFilePath  = path.join(qrDir, filename);
+  const relativePath = `uploads/self-order-qr/${filename}`;
+ 
+  // Add table label below QR
+  const labelSvg = `
+    <svg width="600" height="70">
+      <rect width="600" height="70" fill="white"/>
+      <text x="300" y="42" font-family="Arial,sans-serif" font-size="26" font-weight="bold"
+            text-anchor="middle" fill="#222">Table ${table.table_number}</text>
+      <text x="300" y="62" font-family="Arial,sans-serif" font-size="14"
+            text-anchor="middle" fill="#999">${table.floor_name ? table.floor_name + ' — ' : ''}Scan to Order</text>
+    </svg>`;
+ 
+  // ─── STEP 5: Composite — QR base → logo (centred) → label ─────────────────
+  const composites = [
+    { input: qrBuffer, top: 0, left: 0 },
+  ];
+  if (logoOverlay) {
+    composites.push({
+      input: logoOverlay,
+      top:  Math.round((QR_PX - logoH) / 2),
+      left: Math.round((QR_PX - logoW) / 2),
     });
-
-    // Add table label below QR
-    const labelSvg = `
-      <svg width="600" height="80">
-        <rect width="600" height="80" fill="white"/>
-        <text x="300" y="35" font-family="Arial,sans-serif" font-size="28" font-weight="bold"
-              text-anchor="middle" fill="#222">Table ${table.table_number}</text>
-        <text x="300" y="65" font-family="Arial,sans-serif" font-size="18"
-              text-anchor="middle" fill="#666">${table.floor_name || ''} — Scan to Order</text>
-      </svg>`;
-
-    const composited = await sharp({
-      create: { width: 600, height: 680, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 1 } }
-    })
-      .composite([
-        { input: qrBuffer, top: 0, left: 0 },
-        { input: Buffer.from(labelSvg), top: 600, left: 0 },
-      ])
-      .png()
-      .toFile(qrFilePath);
-
-    // Step 1: always update qr_code (safe on all MySQL versions)
-    await pool.query(`UPDATE tables SET qr_code = ? WHERE id = ?`, [relativePath, tableId]);
-
-    // Step 2: store the URL encoded in the QR (requires migration 071)
-    // Silently skip if qr_url column not yet present on this server
-    try {
-      await pool.query(`UPDATE tables SET qr_url = ? WHERE id = ?`, [selfOrderUrl, tableId]);
-    } catch (urlErr) {
-      if (!urlErr.message.includes('Unknown column')) throw urlErr;
-      // qr_url column missing — run migration 071 on production to fix this
-    }
-
-    return {
-      tableId,
-      tableNumber: table.table_number,
-      tableName: table.name,
-      floorName: table.floor_name,
-      qrUrl: selfOrderUrl,
-      qrImagePath: relativePath,
-    };
-  },
-
+  }
+  composites.push({ input: Buffer.from(labelSvg), top: QR_PX, left: 0 });
+ 
+  await sharp({
+    create: { width: 600, height: 670, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 1 } }
+  })
+    .composite(composites)
+    .png()
+    .toFile(qrFilePath);
+ 
+  // Update DB
+  await pool.query(`UPDATE tables SET qr_code = ? WHERE id = ?`, [relativePath, tableId]);
+ 
+  try {
+    await pool.query(`UPDATE tables SET qr_url = ? WHERE id = ?`, [selfOrderUrl, tableId]);
+  } catch (urlErr) {
+    if (!urlErr.message.includes('Unknown column')) throw urlErr;
+  }
+ 
+  return {
+    tableId,
+    tableNumber: table.table_number,
+    tableName:   table.name,
+    floorName:   table.floor_name,
+    qrUrl:       selfOrderUrl,
+    qrImagePath: relativePath,
+  };
+},
   /**
    * Bulk generate QR codes for all tables in an outlet
    */
@@ -2901,11 +3154,6 @@ const selfOrderService = {
    * 1. Session without order: expires after idle_timeout_minutes (default 20)
    * 2. Session with active order: stays active (order status not completed/cancelled)
    * 3. Session after order completion: expires after completion_buffer_minutes (default 5)
-   * 
-   * This method is called:
-   * - On initSession (to clean up before creating/resuming)
-   * - By a scheduled job (cron) for background cleanup
-   * - When order status changes to completed/cancelled
    */
   async expireIdleSessions(outletId = null, tableId = null) {
     const pool = getPool();
@@ -2923,7 +3171,6 @@ const selfOrderService = {
     }
 
     // Rule 1: Sessions without order that exceeded idle timeout (default 10 min)
-    // Use updated_at (not created_at) so any activity resets the idle timer
     const expiredIdleCount = await pool.query(
       `UPDATE self_order_sessions s
        SET s.status = 'expired', s.updated_at = NOW()
