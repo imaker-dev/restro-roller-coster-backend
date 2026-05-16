@@ -1492,7 +1492,7 @@ const printerService = {
     const eqDash = '='.repeat(w);
     lines.push(eqDash);
     lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HW + 'GRAND TOTAL');
-    lines.push((billData.currencySymbol || 'Rs') + billData.grandTotal);
+    lines.push((billData.currencySymbol || 'Rs. ') + billData.grandTotal);
     // Restore FONT_A + zero char spacing + body spacing after DOUBLE_HW resets print mode
     lines.push(cmd.NORMAL + cmd.BOLD_OFF + FONT_A + CHAR_SPACE_0 + LS_BODY + cmd.ALIGN_LEFT + eqDash);
 

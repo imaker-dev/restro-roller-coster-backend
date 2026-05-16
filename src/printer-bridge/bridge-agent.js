@@ -27,7 +27,7 @@ const BINARY_CONTENT_PREFIX = 'b64:';
 const CONFIG = {
   // Cloud server URL (your backend API)
   // CLOUD_URL: process.env.CLOUD_URL || 'http://localhost:3005',
-  CLOUD_URL: process.env.CLOUD_URL || 'https://focal-suites-applicants-insert.trycloudflare.com',
+  CLOUD_URL: process.env.CLOUD_URL || 'https://demo.imakerrestro.com',
   
   // Outlet ID from your system
   OUTLET_ID: process.env.OUTLET_ID || '43',
@@ -80,41 +80,134 @@ CONFIG.API_KEY = String(CONFIG.API_KEY || '').trim();
 // PRINTER COMMUNICATION
 // ========================
 
-/**
- * Send raw data to thermal printer via TCP socket
- */
-function sendToPrinter(printerIp, printerPort, data) {
-  return new Promise((resolve, reject) => {
-    const client = new net.Socket();
-    let connected = false;
-    
-    // Set timeout — 5s is enough for local network printers; faster failure detection
-    client.setTimeout(10000);
-    
-    client.connect(printerPort, printerIp, () => {
-      connected = true;
-      console.log(`  Connected to printer ${printerIp}:${printerPort}`);
-      client.write(data);
-      client.end();
+// ─── Persistent Printer Socket Pool ────────────────────────────────────────
+// Keeps TCP sockets open to thermal printers, eliminating ~200-500ms handshake
+// per job. Sockets auto-reconnect on error and close after 30s idle.
+
+class PrinterSocketPool {
+  constructor() {
+    this.sockets = new Map(); // key "ip:port" → { socket, lastUsed, busy }
+    this.idleTimeoutMs = 30000;
+    this.connectTimeoutMs = 3000;
+    this._cleanupTimer = setInterval(() => this._cleanupIdle(), 10000);
+  }
+
+  _key(ip, port) { return `${ip}:${port}`; }
+
+  async send(ip, port, data) {
+    const key = this._key(ip, port);
+    const entry = this.sockets.get(key);
+
+    // Reuse healthy open socket
+    if (entry && !entry.socket.destroyed && entry.socket.readyState === 'open') {
+      return this._write(entry, data);
+    }
+
+    // Destroy stale entry
+    if (entry) {
+      this._destroy(entry);
+      this.sockets.delete(key);
+    }
+
+    // Create new persistent connection
+    return new Promise((resolve, reject) => {
+      const socket = new net.Socket();
+      let resolved = false;
+
+      socket.setTimeout(this.connectTimeoutMs);
+
+      socket.connect(port, ip, () => {
+        socket.setTimeout(0); // connected — clear connect timeout
+        const newEntry = { socket, lastUsed: Date.now(), busy: false };
+        this.sockets.set(key, newEntry);
+        this._write(newEntry, data).then(resolve).catch(reject);
+      });
+
+      socket.on('error', (err) => {
+        if (!resolved) { resolved = true; reject(err); }
+        this._remove(key);
+      });
+
+      socket.on('timeout', () => {
+        if (!resolved) { resolved = true; reject(new Error('Connection timeout')); }
+        socket.destroy();
+        this._remove(key);
+      });
+
+      socket.on('close', () => { this._remove(key); });
     });
-    
-    client.on('close', () => {
-      if (connected) {
-        resolve();
+  }
+
+  _write(entry, data) {
+    return new Promise((resolve, reject) => {
+      const socket = entry.socket;
+      if (socket.destroyed || socket.readyState !== 'open') {
+        return reject(new Error('Socket not connected'));
+      }
+
+      entry.busy = true;
+      let resolved = false;
+
+      const onError = (err) => {
+        if (!resolved) { resolved = true; reject(err); }
+        entry.busy = false;
+      };
+
+      socket.once('error', onError);
+
+      const flushed = socket.write(data, (err) => {
+        if (err) {
+          if (!resolved) { resolved = true; reject(err); }
+        } else {
+          if (!resolved) { resolved = true; resolve(); }
+        }
+        entry.busy = false;
+        entry.lastUsed = Date.now();
+        socket.off('error', onError);
+      });
+
+      if (!flushed) {
+        socket.once('drain', () => { entry.lastUsed = Date.now(); });
       }
     });
-    
-    client.on('error', (err) => {
-      console.error(`  Printer error: ${err.message}`);
-      reject(err);
-    });
-    
-    client.on('timeout', () => {
-      console.error('  Printer connection timeout');
-      client.destroy();
-      reject(new Error('Connection timeout'));
-    });
-  });
+  }
+
+  _destroy(entry) {
+    try { entry.socket.destroy(); } catch (e) {}
+  }
+
+  _remove(key) {
+    const entry = this.sockets.get(key);
+    if (entry) {
+      this._destroy(entry);
+      this.sockets.delete(key);
+    }
+  }
+
+  _cleanupIdle() {
+    const now = Date.now();
+    for (const [key, entry] of this.sockets) {
+      if (!entry.busy && (now - entry.lastUsed > this.idleTimeoutMs)) {
+        this._destroy(entry);
+        this.sockets.delete(key);
+      }
+    }
+  }
+
+  closeAll() {
+    clearInterval(this._cleanupTimer);
+    for (const entry of this.sockets.values()) this._destroy(entry);
+    this.sockets.clear();
+  }
+}
+
+const printerPool = new PrinterSocketPool();
+
+/**
+ * Send raw data to thermal printer via TCP socket (uses persistent pool)
+ */
+function sendToPrinter(printerIp, printerPort, data) {
+  return printerPool.send(printerIp, printerPort, data);
 }
 
 function decodeJobContent(content) {
@@ -560,6 +653,7 @@ process.on('SIGINT', () => {
   console.log('\n\n🔴 Shutting down bridge agent...');
   console.log(`   Jobs processed: ${jobsProcessed}`);
   console.log(`   Jobs failed: ${jobsFailed}`);
+  printerPool.closeAll();
   process.exit(0);
 });
 
