@@ -655,7 +655,7 @@ const itemService = {
   // ========================
 
   async getVisibleItems(outletId, context = {}) {
-    const { categoryId, floorId, sectionId, timeSlotId } = context;
+    const { categoryId, floorId, sectionId, timeSlotId, serviceType } = context;
     const pool = getPool();
 
     let query = `
@@ -670,6 +670,12 @@ const itemService = {
     if (categoryId) {
       query += ' AND i.category_id = ?';
       params.push(categoryId);
+    }
+
+    // Service type filter (restaurant/bar/both)
+    if (serviceType && serviceType !== 'all') {
+      query += ` AND i.service_type = ?`;
+      params.push(serviceType);
     }
 
     // Floor filter - skip if item is global

@@ -379,7 +379,7 @@ const categoryService = {
 
     // Service type filter (restaurant/bar/both)
     if (serviceType && serviceType !== 'all') {
-      query += ` AND (c.service_type = ? OR c.service_type = 'both')`;
+      query += ` AND c.service_type = ?`;
       params.push(serviceType);
     }
 
