@@ -445,7 +445,7 @@ router.post('/cash-drawer/:outletId/close', authorize('super_admin', 'admin', 'm
  * @access  Private (cashier, pos_user, manager)
  * @query   floorId - Optional floor ID (defaults to user's assigned floor)
  */
-router.get('/cash-drawer/:outletId/status', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user'), orderController.getCashDrawerStatus);
+router.get('/cash-drawer/:outletId/status', authorize('super_admin', 'admin', 'manager', 'cashier', 'pos_user', 'captain'), orderController.getCashDrawerStatus);
 
 // ========================
 // OUTSIDE COLLECTIONS
