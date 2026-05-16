@@ -237,6 +237,7 @@ const menuEngineService = {
           imageUrl: prefixImageUrl(category.image_url),
           icon: category.icon,
           colorCode: category.color_code,
+          service_type: category.service_type || 'both',
           itemCount: categoryItems.length,
           items: categoryItems
         });

@@ -674,7 +674,7 @@ const itemService = {
 
     // Service type filter (restaurant/bar/both)
     if (serviceType && serviceType !== 'all') {
-      query += ` AND i.service_type = ?`;
+      query += ` AND (i.service_type = ? OR i.service_type = 'both')`;
       params.push(serviceType);
     }
 
