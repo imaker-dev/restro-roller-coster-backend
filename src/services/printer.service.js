@@ -1677,7 +1677,7 @@ const printerService = {
     // ── 7. GRAND TOTAL — [MPOS tweak 3] single bold line, no double-HW ──
     const eqDash = '='.repeat(w);
     lines.push(eqDash);
-    lines.push(cmd.BOLD_ON + this.padBetween('GRAND TOTAL:', (billData.currencySymbol || 'Rs') + billData.grandTotal, w) + cmd.BOLD_OFF);
+    lines.push(cmd.BOLD_ON + this.padBetween('GRAND TOTAL:', (billData.currencySymbol || 'Rs. ') + billData.grandTotal, w) + cmd.BOLD_OFF);
     lines.push(eqDash);
 
     // ── 8. PAYMENT (full width) ─────────────────
