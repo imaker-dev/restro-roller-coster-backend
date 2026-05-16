@@ -1350,23 +1350,21 @@ const printerService = {
 
     // ── 1. HEADER ───────────────────────────────
     if (billData.isDuplicate) {
-      lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + '*** DUPLICATE ***');
+      lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + '*** DUPLICATE ***' + cmd.BOLD_OFF);
       if (billData.duplicateNumber) lines.push('Copy #' + billData.duplicateNumber);
-      lines.push(cmd.BOLD_OFF);
     }
 
     // Restaurant name (double height, bold, centered)
-    lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HEIGHT + (billData.outletName || 'Restaurant'));
-    // Switch to FONT_A + zero char spacing + body line spacing — stays for entire bill body
-    lines.push(cmd.NORMAL + cmd.BOLD_OFF + FONT_A + CHAR_SPACE_0 + LS_BODY);
+    // Reset appended inline — no separate line entry, avoids blank line after name
+    lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HEIGHT + (billData.outletName || 'Restaurant') + cmd.NORMAL + cmd.BOLD_OFF + FONT_A + CHAR_SPACE_0 + LS_BODY);
     if (billData.outletAddress) lines.push(billData.outletAddress);
     if (billData.outletPhone) lines.push('Ph: ' + billData.outletPhone);
     if (billData.outletGstin) lines.push('GSTIN: ' + billData.outletGstin);
 
     // ── 2. TOKEN NUMBER (prominent, centered, large) ────
     if (billData.tokenNumber) {
-      lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HW + 'TOKEN: ' + billData.tokenNumber);
-      lines.push(cmd.NORMAL + cmd.BOLD_OFF + FONT_A + CHAR_SPACE_0 + LS_BODY);
+      // Reset appended inline — no separate line entry, avoids blank line after token
+      lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HW + 'TOKEN: ' + billData.tokenNumber + cmd.NORMAL + cmd.BOLD_OFF + FONT_A + CHAR_SPACE_0 + LS_BODY);
     }
 
     // ── 3. BILL META ────────────────────────────
@@ -1473,7 +1471,7 @@ const printerService = {
         const discAmt = parseFloat(disc.amount).toFixed(2);
         let label = 'Discount';
         if (disc.type === 'percentage') label += ' (' + disc.value + '%)';
-        else if (disc.value > 0) label += ' (Flat ' + (billData.currencySymbol || 'Rs') + parseFloat(disc.value).toFixed(0) + ')';
+        else if (disc.value > 0) label += ' (Flat ' + (billData.currencySymbol || 'Rs. ') + parseFloat(disc.value).toFixed(0) + ')';
         lines.push(this.padBetween(label + ':', '-' + discAmt, w));
       }
     } else if (billData.discount) {
@@ -1498,8 +1496,8 @@ const printerService = {
 
     // ── 7. PAYMENT (full width) ─────────────────
     if (billData.dueAmount && parseFloat(billData.dueAmount) > 0) {
-      lines.push(this.padBetween('PAID:', (billData.currencySymbol || 'Rs') + parseFloat(billData.paidAmount || 0).toFixed(2), w));
-      lines.push(this.padBetween('DUE:', (billData.currencySymbol || 'Rs') + parseFloat(billData.dueAmount).toFixed(2), w));
+      lines.push(this.padBetween('PAID:', (billData.currencySymbol || 'Rs. ') + parseFloat(billData.paidAmount || 0).toFixed(2), w));
+      lines.push(this.padBetween('DUE:', (billData.currencySymbol || 'Rs. ') + parseFloat(billData.dueAmount).toFixed(2), w));
       lines.push(dash);
     }
 
@@ -1510,7 +1508,7 @@ const printerService = {
         for (const sp of billData.splitBreakdown) {
           lines.push(this.padBetween(
             (sp.paymentMode || '').toUpperCase(),
-            (billData.currencySymbol || 'Rs') + parseFloat(sp.amount || 0).toFixed(2),
+            (billData.currencySymbol || 'Rs. ') + parseFloat(sp.amount || 0).toFixed(2),
             w
           ));
         }
@@ -1541,11 +1539,11 @@ const printerService = {
 
     // ── 1. HEADER ───────────────────────────────
     if (billData.isDuplicate) {
-      lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + '*** DUPLICATE ***');
+      lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + '*** DUPLICATE ***' + cmd.BOLD_OFF);
       if (billData.duplicateNumber) lines.push('Copy #' + billData.duplicateNumber);
-      lines.push(cmd.BOLD_OFF);
     }
 
+    // Restaurant name — reset appended inline, avoids blank line after name
     lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HEIGHT + (billData.outletName || 'Restaurant') + cmd.NORMAL + cmd.BOLD_OFF + FONT_A + CHAR_SPACE_0 + LS_BODY);
     if (billData.outletAddress) lines.push(billData.outletAddress);
     if (billData.outletPhone) lines.push('Ph: ' + billData.outletPhone);
@@ -1659,7 +1657,7 @@ const printerService = {
         const discAmt = parseFloat(disc.amount).toFixed(2);
         let label = 'Discount';
         if (disc.type === 'percentage') label += ' (' + disc.value + '%)';
-        else if (disc.value > 0) label += ' (Flat ' + (billData.currencySymbol || 'Rs') + parseFloat(disc.value).toFixed(0) + ')';
+        else if (disc.value > 0) label += ' (Flat ' + (billData.currencySymbol || 'Rs. ') + parseFloat(disc.value).toFixed(0) + ')';
         lines.push(this.padBetween(label + ':', '-' + discAmt, w));
       }
     } else if (billData.discount) {
@@ -1682,8 +1680,8 @@ const printerService = {
 
     // ── 8. PAYMENT (full width) ─────────────────
     if (billData.dueAmount && parseFloat(billData.dueAmount) > 0) {
-      lines.push(this.padBetween('PAID:', (billData.currencySymbol || 'Rs') + parseFloat(billData.paidAmount || 0).toFixed(2), w));
-      lines.push(this.padBetween('DUE:', (billData.currencySymbol || 'Rs') + parseFloat(billData.dueAmount).toFixed(2), w));
+      lines.push(this.padBetween('PAID:', (billData.currencySymbol || 'Rs. ') + parseFloat(billData.paidAmount || 0).toFixed(2), w));
+      lines.push(this.padBetween('DUE:', (billData.currencySymbol || 'Rs. ') + parseFloat(billData.dueAmount).toFixed(2), w));
       lines.push(dash);
     }
 
@@ -1694,7 +1692,7 @@ const printerService = {
         for (const sp of billData.splitBreakdown) {
           lines.push(this.padBetween(
             (sp.paymentMode || '').toUpperCase(),
-            (billData.currencySymbol || 'Rs') + parseFloat(sp.amount || 0).toFixed(2),
+            (billData.currencySymbol || 'Rs. ') + parseFloat(sp.amount || 0).toFixed(2),
             w
           ));
         }
