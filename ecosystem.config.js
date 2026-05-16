@@ -42,9 +42,9 @@ module.exports = {
      env_production: {
   NODE_ENV: 'production',
   UV_THREADPOOL_SIZE: 16,
-  DB_CONNECTION_LIMIT: 10,    // ← reduce from 20 to 10
-  DB_QUEUE_LIMIT: 100,        // ← reduce from 200 to 100
-  LOG_LEVEL: 'warn',          // ← saves RAM
+  DB_CONNECTION_LIMIT: 20,    // 6 workers × 20 = 120 (safe under MySQL 300)
+  DB_QUEUE_LIMIT: 200,        // buffer for burst traffic
+  LOG_LEVEL: 'warn',          // saves RAM + I/O at 1000+ req/s
 },
       error_file: './logs/pm2-error.log',
       out_file: './logs/pm2-out.log',
