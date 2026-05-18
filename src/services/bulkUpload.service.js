@@ -616,11 +616,18 @@ const bulkUploadService = {
 
   async _invalidateCaches(outletId) {
     try {
-      await cache.del(`categories:${outletId}:false`);
-      await cache.del(`categories:${outletId}:true`);
-      await cache.del(`items:${outletId}`);
-      await cache.del(`addon_groups:${outletId}`);
-      await cache.del(`kitchen_stations:${outletId}`);
+      await Promise.all([
+        cache.del(`categories:${outletId}:false`),
+        cache.del(`categories:${outletId}:true`),
+        cache.del(`items:${outletId}`),
+        cache.del(`addon_groups:${outletId}`),
+        cache.del(`kitchen_stations:${outletId}`),
+        cache.delPattern(`menu:build:${outletId}:*`),
+        cache.delPattern(`menu:captain:${outletId}:*`),
+        cache.delPattern(`menu:search:${outletId}:*`),
+        cache.delPattern(`self_order:menu:${outletId}:*`),
+        cache.delPattern(`report:${outletId}:menu-captain:*`),
+      ]);
     } catch (e) {
       logger.warn('Cache invalidation error:', e);
     }

@@ -352,8 +352,14 @@ const priceRuleService = {
   },
 
   async invalidateCache(outletId) {
-    await cache.del(`price_rules:${outletId}`);
-    await cache.del(`menu:${outletId}`);
+    await Promise.all([
+      cache.del(`price_rules:${outletId}`),
+      cache.delPattern(`menu:build:${outletId}:*`),
+      cache.delPattern(`menu:captain:${outletId}:*`),
+      cache.delPattern(`menu:search:${outletId}:*`),
+      cache.delPattern(`self_order:menu:${outletId}:*`),
+      cache.delPattern(`report:${outletId}:menu-captain:*`),
+    ]);
   }
 };
 

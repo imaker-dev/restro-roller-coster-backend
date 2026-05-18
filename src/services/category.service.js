@@ -445,8 +445,15 @@ const categoryService = {
   },
 
   async invalidateCache(outletId) {
-    await cache.del(`categories:${outletId}:true`);
-    await cache.del(`categories:${outletId}:false`);
+    await Promise.all([
+      cache.del(`categories:${outletId}:true`),
+      cache.del(`categories:${outletId}:false`),
+      cache.delPattern(`menu:build:${outletId}:*`),
+      cache.delPattern(`menu:captain:${outletId}:*`),
+      cache.delPattern(`menu:search:${outletId}:*`),
+      cache.delPattern(`self_order:menu:${outletId}:*`),
+      cache.delPattern(`report:${outletId}:menu-captain:*`),
+    ]);
   }
 };
 
