@@ -51,6 +51,29 @@ function markDirectTcpOk(ip, port) {
   directTcpFailures.delete(`${ip}:${port || 9100}`);
 }
 
+// USB direct print health cache: if write fails, skip for 30s to avoid queuing delay
+// USB failures are immediate (no timeout) so cooldown can be short
+const DIRECT_USB_COOLDOWN_MS = 30000; // 30 seconds
+const directUsbFailures = new Map(); // key: usbPath → timestamp of last failure
+
+function isDirectUsbHealthy(usbPath) {
+  const lastFail = directUsbFailures.get(usbPath);
+  if (!lastFail) return true;
+  if (Date.now() - lastFail > DIRECT_USB_COOLDOWN_MS) {
+    directUsbFailures.delete(usbPath);
+    return true;
+  }
+  return false;
+}
+
+function markDirectUsbFailed(usbPath) {
+  directUsbFailures.set(usbPath, Date.now());
+}
+
+function markDirectUsbOk(usbPath) {
+  directUsbFailures.delete(usbPath);
+}
+
 const BRIDGE_STATUS_STALE_SECONDS = parseInt(process.env.BRIDGE_STATUS_STALE_SECONDS, 10) || 90;
 const BRIDGE_ONLINE_WINDOW_SECONDS = parseInt(process.env.BRIDGE_ONLINE_WINDOW_SECONDS, 10) || 90;
 const DEFAULT_PRINT_LOGO_PATH = path.resolve(__dirname, '../../public/Whatsapp.bmp');
@@ -176,6 +199,8 @@ const printerService = {
     const ipAddress = data.ipAddress || data.ip_address || null;
     const connectionType = data.connectionType || data.connection_type || 'network';
     const deviceId = data.deviceId || data.device_id || null; // Mobile POS device identifier
+    const usbPath = data.usbPath || data.usb_path || null; // USB device path: /dev/usb/lp0 or \\.\COM1
+    const printerName = data.printerName || data.printer_name || null; // Windows printer name: "EPSON TM-T88IV Receipt"
     const paperWidth = data.paperWidth || data.paper_width || '80mm';
     const charactersPerLine = data.charactersPerLine || data.characters_per_line || 48;
     const supportsCashDrawer = data.supportsCashDrawer || data.supports_cash_drawer || false;
@@ -210,14 +235,15 @@ const printerService = {
       const [result] = await connection.query(
         `INSERT INTO printers (
           uuid, outlet_id, name, code, printer_type, station,
-          station_id, ip_address, port,
+          station_id, ip_address, port, usb_path, printer_name,
           connection_type, device_id, paper_width, characters_per_line,
           supports_cash_drawer, supports_cutter, supports_logo
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           uuid, outletId, data.name, code, printerType,
           stationValue, stationId,
-          ipAddress, data.port || 9100, connectionType, deviceId,
+          ipAddress, data.port || 9100, usbPath, printerName,
+          connectionType, deviceId,
           paperWidth, charactersPerLine,
           supportsCashDrawer, supportsCutter,
           supportsLogo
@@ -354,7 +380,7 @@ const printerService = {
     // Priority 5: Final fallback — any active network printer for this outlet
     // Ensures jobs always get a printer_id so the bridge receives ip_address in the poll response
     [printers] = await pool.query(
-      `SELECT * FROM printers WHERE outlet_id = ? AND is_active = 1 AND ip_address IS NOT NULL ORDER BY id LIMIT 1`,
+      `SELECT * FROM printers WHERE outlet_id = ? AND is_active = 1 AND (ip_address IS NOT NULL OR connection_type IN ('usb','windows_printer')) ORDER BY id LIMIT 1`,
       [outletId]
     );
     if (printers[0]) {
@@ -483,7 +509,7 @@ const printerService = {
     const params = [];
 
     const fields = ['name', 'code', 'printer_type', 'station', 'station_id',
-                    'ip_address', 'port', 'connection_type', 'device_id',
+                    'ip_address', 'port', 'usb_path', 'printer_name', 'connection_type', 'device_id',
                     'paper_width', 'characters_per_line', 'supports_cash_drawer',
                     'supports_cutter', 'supports_logo', 'is_active'];
     
@@ -601,7 +627,8 @@ const printerService = {
     const pool = getPool();
     
     const [jobs] = await pool.query(
-      `SELECT pj.*, p.name as printer_name, p.ip_address, p.port
+      `SELECT pj.*, p.name as printer_name, p.ip_address, p.port,
+              p.usb_path, p.printer_name as windows_printer_name, p.connection_type
        FROM print_jobs pj
        LEFT JOIN printers p ON pj.printer_id = p.id
        WHERE pj.outlet_id = ? 
@@ -620,7 +647,8 @@ const printerService = {
     const pool = getPool();
     
     const [jobs] = await pool.query(
-      `SELECT pj.*, p.name as printer_name, p.ip_address, p.port
+      `SELECT pj.*, p.name as printer_name, p.ip_address, p.port,
+              p.usb_path, p.printer_name as windows_printer_name, p.connection_type
        FROM print_jobs pj
        LEFT JOIN printers p ON pj.printer_id = p.id
        WHERE pj.outlet_id = ? 
@@ -652,7 +680,8 @@ const printerService = {
     const pool = getPool();
     
     const [jobs] = await pool.query(
-      `SELECT pj.*, p.name as printer_name, p.ip_address, p.port
+      `SELECT pj.*, p.name as printer_name, p.ip_address, p.port,
+              p.usb_path, p.printer_name as windows_printer_name, p.connection_type
        FROM print_jobs pj
        LEFT JOIN printers p ON pj.printer_id = p.id
        WHERE pj.outlet_id = ? 
@@ -685,7 +714,8 @@ const printerService = {
     const pool = getPool();
 
     const [jobs] = await pool.query(
-      `SELECT pj.*, p.name as printer_name, p.ip_address, p.port
+      `SELECT pj.*, p.name as printer_name, p.ip_address, p.port,
+              p.usb_path, p.printer_name as windows_printer_name, p.connection_type
        FROM print_jobs pj
        LEFT JOIN printers p ON pj.printer_id = p.id
        WHERE pj.outlet_id = ?
@@ -1027,12 +1057,14 @@ const printerService = {
       // Join kitchen_stations AND counters to get all station_type / counter_type mappings
       [rows] = await pool.query(
         `SELECT p.id as printer_id, p.station, p.ip_address, p.port,
+                p.usb_path, p.printer_name, p.connection_type,
                 ks.station_type as ks_station_type,
                 c.counter_type as counter_type
          FROM printers p
          LEFT JOIN kitchen_stations ks ON ks.printer_id = p.id AND ks.is_active = 1
          LEFT JOIN counters c ON c.printer_id = p.id AND c.is_active = 1
-         WHERE p.outlet_id = ? AND p.is_active = 1 AND p.ip_address IS NOT NULL
+         WHERE p.outlet_id = ? AND p.is_active = 1
+           AND (p.ip_address IS NOT NULL OR p.connection_type IN ('usb','windows_printer'))
          ORDER BY p.station ASC, p.id ASC`,
         [outletId]
       );
@@ -1060,14 +1092,13 @@ const printerService = {
       const placeholders = uniqueStations.map(() => '?').join(',');
       [rows] = await pool.query(
         `SELECT p.id as printer_id, p.station, p.ip_address, p.port,
+                p.usb_path, p.printer_name, p.connection_type,
                 ks.station_type as ks_station_type,
                 c.counter_type as counter_type
          FROM printers p
          LEFT JOIN kitchen_stations ks ON ks.printer_id = p.id AND ks.is_active = 1
          LEFT JOIN counters c ON c.printer_id = p.id AND c.is_active = 1
-         WHERE p.outlet_id = ?
-           AND p.is_active = 1
-           AND p.station IN (${placeholders})
+         WHERE p.outlet_id = ? AND p.is_active = 1 AND p.station IN (${placeholders})
          ORDER BY p.station ASC, p.id ASC`,
         [outletId, ...uniqueStations]
       );
@@ -1076,8 +1107,11 @@ const printerService = {
     const printers = {};
     for (const row of rows) {
       const printerConfig = {
-        ip: row.ip_address,
+        ip: row.ip_address || null,
         port: row.port || 9100,
+        usbPath: row.usb_path || null,
+        printerName: row.printer_name || null,
+        connectionType: row.connection_type || 'network',
         printerId: row.printer_id
       };
       
@@ -1867,7 +1901,9 @@ const printerService = {
     // Step 1: Mobile POS printers — emit via Socket.IO directly to device
     // Falls back to bridge if device is offline. Non-blocking per printer.
     const mposPrinters = printers.filter(p => p.connection_type === 'mobile_pos');
-    const regularPrinters = printers.filter(p => p.connection_type !== 'mobile_pos');
+    const usbPrinters = printers.filter(p => p.connection_type === 'usb');
+    const winPrinters = printers.filter(p => p.connection_type === 'windows_printer');
+    const regularPrinters = printers.filter(p => !['mobile_pos','usb','windows_printer'].includes(p.connection_type));
     const results = [];
 
     for (const printer of mposPrinters) {
@@ -1890,6 +1926,61 @@ const printerService = {
         results.push({ ...bridgeResult, printerId: printer.id, method: 'bridge' });
       } catch (err) {
         logger.error(`printKot: MPOS bridge fallback failed for printer ${printer.id} (${printer.name}):`, err.message);
+      }
+    }
+
+    // Step 1c: Windows Printer (spooler) printers — try direct via PowerShell first, fallback to bridge
+    for (const printer of winPrinters) {
+      if (printer.printer_name && process.platform === 'win32') {
+        try {
+          await this.printDirectWindowsPrinter(printer.printer_name, wrappedContent);
+          logger.info(`KOT ${kotData.kotNumber} printed DIRECT via Windows printer "${printer.printer_name}" (${printer.name})`);
+          results.push({ printerId: printer.id, method: 'direct_windows' });
+          continue;
+        } catch (winErr) {
+          logger.warn(`KOT ${kotData.kotNumber} Windows direct failed for "${printer.printer_name}": ${winErr.message}, falling back to bridge`);
+        }
+      }
+      try {
+        const bridgeResult = await this.createPrintJob({
+          outletId: kotData.outletId, printerId: printer.id, jobType, station,
+          stationId: kotData.stationId || null, isCounter: kotData.isCounter || false,
+          kotId: kotData.kotId, orderId: kotData.orderId, content: wrappedContent,
+          contentType: 'escpos', referenceNumber: kotData.kotNumber,
+          tableNumber: kotData.tableNumber, priority: 10, createdBy: userId
+        });
+        results.push({ ...bridgeResult, printerId: printer.id, method: 'bridge' });
+      } catch (err) {
+        logger.error(`printKot: Windows printer bridge fallback failed for printer ${printer.id} (${printer.name}):`, err.message);
+      }
+    }
+
+    // Step 1b: USB printers — try direct write first, fallback to bridge
+    for (const printer of usbPrinters) {
+      if (printer.usb_path && isDirectUsbHealthy(printer.usb_path)) {
+        try {
+          await this.printDirectUsb(printer.usb_path, wrappedContent);
+          markDirectUsbOk(printer.usb_path);
+          logger.info(`KOT ${kotData.kotNumber} printed DIRECT via USB ${printer.usb_path} (${printer.name})`);
+          results.push({ printerId: printer.id, method: 'direct_usb' });
+          continue;
+        } catch (usbErr) {
+          markDirectUsbFailed(printer.usb_path);
+          logger.warn(`KOT ${kotData.kotNumber} USB direct failed for ${printer.name} (${printer.usb_path}): ${usbErr.message}, falling back to bridge`);
+        }
+      }
+      // USB device not reachable — fallback to bridge
+      try {
+        const bridgeResult = await this.createPrintJob({
+          outletId: kotData.outletId, printerId: printer.id, jobType, station,
+          stationId: kotData.stationId || null, isCounter: kotData.isCounter || false,
+          kotId: kotData.kotId, orderId: kotData.orderId, content: wrappedContent,
+          contentType: 'escpos', referenceNumber: kotData.kotNumber,
+          tableNumber: kotData.tableNumber, priority: 10, createdBy: userId
+        });
+        results.push({ ...bridgeResult, printerId: printer.id, method: 'bridge' });
+      } catch (err) {
+        logger.error(`printKot: USB bridge fallback failed for printer ${printer.id} (${printer.name}):`, err.message);
       }
     }
 
@@ -1948,9 +2039,11 @@ const printerService = {
 
     const mposCount = results.filter(r => r.method === 'mobile_pos').length;
     const directCount = results.filter(r => r.method === 'direct').length;
+    const directUsbCount = results.filter(r => r.method === 'direct_usb').length;
+    const directWinCount = results.filter(r => r.method === 'direct_windows').length;
     const bridgeCount = results.filter(r => r.method === 'bridge').length;
-    if (printers.length > 1 || bridgeCount > 0 || mposCount > 0) {
-      logger.info(`printKot: ${kotData.kotNumber} → ${results.length} prints (${mposCount} mpos, ${directCount} direct, ${bridgeCount} bridge)`);
+    if (printers.length > 1 || bridgeCount > 0 || mposCount > 0 || directUsbCount > 0 || directWinCount > 0) {
+      logger.info(`printKot: ${kotData.kotNumber} → ${results.length} prints (${mposCount} mpos, ${directCount} direct_tcp, ${directUsbCount} direct_usb, ${directWinCount} direct_windows, ${bridgeCount} bridge)`);
     }
     return results[0] || null;
   },
@@ -1992,6 +2085,53 @@ const printerService = {
     // Regular printers (IP/bridge) — use full 80mm formatter + standard wrapping
     const content = this.formatBillContent(billData);
     const wrappedContent = this.wrapWithEscPos(content, { openDrawer: billData.openDrawer, logo });
+
+    // Windows Printer (spooler): try direct via PowerShell first, fallback to bridge
+    if (resolvedPrinter?.connection_type === 'windows_printer') {
+      const winPrinterName = resolvedPrinter.printer_name;
+      if (winPrinterName && process.platform === 'win32') {
+        try {
+          await this.printDirectWindowsPrinter(winPrinterName, wrappedContent);
+          logger.info(`[BILL-PRINT] Bill ${billData.invoiceNumber || 'N/A'} printed DIRECT via Windows printer "${winPrinterName}"`);
+          return { method: 'direct_windows', printerId };
+        } catch (winErr) {
+          logger.warn(`[BILL-PRINT] Windows direct failed for ${billData.invoiceNumber || 'N/A'} ("${winPrinterName}"): ${winErr.message}, falling back to bridge`);
+        }
+      }
+      return this.createPrintJob({
+        outletId: billData.outletId,
+        jobType: billData.isDuplicate ? 'duplicate_bill' : 'bill',
+        station, printerId, orderId: billData.orderId, invoiceId: billData.invoiceId,
+        content: wrappedContent, contentType: 'escpos',
+        referenceNumber: billData.invoiceNumber, tableNumber: billData.tableNumber,
+        priority: 5, createdBy: userId
+      });
+    }
+
+    // USB printer: try direct write first, fallback to bridge
+    if (resolvedPrinter?.connection_type === 'usb') {
+      const usbPath = resolvedPrinter.usb_path;
+      if (usbPath && isDirectUsbHealthy(usbPath)) {
+        try {
+          await this.printDirectUsb(usbPath, wrappedContent);
+          markDirectUsbOk(usbPath);
+          logger.info(`[BILL-PRINT] Bill ${billData.invoiceNumber || 'N/A'} printed DIRECT via USB ${usbPath}`);
+          return { method: 'direct_usb', printerId };
+        } catch (usbErr) {
+          markDirectUsbFailed(usbPath);
+          logger.warn(`[BILL-PRINT] USB direct failed for ${billData.invoiceNumber || 'N/A'} (${usbPath}): ${usbErr.message}, falling back to bridge`);
+        }
+      }
+      // Fallback to bridge for USB printer
+      return this.createPrintJob({
+        outletId: billData.outletId,
+        jobType: billData.isDuplicate ? 'duplicate_bill' : 'bill',
+        station, printerId, orderId: billData.orderId, invoiceId: billData.invoiceId,
+        content: wrappedContent, contentType: 'escpos',
+        referenceNumber: billData.invoiceNumber, tableNumber: billData.tableNumber,
+        priority: 5, createdBy: userId
+      });
+    }
 
     // Mobile POS printer record: emit ESC/POS via Socket.IO — fallback to bridge if offline
     if (resolvedPrinter?.connection_type === 'mobile_pos') {
@@ -2133,6 +2273,93 @@ const printerService = {
 
       client.on('close', () => {
         logger.info(`Disconnected from printer ${ipAddress}:${port}`);
+      });
+    });
+  },
+
+  // ========================
+  // USB & WINDOWS DIRECT PRINTING
+  // ========================
+
+  /**
+   * Send raw ESC/POS data to a Windows printer by name via the Win32 RAW spooler API.
+   * Uses PowerShell + RawPrinterHelper (C# inline compile, ~200ms first call per process).
+   * Only works on Windows (process.platform === 'win32').
+   * @param {string} printerName - Windows printer name e.g. "EPSON TM-T88IV Receipt"
+   * @param {string|Buffer} data - ESC/POS data to send
+   */
+  async printDirectWindowsPrinter(printerName, data) {
+    const { execFile } = require('child_process');
+    const os = require('os');
+    const tmpFile = path.join(os.tmpdir(), `pos_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.bin`);
+    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data, 'binary');
+    fs.writeFileSync(tmpFile, buf);
+
+    const escapedPrinter = printerName.replace(/"/g, '`"');
+    const escapedFile = tmpFile.replace(/\\/g, '\\\\');
+    const psScript = `
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class RawPrint {
+  [StructLayout(LayoutKind.Sequential)] public struct DOCINFOA {
+    [MarshalAs(UnmanagedType.LPStr)] public string pDocName;
+    [MarshalAs(UnmanagedType.LPStr)] public string pOutputFile;
+    [MarshalAs(UnmanagedType.LPStr)] public string pDataType;
+  }
+  [DllImport("winspool.drv",CharSet=CharSet.Unicode,SetLastError=true)] public static extern bool OpenPrinter(string p,out IntPtr h,IntPtr d);
+  [DllImport("winspool.drv",SetLastError=true)] public static extern bool StartDocPrinter(IntPtr h,int l,ref DOCINFOA i);
+  [DllImport("winspool.drv",SetLastError=true)] public static extern bool StartPagePrinter(IntPtr h);
+  [DllImport("winspool.drv",SetLastError=true)] public static extern bool WritePrinter(IntPtr h,IntPtr b,int c,out int w);
+  [DllImport("winspool.drv",SetLastError=true)] public static extern bool EndPagePrinter(IntPtr h);
+  [DllImport("winspool.drv",SetLastError=true)] public static extern bool EndDocPrinter(IntPtr h);
+  [DllImport("winspool.drv",SetLastError=true)] public static extern bool ClosePrinter(IntPtr h);
+  public static bool Send(string name,byte[] data) {
+    IntPtr h; if(!OpenPrinter(name,out h,IntPtr.Zero)) return false;
+    var di=new DOCINFOA{pDocName="POS",pDataType="RAW"};
+    StartDocPrinter(h,1,ref di); StartPagePrinter(h);
+    IntPtr p=System.Runtime.InteropServices.Marshal.AllocCoTaskMem(data.Length);
+    System.Runtime.InteropServices.Marshal.Copy(data,0,p,data.Length);
+    int w; WritePrinter(h,p,data.Length,out w);
+    System.Runtime.InteropServices.Marshal.FreeCoTaskMem(p);
+    EndPagePrinter(h); EndDocPrinter(h); ClosePrinter(h);
+    return w==data.Length;
+  }
+}
+"@
+$bytes=[System.IO.File]::ReadAllBytes("${escapedFile}")
+$ok=[RawPrint]::Send("${escapedPrinter}",$bytes)
+Remove-Item "${escapedFile}" -ErrorAction SilentlyContinue
+if(-not $ok){throw "RawPrint returned false for printer: ${escapedPrinter}"}
+Write-Output "OK"
+`;
+
+    return new Promise((resolve, reject) => {
+      execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', psScript],
+        { timeout: 15000 },
+        (err, stdout, stderr) => {
+          try { fs.unlinkSync(tmpFile); } catch (_) {}
+          if (err) return reject(new Error(`Windows print failed ("${printerName}"): ${stderr || err.message}`));
+          if (stdout.trim() === 'OK') return resolve({ success: true, printerName });
+          reject(new Error(`Windows print failed ("${printerName}"): ${stderr || stdout || 'unknown error'}`));
+        }
+      );
+    });
+  },
+
+  /**
+   * Send data directly to a USB thermal printer by writing to its device path.
+   * @param {string} usbPath - Device path: /dev/usb/lp0 (Linux) or \\.\COM1 (Windows)
+   * @param {string|Buffer} data - ESC/POS data to print
+   */
+  async printDirectUsb(usbPath, data) {
+    return new Promise((resolve, reject) => {
+      const stream = fs.createWriteStream(usbPath, { flags: 'a' });
+      stream.once('error', (err) => { stream.destroy(); reject(new Error(`USB write failed (${usbPath}): ${err.message}`)); });
+      stream.write(data, (err) => {
+        stream.end();
+        if (err) reject(new Error(`USB write failed (${usbPath}): ${err.message}`));
+        else resolve({ success: true, usbPath });
       });
     });
   },
@@ -2323,7 +2550,8 @@ const printerService = {
     const pool = getPool();
 
     let query = `SELECT p.id, p.name, p.station, p.printer_type, p.station_id, 
-                        p.ip_address, p.port, p.is_active, p.is_online, p.last_seen_at,
+                        p.ip_address, p.port, p.usb_path, p.printer_name, p.connection_type,
+                        p.is_active, p.is_online, p.last_seen_at,
                         ks.name as station_name, ks.code as station_code, ks.station_type
                  FROM printers p
                  LEFT JOIN kitchen_stations ks ON p.station_id = ks.id
@@ -2351,8 +2579,25 @@ const printerService = {
       let isOnline = false;
       let latency = null;
       let error = null;
-      
-      if (printer.ip_address) {
+      const connType = printer.connection_type || 'network';
+
+      if (connType === 'windows_printer') {
+        // Windows spooler printers: can't test from server, assume available
+        isOnline = true;
+        error = null;
+      } else if (connType === 'usb') {
+        // USB printers: check device path if server is on same machine
+        if (printer.usb_path) {
+          try {
+            isOnline = fs.existsSync(printer.usb_path);
+            error = isOnline ? null : `USB device not found: ${printer.usb_path}`;
+          } catch (e) {
+            error = `USB check failed: ${e.message}`;
+          }
+        } else {
+          error = 'No usb_path configured';
+        }
+      } else if (printer.ip_address) {
         const startTime = Date.now();
         try {
           const result = await this.testPrinterConnection(printer.ip_address, printer.port || 9100);
@@ -2375,6 +2620,7 @@ const printerService = {
         name: printer.name,
         station: printer.station,
         printerType: printer.printer_type,
+        connectionType: connType,
         stationId: printer.station_id,
         assignedStation: printer.station_id ? {
           id: printer.station_id,
@@ -2382,8 +2628,10 @@ const printerService = {
           code: printer.station_code,
           type: printer.station_type
         } : null,
-        ipAddress: printer.ip_address,
+        ipAddress: printer.ip_address || null,
         port: printer.port || 9100,
+        usbPath: printer.usb_path || null,
+        printerName: printer.printer_name || null,
         isActive: printer.is_active === 1,
         source: 'direct',
         isOnline,
@@ -2410,6 +2658,7 @@ const printerService = {
         name: printer.name,
         station: printer.station,
         printerType: printer.printer_type,
+        connectionType: printer.connection_type || 'network',
         stationId: printer.station_id,
         assignedStation: printer.station_id ? {
           id: printer.station_id,
@@ -2417,8 +2666,10 @@ const printerService = {
           code: printer.station_code,
           type: printer.station_type
         } : null,
-        ipAddress: printer.ip_address,
+        ipAddress: printer.ip_address || null,
         port: printer.port || 9100,
+        usbPath: printer.usb_path || null,
+        printerName: printer.printer_name || null,
         isActive: printer.is_active === 1,
         source: 'bridge',
         isOnline,
