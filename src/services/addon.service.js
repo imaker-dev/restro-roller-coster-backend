@@ -241,8 +241,14 @@ const addonService = {
   },
 
   async invalidateCache(outletId) {
-    await cache.del(`addon_groups:${outletId}`);
-    await cache.del(`menu:${outletId}`);
+    await Promise.all([
+      cache.del(`addon_groups:${outletId}`),
+      cache.delPattern(`menu:build:${outletId}:*`),
+      cache.delPattern(`menu:captain:${outletId}:*`),
+      cache.delPattern(`menu:search:${outletId}:*`),
+      cache.delPattern(`self_order:menu:${outletId}:*`),
+      cache.delPattern(`report:${outletId}:menu-captain:*`),
+    ]);
   }
 };
 

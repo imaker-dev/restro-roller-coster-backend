@@ -935,8 +935,11 @@ const menuEngineService = {
   async invalidateCache(outletId) {
     await Promise.all([
       cache.del(`menu:${outletId}`),
+      cache.delPattern(`menu:build:${outletId}:*`),
       cache.delPattern(`menu:captain:${outletId}:*`),
-      cache.delPattern(`menu:search:${outletId}:*`)
+      cache.delPattern(`menu:search:${outletId}:*`),
+      cache.delPattern(`self_order:menu:${outletId}:*`),
+      cache.delPattern(`report:${outletId}:menu-captain:*`),
     ]);
   }
 };

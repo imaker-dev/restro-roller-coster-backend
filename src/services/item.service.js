@@ -782,8 +782,15 @@ const itemService = {
   },
 
   async invalidateCache(outletId) {
-    await cache.del(`items:${outletId}`);
-    await cache.del(`menu:${outletId}`);
+    await Promise.all([
+      cache.del(`items:${outletId}`),
+      cache.del(`menu:${outletId}`),
+      cache.delPattern(`menu:build:${outletId}:*`),
+      cache.delPattern(`menu:captain:${outletId}:*`),
+      cache.delPattern(`menu:search:${outletId}:*`),
+      cache.delPattern(`self_order:menu:${outletId}:*`),
+      cache.delPattern(`report:${outletId}:menu-captain:*`),
+    ]);
   }
 };
 
