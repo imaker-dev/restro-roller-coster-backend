@@ -218,6 +218,17 @@ module.exports = {
     floorIds: Joi.array().items(Joi.number().integer().positive()),
     sectionIds: Joi.array().items(Joi.number().integer().positive()),
     timeSlotIds: Joi.array().items(Joi.number().integer().positive()),
+    variants: Joi.array().items(Joi.object({
+      id: Joi.number().integer().positive(),
+      name: Joi.string().max(50).required(),
+      sku: Joi.string().max(50).allow('', null),
+      price: Joi.number().min(0).required(),
+      costPrice: Joi.number().min(0).default(0),
+      taxGroupId: Joi.number().integer().positive().allow(null),
+      isDefault: Joi.boolean().default(false),
+      inventoryMultiplier: Joi.number().min(0).default(1),
+      displayOrder: Joi.number().integer().min(0).default(0)
+    })),
     addonGroupIds: Joi.array().items(Joi.number().integer().positive())
   }),
 

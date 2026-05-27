@@ -65,12 +65,15 @@ const itemService = {
 
       const itemId = result.insertId;
 
-      // Add variants
-      for (const variant of variants) {
+      // Add variants — ensure at least one is default
+      const hasExplicitDefault = variants.some(v => v.isDefault === true);
+      for (let i = 0; i < variants.length; i++) {
+        const variant = variants[i];
+        const isDefault = hasExplicitDefault ? !!variant.isDefault : (i === 0);
         await connection.query(
           `INSERT INTO variants (item_id, name, sku, price, cost_price, tax_group_id, is_default, inventory_multiplier, display_order, is_active)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
-          [itemId, variant.name, variant.sku, variant.price, variant.costPrice || 0, variant.taxGroupId, variant.isDefault || false, variant.inventoryMultiplier || 1, variant.displayOrder || 0]
+          [itemId, variant.name, variant.sku, variant.price, variant.costPrice || 0, variant.taxGroupId, isDefault, variant.inventoryMultiplier || 1, variant.displayOrder || 0]
         );
       }
 
@@ -543,9 +546,89 @@ const itemService = {
         }
       }
 
+      // Upsert variants when provided in the payload
+      if (data.variants !== undefined && Array.isArray(data.variants) && data.variants.length > 0) {
+        // Fetch current active variants for name-based matching
+        const [existingVariants] = await connection.query(
+          'SELECT * FROM variants WHERE item_id = ? AND is_active = 1',
+          [id]
+        );
+        const existingByName = new Map(
+          existingVariants.map(v => [v.name.toLowerCase().trim(), v])
+        );
+        const existingById = new Map(
+          existingVariants.map(v => [v.id, v])
+        );
+
+        // Enforce exactly one default in the payload
+        const defaultIndices = data.variants
+          .map((v, i) => v.isDefault ? i : -1)
+          .filter(i => i !== -1);
+        if (defaultIndices.length === 0) {
+          data.variants[0].isDefault = true;
+        } else if (defaultIndices.length > 1) {
+          // Keep only the first default, force the rest to false
+          for (let i = 1; i < defaultIndices.length; i++) {
+            data.variants[defaultIndices[i]].isDefault = false;
+          }
+        }
+
+        // Clear all existing defaults before re-assigning
+        await connection.query('UPDATE variants SET is_default = 0 WHERE item_id = ?', [id]);
+
+        // Deactivate variants not present in the new payload (match by id or name)
+        const incomingKeys = new Set(
+          data.variants.map(v =>
+            v.id ? `id:${v.id}` : `name:${v.name.toLowerCase().trim()}`
+          )
+        );
+        for (const existing of existingVariants) {
+          const byId   = incomingKeys.has(`id:${existing.id}`);
+          const byName = incomingKeys.has(`name:${existing.name.toLowerCase().trim()}`);
+          if (!byId && !byName) {
+            await connection.query('UPDATE variants SET is_active = 0 WHERE id = ?', [existing.id]);
+          }
+        }
+
+        // Upsert each payload variant
+        for (let i = 0; i < data.variants.length; i++) {
+          const v = data.variants[i];
+          const isDefault  = v.isDefault ? 1 : 0;
+          const price      = v.price ?? 0;
+          const sku        = v.sku || null;
+          const taxGroupId = v.taxGroupId || null;
+          const costPrice  = v.costPrice ?? 0;
+          const displayOrder = v.displayOrder ?? i;
+
+          // Prefer id-match, then name-match
+          const matched = (v.id && existingById.get(v.id))
+            || existingByName.get(v.name.toLowerCase().trim());
+
+          if (matched) {
+            await connection.query(
+              `UPDATE variants
+               SET name = ?, price = ?, sku = ?, tax_group_id = ?, cost_price = ?,
+                   is_default = ?, display_order = ?, is_active = 1
+               WHERE id = ?`,
+              [v.name, price, sku, taxGroupId, costPrice, isDefault, displayOrder, matched.id]
+            );
+          } else {
+            await connection.query(
+              `INSERT INTO variants
+               (item_id, name, sku, price, cost_price, tax_group_id, is_default, display_order, is_active)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+              [id, v.name, sku, price, costPrice, taxGroupId, isDefault, displayOrder]
+            );
+          }
+        }
+
+        // Ensure item is marked as having variants
+        await connection.query('UPDATE items SET has_variants = 1 WHERE id = ?', [id]);
+      }
+
       await connection.commit();
 
-      const item = await this.getById(id);
+      const item = await this.getFullDetails(id);
       if (item) await this.invalidateCache(item.outlet_id);
       return item;
     } catch (error) {
@@ -577,15 +660,25 @@ const itemService = {
       isDefault = false, inventoryMultiplier = 1, displayOrder = 0
     } = data;
 
+    // Check existing active variants
+    const [existingRows] = await pool.query(
+      'SELECT COUNT(*) as count FROM variants WHERE item_id = ? AND is_active = 1',
+      [itemId]
+    );
+    const hasExistingVariants = existingRows[0].count > 0;
+
+    // First variant for an item MUST be default
+    const finalIsDefault = hasExistingVariants ? isDefault : true;
+
     // If setting as default, unset other defaults
-    if (isDefault) {
+    if (finalIsDefault) {
       await pool.query('UPDATE variants SET is_default = 0 WHERE item_id = ?', [itemId]);
     }
 
     const [result] = await pool.query(
       `INSERT INTO variants (item_id, name, sku, price, cost_price, tax_group_id, is_default, inventory_multiplier, display_order, is_active)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
-      [itemId, name, sku, price, costPrice, taxGroupId, isDefault, inventoryMultiplier, displayOrder]
+      [itemId, name, sku, price, costPrice, taxGroupId, finalIsDefault, inventoryMultiplier, displayOrder]
     );
 
     // Update item to have variants
@@ -594,7 +687,7 @@ const itemService = {
     const item = await this.getById(itemId);
     if (item) await this.invalidateCache(item.outlet_id);
 
-    return { id: result.insertId, itemId, ...data };
+    return { id: result.insertId, itemId, ...data, isDefault: finalIsDefault };
   },
 
   async getVariants(itemId) {
@@ -612,6 +705,44 @@ const itemService = {
 
   async updateVariant(variantId, data) {
     const pool = getPool();
+
+    // Get current variant to know item_id before updating
+    const [currentRows] = await pool.query('SELECT * FROM variants WHERE id = ?', [variantId]);
+    const current = currentRows[0];
+    if (!current) return null;
+
+    const itemId = current.item_id;
+
+    // Handle default variant logic BEFORE the update
+    if (data.isDefault !== undefined) {
+      if (data.isDefault) {
+        // Unset all other defaults for this item
+        await pool.query(
+          'UPDATE variants SET is_default = 0 WHERE item_id = ? AND id != ?',
+          [itemId, variantId]
+        );
+      } else if (current.is_default) {
+        // User is unsetting the current default — ensure another variant becomes default
+        const [otherDefaults] = await pool.query(
+          'SELECT COUNT(*) as count FROM variants WHERE item_id = ? AND is_active = 1 AND is_default = 1 AND id != ?',
+          [itemId, variantId]
+        );
+        if (otherDefaults[0].count === 0) {
+          // No other default exists — promote the first other active variant
+          const [firstOther] = await pool.query(
+            'SELECT id FROM variants WHERE item_id = ? AND is_active = 1 AND id != ? ORDER BY display_order, name LIMIT 1',
+            [itemId, variantId]
+          );
+          if (firstOther[0]) {
+            await pool.query('UPDATE variants SET is_default = 1 WHERE id = ?', [firstOther[0].id]);
+          } else {
+            // This is the only variant — refuse to unset default, keep it as default
+            data.isDefault = true;
+          }
+        }
+      }
+    }
+
     const fields = [];
     const values = [];
 
@@ -625,7 +756,7 @@ const itemService = {
     if (data.displayOrder !== undefined) { fields.push('display_order = ?'); values.push(data.displayOrder); }
     if (data.isActive !== undefined) { fields.push('is_active = ?'); values.push(data.isActive); }
 
-    if (fields.length === 0) return null;
+    if (fields.length === 0) return current;
     values.push(variantId);
 
     await pool.query(`UPDATE variants SET ${fields.join(', ')} WHERE id = ?`, values);
@@ -640,12 +771,34 @@ const itemService = {
 
   async deleteVariant(variantId) {
     const pool = getPool();
-    const [rows] = await pool.query('SELECT item_id FROM variants WHERE id = ?', [variantId]);
+    const [rows] = await pool.query('SELECT * FROM variants WHERE id = ?', [variantId]);
     if (!rows[0]) return false;
+
+    const { item_id: itemId, is_default: wasDefault } = rows[0];
 
     await pool.query('UPDATE variants SET is_active = 0 WHERE id = ?', [variantId]);
 
-    const item = await this.getById(rows[0].item_id);
+    // If we deleted the default, promote another active variant
+    if (wasDefault) {
+      const [firstOther] = await pool.query(
+        'SELECT id FROM variants WHERE item_id = ? AND is_active = 1 ORDER BY display_order, name LIMIT 1',
+        [itemId]
+      );
+      if (firstOther[0]) {
+        await pool.query('UPDATE variants SET is_default = 1 WHERE id = ?', [firstOther[0].id]);
+      }
+    }
+
+    // Check if any active variants remain for this item
+    const [remaining] = await pool.query(
+      'SELECT COUNT(*) as count FROM variants WHERE item_id = ? AND is_active = 1',
+      [itemId]
+    );
+    if (remaining[0].count === 0) {
+      await pool.query('UPDATE items SET has_variants = 0 WHERE id = ?', [itemId]);
+    }
+
+    const item = await this.getById(itemId);
     if (item) await this.invalidateCache(item.outlet_id);
     return true;
   },

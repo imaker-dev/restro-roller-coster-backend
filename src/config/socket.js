@@ -207,6 +207,8 @@ const initializeSocket = (server) => {
         socket.join(userRoom);
         socket.mposUserId = userId;
         joined.push(userRoom);
+        // Global user room — no outlet prefix, catches outlet-id mismatches gracefully
+        socket.join(`mpos:user:${userId}`);
       }
 
       // Device room — explicit targeting (advanced / edge cases)
@@ -239,6 +241,7 @@ const initializeSocket = (server) => {
       const { outletId, station, deviceId, userId } = payload || {};
       if (station)  socket.leave(`mpos:${outletId}:station:${String(station).toLowerCase()}`);
       if (userId)   socket.leave(`mpos:${outletId}:user:${userId}`);
+      if (userId)   socket.leave(`mpos:user:${userId}`);
       if (deviceId) socket.leave(`mpos:${outletId}:device:${deviceId}`);
     });
 
@@ -251,6 +254,93 @@ const initializeSocket = (server) => {
         deviceId: socket.mposDeviceId,
         outletId: socket.mposOutletId,
         mode:     socket.mposMode,
+        socketId: socket.id,
+      });
+    });
+
+    // ========================
+    // BLUETOOTH DIRECT PRINTING (Flutter app → local BT printer)
+    // ========================
+    // Same architecture as Mobile POS but for external Bluetooth thermal printers.
+    // The Flutter app connects to a BT printer locally and joins bt: rooms.
+    // Backend routes ESC/POS to the app, app prints via its BT SDK.
+    //
+    //  Rooms:
+    //    bt:{outletId}:user:{userId}     → user-specific device
+    //    bt:{outletId}:device:{deviceId} → explicit device targeting
+    //    bt:{outletId}:station:{station} → station broadcast (first socket only)
+    //
+    socket.on('join:bt_print', (payload) => {
+      const { outletId, station, deviceId, userId, paperWidth } = payload || {};
+
+      if (!outletId) {
+        logger.warn(`Socket ${socket.id} join:bt_print missing outletId`);
+        return;
+      }
+
+      socket.btOutletId   = outletId;
+      socket.btPaperWidth = paperWidth === '80mm' ? '80mm' : '58mm'; // device paper width (default 80mm)
+      const joined = [];
+
+      if (station) {
+        const stationKey = String(station).toLowerCase().trim();
+        const stationRoom = `bt:${outletId}:station:${stationKey}`;
+        socket.join(stationRoom);
+        socket.btStation = stationKey;
+        joined.push(stationRoom);
+      }
+
+      if (userId) {
+        const userRoom = `bt:${outletId}:user:${userId}`;
+        socket.join(userRoom);
+        socket.btUserId = userId;
+        joined.push(userRoom);
+        // Global user room — no outlet prefix, catches outlet-id mismatches gracefully
+        socket.join(`bt:user:${userId}`);
+      }
+
+      if (deviceId) {
+        const deviceRoom = `bt:${outletId}:device:${deviceId}`;
+        socket.join(deviceRoom);
+        socket.btDeviceId = deviceId;
+        joined.push(deviceRoom);
+      }
+
+      if (joined.length === 0) {
+        logger.warn(`Socket ${socket.id} join:bt_print: must provide station, userId, or deviceId`);
+        return;
+      }
+
+      socket.btMode = userId ? 'user' : deviceId ? 'device' : 'station';
+      logger.info(`Socket ${socket.id} joined Bluetooth print rooms: ${joined.join(', ')}`);
+      socket.emit('bt:connected', {
+        mode:       socket.btMode,
+        station:    socket.btStation     || null,
+        userId:     socket.btUserId      || null,
+        deviceId:   socket.btDeviceId    || null,
+        paperWidth: socket.btPaperWidth,
+        rooms:      joined,
+        outletId,
+        socketId:   socket.id,
+      });
+    });
+
+    socket.on('leave:bt_print', (payload) => {
+      const { outletId, station, deviceId, userId } = payload || {};
+      if (station)  socket.leave(`bt:${outletId}:station:${String(station).toLowerCase()}`);
+      if (userId)   socket.leave(`bt:${outletId}:user:${userId}`);
+      if (userId)   socket.leave(`bt:user:${userId}`);
+      if (deviceId) socket.leave(`bt:${outletId}:device:${deviceId}`);
+    });
+
+    socket.on('bt:print_done', ({ jobId, success, error }) => {
+      logger.info(`Bluetooth print ${success ? 'success' : 'failed'}: jobId=${jobId}${error ? ` error=${error}` : ''}`);
+      publishMessage('bt:print_result', {
+        jobId, success, error,
+        station:  socket.btStation,
+        deviceId: socket.btDeviceId,
+        outletId: socket.btOutletId,
+        mode:     socket.btMode,
         socketId: socket.id,
       });
     });

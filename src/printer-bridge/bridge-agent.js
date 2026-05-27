@@ -10,6 +10,7 @@
  * 1. Install Node.js on the local machine
  * 2. Copy this file to the local machine
  * 3. Run: npm init -y && npm install axios
+ *    (For Bluetooth printers also run: npm install bluetooth-serial-port)
  * 4. Configure the settings below
  * 5. Run: node bridge-agent.js
  * 
@@ -18,6 +19,10 @@
 
 const axios = require('axios');
 const net = require('net');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { execFile } = require('child_process');
 const BINARY_CONTENT_PREFIX = 'b64:';
 
 // ========================
@@ -27,10 +32,10 @@ const BINARY_CONTENT_PREFIX = 'b64:';
 const CONFIG = {
   // Cloud server URL (your backend API)
   // CLOUD_URL: process.env.CLOUD_URL || 'http://localhost:3005',
-  CLOUD_URL: process.env.CLOUD_URL || 'https://demo.imakerrestro.com',
+  CLOUD_URL: process.env.CLOUD_URL || 'https://bryant-shakira-boston-belly.trycloudflare.com',
   
   // Outlet ID from your system
-  OUTLET_ID: process.env.OUTLET_ID || '43',
+  OUTLET_ID: process.env.OUTLET_ID || '54',
   
   // Bridge code (created via API: POST /api/v1/printers/bridges)
   BRIDGE_CODE: process.env.BRIDGE_CODE || 'KITCHEN-BRIDGE-1',
@@ -210,6 +215,124 @@ function sendToPrinter(printerIp, printerPort, data) {
   return printerPool.send(printerIp, printerPort, data);
 }
 
+/**
+ * Send raw data to USB printer by writing directly to the device path.
+ * Linux: /dev/usb/lp0   Windows: \\.\COM1
+ */
+function sendToUsbPrinter(usbPath, data) {
+  return new Promise((resolve, reject) => {
+    const stream = fs.createWriteStream(usbPath, { flags: 'a' });
+    stream.once('error', (err) => { stream.destroy(); reject(err); });
+    stream.write(data, (err) => {
+      stream.end();
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
+/**
+ * Send raw ESC/POS bytes to a Windows printer by name via Win32 RAW spooler API.
+ * Uses inline C# compiled by PowerShell — works with "EPSON TM-T88IV Receipt" style names.
+ * Only works on Windows (process.platform === 'win32').
+ */
+/**
+ * Send raw ESC/POS bytes to a Bluetooth SPP thermal printer by MAC address.
+ * Requires 'bluetooth-serial-port' npm package on the bridge machine.
+ */
+function sendToBluetoothPrinter(address, data) {
+  return new Promise((resolve, reject) => {
+    let BluetoothSerialPort;
+    try {
+      BluetoothSerialPort = require('bluetooth-serial-port').BluetoothSerialPort;
+    } catch (err) {
+      return reject(new Error(
+        `bluetooth-serial-port package is not installed. ` +
+        `Run: npm install bluetooth-serial-port  (${err.message})`
+      ));
+    }
+
+    const btSerial = new BluetoothSerialPort();
+    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data, 'binary');
+
+    btSerial.findSerialPortChannel(address, (channel) => {
+      btSerial.connect(address, channel, () => {
+        btSerial.write(buf, (err) => {
+          if (err) {
+            btSerial.close();
+            return reject(new Error(`Bluetooth write failed: ${err.message || err}`));
+          }
+          // Allow printer buffer to drain before disconnecting
+          setTimeout(() => {
+            btSerial.close();
+            resolve();
+          }, 500);
+        });
+      }, (err) => {
+        reject(new Error(`Bluetooth connect failed for ${address}: ${err.message || err}`));
+      });
+    }, (err) => {
+      reject(new Error(`Bluetooth serial port channel not found for ${address}: ${err.message || err}`));
+    });
+  });
+}
+
+function sendToWindowsPrinter(printerName, data) {
+  return new Promise((resolve, reject) => {
+    const tmpFile = path.join(os.tmpdir(), `pos_${Date.now()}_${Math.random().toString(36).slice(2,8)}.bin`);
+    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data, 'binary');
+    fs.writeFileSync(tmpFile, buf);
+
+    const esc = (s) => s.replace(/"/g, '`"');
+    const escFile = tmpFile.replace(/\\/g, '\\\\');
+    const psScript = `
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class RawPrint {
+  [StructLayout(LayoutKind.Sequential)] public struct DOCINFOA {
+    [MarshalAs(UnmanagedType.LPStr)] public string pDocName;
+    [MarshalAs(UnmanagedType.LPStr)] public string pOutputFile;
+    [MarshalAs(UnmanagedType.LPStr)] public string pDataType;
+  }
+  [DllImport("winspool.drv",CharSet=CharSet.Unicode,SetLastError=true)] public static extern bool OpenPrinter(string p,out IntPtr h,IntPtr d);
+  [DllImport("winspool.drv",SetLastError=true)] public static extern bool StartDocPrinter(IntPtr h,int l,ref DOCINFOA i);
+  [DllImport("winspool.drv",SetLastError=true)] public static extern bool StartPagePrinter(IntPtr h);
+  [DllImport("winspool.drv",SetLastError=true)] public static extern bool WritePrinter(IntPtr h,IntPtr b,int c,out int w);
+  [DllImport("winspool.drv",SetLastError=true)] public static extern bool EndPagePrinter(IntPtr h);
+  [DllImport("winspool.drv",SetLastError=true)] public static extern bool EndDocPrinter(IntPtr h);
+  [DllImport("winspool.drv",SetLastError=true)] public static extern bool ClosePrinter(IntPtr h);
+  public static bool Send(string name,byte[] data) {
+    IntPtr h; if(!OpenPrinter(name,out h,IntPtr.Zero)) return false;
+    var di=new DOCINFOA{pDocName="POS",pDataType="RAW"};
+    StartDocPrinter(h,1,ref di); StartPagePrinter(h);
+    IntPtr p=System.Runtime.InteropServices.Marshal.AllocCoTaskMem(data.Length);
+    System.Runtime.InteropServices.Marshal.Copy(data,0,p,data.Length);
+    int w; WritePrinter(h,p,data.Length,out w);
+    System.Runtime.InteropServices.Marshal.FreeCoTaskMem(p);
+    EndPagePrinter(h); EndDocPrinter(h); ClosePrinter(h);
+    return w==data.Length;
+  }
+}
+"@
+$bytes=[System.IO.File]::ReadAllBytes("${escFile}")
+$ok=[RawPrint]::Send("${esc(printerName)}",$bytes)
+Remove-Item "${escFile}" -ErrorAction SilentlyContinue
+if(-not $ok){throw "RawPrint failed: ${esc(printerName)}"}
+Write-Output "OK"
+`;
+    execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', psScript],
+      { timeout: 15000 },
+      (err, stdout, stderr) => {
+        try { fs.unlinkSync(tmpFile); } catch (_) {}
+        if (err) return reject(new Error(`Windows print failed ("${printerName}"): ${stderr || err.message}`));
+        if (stdout.trim() === 'OK') return resolve();
+        reject(new Error(`Windows print failed ("${printerName}"): ${stderr || stdout}`));
+      }
+    );
+  });
+}
+
 function decodeJobContent(content) {
   if (content === null || content === undefined) {
     throw new Error('Missing print content');
@@ -385,6 +508,47 @@ async function reportPrinterStatuses() {
 
   const statuses = await Promise.all(
     uniqueEntries.map(async ([station, printer]) => {
+      // Windows spooler printers: report as online (spooler manages connectivity)
+      if (printer.printerName || printer.connectionType === 'windows_printer') {
+        return {
+          station,
+          printerId: printer.printerId || null,
+          printerName: printer.printerName,
+          connectionType: 'windows_printer',
+          isOnline: true,
+          latency: null,
+          error: null,
+          checkedAt: new Date().toISOString()
+        };
+      }
+      // USB printers: check device path existence instead of TCP
+      if (printer.usbPath || printer.connectionType === 'usb') {
+        const exists = fs.existsSync(printer.usbPath);
+        return {
+          station,
+          printerId: printer.printerId || null,
+          usbPath: printer.usbPath,
+          connectionType: 'usb',
+          isOnline: exists,
+          latency: null,
+          error: exists ? null : `USB device not found: ${printer.usbPath}`,
+          checkedAt: new Date().toISOString()
+        };
+      }
+      // Bluetooth printers: we can't easily test RFCOMM from here without connecting,
+      // so report as online and let the actual print attempt fail if disconnected
+      if (printer.bluetoothAddress || printer.connectionType === 'bluetooth') {
+        return {
+          station,
+          printerId: printer.printerId || null,
+          bluetoothAddress: printer.bluetoothAddress,
+          connectionType: 'bluetooth',
+          isOnline: true,
+          latency: null,
+          error: null,
+          checkedAt: new Date().toISOString()
+        };
+      }
       const result = await testPrinterConnection(printer.ip, printer.port);
       return {
         station,
@@ -409,11 +573,20 @@ async function reportPrinterStatuses() {
   }
 }
 
+let _configRefreshFailCount = 0;
+let _configRefreshLastErrMsg = '';
+
 async function refreshPrinterConfigFromCloud() {
   try {
     const response = await api.get(
       `/api/v1/printers/bridge/${CONFIG.OUTLET_ID}/${CONFIG.BRIDGE_CODE}/config`
     );
+
+    if (_configRefreshFailCount > 0) {
+      console.log('✅ Printer config refresh recovered.');
+      _configRefreshFailCount = 0;
+      _configRefreshLastErrMsg = '';
+    }
 
     const configData = response?.data?.data;
     const printersFromDb = configData?.printers;
@@ -423,11 +596,20 @@ async function refreshPrinterConfigFromCloud() {
 
     const normalizedPrinters = {};
     for (const [station, printer] of Object.entries(printersFromDb)) {
-      if (!station || !printer || !printer.ip) continue;
+      if (!station || !printer) continue;
+      const isUsb = printer.connectionType === 'usb' || (printer.usbPath && !printer.ip);
+      const isWin = printer.connectionType === 'windows_printer' || !!printer.printerName;
+      const isBt  = printer.connectionType === 'bluetooth' || !!printer.bluetoothAddress;
+      // USB, Windows, and Bluetooth printers don't need an IP
+      if (!printer.ip && !isUsb && !isWin && !isBt) continue;
       const port = Number.isInteger(printer.port) ? printer.port : parseInt(printer.port, 10);
       normalizedPrinters[station] = {
-        ip: String(printer.ip).trim(),
+        ip: printer.ip ? String(printer.ip).trim() : null,
         port: Number.isInteger(port) ? port : 9100,
+        usbPath: printer.usbPath || null,
+        printerName: printer.printerName || null,
+        bluetoothAddress: printer.bluetoothAddress || null,
+        connectionType: printer.connectionType || (isUsb ? 'usb' : isWin ? 'windows_printer' : isBt ? 'bluetooth' : 'network'),
         printerId: printer.printerId || null
       };
     }
@@ -443,7 +625,15 @@ async function refreshPrinterConfigFromCloud() {
     console.log(`🔄 Printer config refreshed from DB (${stations.length} stations: ${stations.join(', ')})`);
   } catch (error) {
     const message = error.response?.data?.message || error.message;
-    console.error(`Printer config refresh failed: ${message}`);
+    _configRefreshFailCount++;
+    // Log every failure for the first 3, then only when the message changes, then every 10th
+    if (_configRefreshFailCount <= 3 || message !== _configRefreshLastErrMsg || _configRefreshFailCount % 10 === 0) {
+      console.error(`Printer config refresh failed (attempt ${_configRefreshFailCount}): ${message}`);
+      if (_configRefreshFailCount === 3) {
+        console.warn('  ⚠ Suppressing repeated config-refresh errors. Run: node scripts/run-migration-075-bluetooth.js');
+      }
+      _configRefreshLastErrMsg = message;
+    }
   }
 }
 
@@ -458,8 +648,18 @@ let jobsFailed = 0;
 const LONG_POLL_WAIT = 25000;
 // How many jobs to fetch per poll (reduces round-trips for multi-printer KOTs)
 const BATCH_SIZE = 10;
-// Delay before reconnecting after an error (avoids tight error loops)
-const ERROR_RETRY_DELAY = 5000;
+// Base retry delay after a transient error — doubles on each consecutive failure (max 30s)
+const BASE_RETRY_DELAY = 1000;
+const MAX_RETRY_DELAY  = 30000;
+let consecutiveErrors  = 0;
+
+function nextRetryDelay() {
+  // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s (cap)
+  const delay = Math.min(BASE_RETRY_DELAY * Math.pow(2, consecutiveErrors), MAX_RETRY_DELAY);
+  consecutiveErrors++;
+  return delay;
+}
+function resetRetry() { consecutiveErrors = 0; }
 
 /**
  * Process a single print job: resolve printer → send TCP → acknowledge (fire-and-forget)
@@ -468,15 +668,21 @@ async function processJob(job) {
   const t0 = Date.now();
   console.log(`  📄 Job #${job.id}: ${job.job_type} for ${job.station} (ref: ${job.reference_number || 'N/A'})`);
 
-  // Resolve printer: prefer job's assigned printer IP, fall back to local config
+  // Resolve printer: prefer job's assigned printer, fall back to local config
   let printer;
-  if (job.ip_address) {
-    printer = { ip: job.ip_address, port: job.port || 9100 };
+  if (job.connection_type === 'windows_printer' || job.windows_printer_name) {
+    printer = { printerName: job.windows_printer_name, connectionType: 'windows_printer' };
+  } else if (job.usb_path || job.connection_type === 'usb') {
+    printer = { usbPath: job.usb_path, connectionType: 'usb' };
+  } else if (job.bluetooth_address || job.connection_type === 'bluetooth') {
+    printer = { bluetoothAddress: job.bluetooth_address, connectionType: 'bluetooth' };
+  } else if (job.ip_address) {
+    printer = { ip: job.ip_address, port: job.port || 9100, connectionType: 'network' };
   } else {
     printer = getPrinterForStation(job.station);
   }
 
-  if (!printer || !printer.ip) {
+  if (!printer || (!printer.ip && !printer.usbPath && !printer.printerName && !printer.bluetoothAddress)) {
     console.log(`     ❌ No printer for station "${job.station}"`);
     acknowledgeJob(job.id, 'failed', `No printer configured for station: ${job.station}`);
     jobsFailed++;
@@ -485,12 +691,29 @@ async function processJob(job) {
 
   try {
     const printableContent = decodeJobContent(job.content);
-    await sendToPrinter(printer.ip, printer.port, printableContent);
-    acknowledgeJob(job.id, 'printed'); // fire-and-forget — don't wait for HTTP round-trip
-    jobsProcessed++;
-    console.log(`     ✅ Printed to ${printer.ip}:${printer.port} in ${Date.now() - t0}ms (total: ${jobsProcessed})`);
+    if (printer.connectionType === 'windows_printer' || printer.printerName) {
+      await sendToWindowsPrinter(printer.printerName, printableContent);
+      acknowledgeJob(job.id, 'printed');
+      jobsProcessed++;
+      console.log(`     ✅ Printed via Windows "${printer.printerName}" in ${Date.now() - t0}ms (total: ${jobsProcessed})`);
+    } else if (printer.connectionType === 'usb' || printer.usbPath) {
+      await sendToUsbPrinter(printer.usbPath, printableContent);
+      acknowledgeJob(job.id, 'printed');
+      jobsProcessed++;
+      console.log(`     ✅ Printed via USB ${printer.usbPath} in ${Date.now() - t0}ms (total: ${jobsProcessed})`);
+    } else if (printer.connectionType === 'bluetooth' || printer.bluetoothAddress) {
+      await sendToBluetoothPrinter(printer.bluetoothAddress, printableContent);
+      acknowledgeJob(job.id, 'printed');
+      jobsProcessed++;
+      console.log(`     ✅ Printed via Bluetooth ${printer.bluetoothAddress} in ${Date.now() - t0}ms (total: ${jobsProcessed})`);
+    } else {
+      await sendToPrinter(printer.ip, printer.port, printableContent);
+      acknowledgeJob(job.id, 'printed');
+      jobsProcessed++;
+      console.log(`     ✅ Printed to ${printer.ip}:${printer.port} in ${Date.now() - t0}ms (total: ${jobsProcessed})`);
+    }
   } catch (printError) {
-    acknowledgeJob(job.id, 'failed', printError.message); // fire-and-forget
+    acknowledgeJob(job.id, 'failed', printError.message);
     jobsFailed++;
     console.log(`     ❌ Failed: ${printError.message} in ${Date.now() - t0}ms (failed: ${jobsFailed})`);
   }
@@ -533,21 +756,33 @@ async function pollLoop() {
       }
 
       // No jobs — server already waited LONG_POLL_WAIT ms, reconnect immediately
+      resetRetry();
     } catch (error) {
-      if (error.response?.status === 429) {
+      const status = error.response?.status;
+      if (status === 429) {
         console.warn('⚠️  Rate limited (429) — waiting 30s');
+        consecutiveErrors = 0;
         await sleep(30000);
-      } else if (error.response?.status === 401) {
+      } else if (status === 401) {
         console.error('❌ Auth failed. Check bridge code/API key. Retrying in 30s...');
+        consecutiveErrors = 0;
         await sleep(30000);
       } else if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
-        // Normal: long-poll timeout, just reconnect
+        // Normal: long-poll timed out with no jobs — reconnect immediately, no backoff
+        resetRetry();
       } else if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
-        console.error(`❌ Server unreachable (${error.code}). Retrying in ${ERROR_RETRY_DELAY / 1000}s...`);
-        await sleep(ERROR_RETRY_DELAY);
+        const delay = nextRetryDelay();
+        console.error(`❌ Server unreachable (${error.code}). Retry in ${delay / 1000}s...`);
+        await sleep(delay);
+      } else if (status === 502 || status === 503 || status === 504) {
+        // Gateway/proxy error — server restarting or overloaded, retry quickly
+        const delay = nextRetryDelay();
+        if (consecutiveErrors <= 2) console.warn(`⚠️  Server returned ${status}. Retry in ${delay / 1000}s...`);
+        await sleep(delay);
       } else {
-        console.error('Poll error:', error.message);
-        await sleep(ERROR_RETRY_DELAY);
+        const delay = nextRetryDelay();
+        console.error(`Poll error (${delay / 1000}s retry): ${error.message}`);
+        await sleep(delay);
       }
     }
   }
@@ -574,7 +809,11 @@ function printBanner() {
   console.log('║  Configured Printers:                                    ║');
   
   for (const [station, printer] of Object.entries(CONFIG.PRINTERS)) {
-    const line = `${station}: ${printer.ip}:${printer.port}`;
+    let dest;
+    if (printer.printerName || printer.connectionType === 'windows_printer') dest = `WIN:${printer.printerName}`;
+    else if (printer.usbPath) dest = `USB:${printer.usbPath}`;
+    else dest = `${printer.ip}:${printer.port}`;
+    const line = `${station}: ${dest}`;
     console.log(`║    - ${line.padEnd(52)}║`);
   }
   
@@ -588,6 +827,15 @@ function testPrinterConnections() {
   console.log('🔍 Testing printer connections...\n');
   
   for (const [station, printer] of Object.entries(CONFIG.PRINTERS)) {
+    if (printer.printerName || printer.connectionType === 'windows_printer') {
+      console.log(`   🖨️  ${station}: Windows printer "${printer.printerName}" - check via Get-Printer`);
+      continue;
+    }
+    if (printer.usbPath || printer.connectionType === 'usb') {
+      const exists = fs.existsSync(printer.usbPath);
+      console.log(`   ${exists ? '✅' : '⚠️ '} ${station}: USB ${printer.usbPath} - ${exists ? 'device found' : 'device not found'}`);
+      continue;
+    }
     const client = new net.Socket();
     client.setTimeout(3000);
     
@@ -601,7 +849,7 @@ function testPrinterConnections() {
     });
     
     client.on('timeout', () => {
-      console.log(`   ⚠️ ${station}: ${printer.ip}:${printer.port} - Timeout`);
+      console.log(`   ⚠️  ${station}: ${printer.ip}:${printer.port} - Timeout`);
       client.destroy();
     });
   }

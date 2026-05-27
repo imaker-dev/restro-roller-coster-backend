@@ -201,6 +201,7 @@ const printerService = {
     const deviceId = data.deviceId || data.device_id || null; // Mobile POS device identifier
     const usbPath = data.usbPath || data.usb_path || null; // USB device path: /dev/usb/lp0 or \\.\COM1
     const printerName = data.printerName || data.printer_name || null; // Windows printer name: "EPSON TM-T88IV Receipt"
+    const bluetoothAddress = data.bluetoothAddress || data.bluetooth_address || null; // Bluetooth MAC: 00:1B:DC:0F:01:00
     const paperWidth = data.paperWidth || data.paper_width || '80mm';
     const charactersPerLine = data.charactersPerLine || data.characters_per_line || 48;
     const supportsCashDrawer = data.supportsCashDrawer || data.supports_cash_drawer || false;
@@ -235,14 +236,14 @@ const printerService = {
       const [result] = await connection.query(
         `INSERT INTO printers (
           uuid, outlet_id, name, code, printer_type, station,
-          station_id, ip_address, port, usb_path, printer_name,
+          station_id, ip_address, port, usb_path, printer_name, bluetooth_address,
           connection_type, device_id, paper_width, characters_per_line,
           supports_cash_drawer, supports_cutter, supports_logo
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           uuid, outletId, data.name, code, printerType,
           stationValue, stationId,
-          ipAddress, data.port || 9100, usbPath, printerName,
+          ipAddress, data.port || 9100, usbPath, printerName, bluetoothAddress,
           connectionType, deviceId,
           paperWidth, charactersPerLine,
           supportsCashDrawer, supportsCutter,
@@ -503,13 +504,22 @@ const printerService = {
     return result;
   },
 
+  async getBluetoothPrintersForOutlet(outletId) {
+    const pool = getPool();
+    const [rows] = await pool.query(
+      'SELECT * FROM printers WHERE outlet_id = ? AND connection_type = ? AND is_active = 1 ORDER BY id',
+      [outletId, 'bluetooth']
+    );
+    return rows;
+  },
+
   async updatePrinter(id, data) {
     const pool = getPool();
     const updates = [];
     const params = [];
 
     const fields = ['name', 'code', 'printer_type', 'station', 'station_id',
-                    'ip_address', 'port', 'usb_path', 'printer_name', 'connection_type', 'device_id',
+                    'ip_address', 'port', 'usb_path', 'printer_name', 'bluetooth_address', 'connection_type', 'device_id',
                     'paper_width', 'characters_per_line', 'supports_cash_drawer',
                     'supports_cutter', 'supports_logo', 'is_active'];
     
@@ -1051,33 +1061,69 @@ const printerService = {
     // Check for dynamic mode ('*' or empty = all printers)
     const isDynamicMode = assignedStations.includes('*') || assignedStations.length === 0;
 
-    let rows;
-    if (isDynamicMode) {
-      // Dynamic mode: return ALL active printers for this outlet
-      // Join kitchen_stations AND counters to get all station_type / counter_type mappings
-      [rows] = await pool.query(
-        `SELECT p.id as printer_id, p.station, p.ip_address, p.port,
-                p.usb_path, p.printer_name, p.connection_type,
+    // Build SELECT list — omit bluetooth_address if the column doesn't exist yet (migration not run)
+    const selectCore = (withBt) =>
+      `p.id as printer_id, p.station, p.ip_address, p.port,
+                p.usb_path, p.printer_name,${withBt ? ` p.bluetooth_address,` : ''} p.connection_type,
                 ks.station_type as ks_station_type,
-                c.counter_type as counter_type
-         FROM printers p
-         LEFT JOIN kitchen_stations ks ON ks.printer_id = p.id AND ks.is_active = 1
-         LEFT JOIN counters c ON c.printer_id = p.id AND c.is_active = 1
-         WHERE p.outlet_id = ? AND p.is_active = 1
-           AND (p.ip_address IS NOT NULL OR p.connection_type IN ('usb','windows_printer'))
-         ORDER BY p.station ASC, p.id ASC`,
-        [outletId]
-      );
-    } else {
-      // Fixed mode: return only printers matching assigned stations
+                c.counter_type as counter_type`;
+
+    const runQuery = async (withBt) => {
+      if (isDynamicMode) {
+        return pool.query(
+          `SELECT ${selectCore(withBt)}
+           FROM printers p
+           LEFT JOIN kitchen_stations ks ON ks.printer_id = p.id AND ks.is_active = 1
+           LEFT JOIN counters c ON c.printer_id = p.id AND c.is_active = 1
+           WHERE p.outlet_id = ? AND p.is_active = 1
+             AND (p.ip_address IS NOT NULL OR p.connection_type IN ('usb','windows_printer','bluetooth'))
+           ORDER BY p.station ASC, p.id ASC`,
+          [outletId]
+        );
+      } else {
+        const uniqueStations = Array.from(
+          new Set(
+            assignedStations
+              .map((s) => (typeof s === 'string' ? s.trim() : ''))
+              .filter(Boolean)
+          )
+        );
+        if (uniqueStations.length === 0) return [[]]; // empty result
+        const placeholders = uniqueStations.map(() => '?').join(',');
+        return pool.query(
+          `SELECT ${selectCore(withBt)}
+           FROM printers p
+           LEFT JOIN kitchen_stations ks ON ks.printer_id = p.id AND ks.is_active = 1
+           LEFT JOIN counters c ON c.printer_id = p.id AND c.is_active = 1
+           WHERE p.outlet_id = ? AND p.is_active = 1 AND p.station IN (${placeholders})
+           ORDER BY p.station ASC, p.id ASC`,
+          [outletId, ...uniqueStations]
+        );
+      }
+    };
+
+    let rows;
+    let hasBtCol = true;
+    try {
+      [rows] = await runQuery(true);
+    } catch (err) {
+      if (err.code === 'ER_BAD_FIELD_ERROR' && err.message.includes('bluetooth_address')) {
+        logger.warn('getBridgePrinterConfig: bluetooth_address column missing — run migration 075-bluetooth. Proceeding without it.');
+        hasBtCol = false;
+        [rows] = await runQuery(false);
+      } else {
+        throw err;
+      }
+    }
+
+    if (!isDynamicMode) {
       const uniqueStations = Array.from(
         new Set(
           assignedStations
-            .map((station) => (typeof station === 'string' ? station.trim() : ''))
+            .map((s) => (typeof s === 'string' ? s.trim() : ''))
             .filter(Boolean)
         )
       );
-
       if (uniqueStations.length === 0) {
         return {
           bridgeId: bridge.id,
@@ -1088,20 +1134,6 @@ const printerService = {
           fetchedAt: new Date().toISOString()
         };
       }
-
-      const placeholders = uniqueStations.map(() => '?').join(',');
-      [rows] = await pool.query(
-        `SELECT p.id as printer_id, p.station, p.ip_address, p.port,
-                p.usb_path, p.printer_name, p.connection_type,
-                ks.station_type as ks_station_type,
-                c.counter_type as counter_type
-         FROM printers p
-         LEFT JOIN kitchen_stations ks ON ks.printer_id = p.id AND ks.is_active = 1
-         LEFT JOIN counters c ON c.printer_id = p.id AND c.is_active = 1
-         WHERE p.outlet_id = ? AND p.is_active = 1 AND p.station IN (${placeholders})
-         ORDER BY p.station ASC, p.id ASC`,
-        [outletId, ...uniqueStations]
-      );
     }
 
     const printers = {};
@@ -1111,6 +1143,7 @@ const printerService = {
         port: row.port || 9100,
         usbPath: row.usb_path || null,
         printerName: row.printer_name || null,
+        bluetoothAddress: hasBtCol ? (row.bluetooth_address || null) : null,
         connectionType: row.connection_type || 'network',
         printerId: row.printer_id
       };
@@ -1238,9 +1271,9 @@ const printerService = {
   // CONTENT FORMATTING
   // ========================
 
-  formatKotContent(kotData) {
+  formatKotContent(kotData, width = 42) {
     const lines = [];
-    const w = 42;
+    const w = width;
     const dash = '-'.repeat(w);
     const cmd = this.getEscPosCommands();
 
@@ -1292,9 +1325,9 @@ const printerService = {
     return lines.join('\n');
   },
 
-  formatCancelSlipContent(cancelData) {
+  formatCancelSlipContent(cancelData, width = 42) {
     const lines = [];
-    const w = 42;
+    const w = width;
     const dash = '-'.repeat(w);
     const cmd = this.getEscPosCommands();
 
@@ -1343,6 +1376,30 @@ const printerService = {
     }
     // ───────────────────────────────────────────────────────────────────────
 
+    // ── Global Bluetooth intercept ───────────────────────────────────────────
+    if (userId) {
+      const [socketPW, btDbPrinters] = await Promise.all([
+        this.getBtPaperWidthForUser(cancelData.outletId, userId),
+        this.getBluetoothPrintersForOutlet(cancelData.outletId),
+      ]);
+      const btCfg = btDbPrinters[0] || { id: null, name: 'BT', outlet_id: cancelData.outletId, device_id: null };
+      const paperWidth = socketPW || btCfg.paper_width || '80mm';
+      const is58mm    = paperWidth === '58mm';
+      const charWidth = is58mm ? 32 : 42;
+      const btContent = this.formatCancelSlipContent(cancelData, charWidth);
+      const btEscpos  = this.wrapWithEscPos(btContent, { beep: true });
+      const btResult  = await this.sendToBluetoothDevice(
+        { ...btCfg, paper_width: paperWidth, characters_per_line: charWidth },
+        btEscpos, btContent,
+        { jobType: 'cancel_slip', ref: cancelData.orderNumber, outletId: cancelData.outletId, station, userId, beep: true }
+      );
+      if (btResult) {
+        logger.info(`printCancelSlip: intercepted by Bluetooth (${btResult.mode}) paper=${paperWidth} ref=${cancelData.orderNumber}`);
+        return btResult;
+      }
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     // Bridge fallback — regular wrapping for non-Mobile-POS printers
     const wrappedContent = this.wrapWithEscPos(content, { beep: true });
     return this.createPrintJob({
@@ -1373,14 +1430,18 @@ const printerService = {
     }
   },
 
-  formatBillContent(billData) {
+  formatBillContent(billData, width = 48) {
     const lines = [];
-    const w = 48; // 48-char full width for Font A on 80mm (zero char spacing fills the paper)
+    const w = width; // 48-char for 80mm, 32-char for 58mm (proportional scaling below)
+    const is58mm = w <= 32;
     const dash = '-'.repeat(w);
     const cmd = this.getEscPosCommands();
     const FONT_A = '\x1B\x4D\x00'; // Standard font (12x24) — bigger, clearer text
     const CHAR_SPACE_0 = '\x1B\x20\x00'; // Zero right-side character spacing — fills full paper width
-    const LS_BODY = '\x1B\x33\x38'; // 56-dot line spacing — clean, readable spacing for Font A
+    // 58mm: 24-dot compact spacing (56-dot on 32-char paper causes massive gaps from line wrapping)
+    const LS_BODY = is58mm ? '\x1B\x33\x18' : '\x1B\x33\x38';
+    // 58mm: avoid DOUBLE_HW (2x width) — keeps text within 32 chars; use DOUBLE_HEIGHT only
+    const SIZE_LG = is58mm ? cmd.DOUBLE_HEIGHT : cmd.DOUBLE_HW;
 
     // ── 1. HEADER ───────────────────────────────
     if (billData.isDuplicate) {
@@ -1388,8 +1449,7 @@ const printerService = {
       if (billData.duplicateNumber) lines.push('Copy #' + billData.duplicateNumber);
     }
 
-    // Restaurant name (double height, bold, centered)
-    // Reset appended inline — no separate line entry, avoids blank line after name
+    // Restaurant name — BOLD+DOUBLE_HEIGHT on both widths for visibility
     lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HEIGHT + (billData.outletName || 'Restaurant') + cmd.NORMAL + cmd.BOLD_OFF + FONT_A + CHAR_SPACE_0 + LS_BODY);
     if (billData.outletAddress) lines.push(billData.outletAddress);
     if (billData.outletPhone) lines.push('Ph: ' + billData.outletPhone);
@@ -1397,8 +1457,7 @@ const printerService = {
 
     // ── 2. TOKEN NUMBER (prominent, centered, large) ────
     if (billData.tokenNumber) {
-      // Reset appended inline — no separate line entry, avoids blank line after token
-      lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HW + 'TOKEN: ' + billData.tokenNumber + cmd.NORMAL + cmd.BOLD_OFF + FONT_A + CHAR_SPACE_0 + LS_BODY);
+      lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + SIZE_LG + 'TOKEN: ' + billData.tokenNumber + cmd.NORMAL + cmd.BOLD_OFF + FONT_A + CHAR_SPACE_0 + LS_BODY);
     }
 
     // ── 3. BILL META ────────────────────────────
@@ -1450,9 +1509,13 @@ const printerService = {
     }
 
     // ── 4. ITEM TABLE (full width fixed grid) ───
-    // ITEM=24  QTY=5  RATE=9  AMT=10  = 48
+    // Scale columns proportionally: default 48mm = N24 Q5 P9 A10
+    // 58mm tweak: tighten NAME by 1, add 1-char gap between QTY→RATE to prevent merge (e.g. '1'+'319' → '1319')
     lines.push(dash);
-    const cN = 24, cQ = 5, cP = 9, cA = 10;
+    const cN = is58mm ? 15 : Math.round(24 * w / 48);
+    const cQ = Math.round(5 * w / 48);
+    const cP = Math.round(9 * w / 48);
+    const cA = Math.max(6, w - cN - cQ - cP - (is58mm ? 1 : 0));
     lines.push(cmd.BOLD_ON +
       'ITEM'.padEnd(cN) +
       this.rAlign('QTY', cQ) +
@@ -1468,8 +1531,9 @@ const printerService = {
       totalQty += qty;
       const price = parseFloat(item.unitPrice).toFixed(2);
       const amount = parseFloat(item.totalPrice).toFixed(2);
+      const gap = is58mm ? ' ' : '';
       const cols =
-        this.rAlign(qty.toString(), cQ) +
+        this.rAlign(qty.toString(), cQ) + gap +
         this.rAlign(price, cP) +
         this.rAlign(amount, cA);
       let name = item.itemName || '';
@@ -1505,7 +1569,7 @@ const printerService = {
         const discAmt = parseFloat(disc.amount).toFixed(2);
         let label = 'Discount';
         if (disc.type === 'percentage') label += ' (' + disc.value + '%)';
-        else if (disc.value > 0) label += ' (Flat ' + (billData.currencySymbol || 'Rs. ') + parseFloat(disc.value).toFixed(0) + ')';
+        else if (disc.value > 0) label += ' (Flat ' + this.formatCurrency(billData.currencySymbol, parseFloat(disc.value).toFixed(0)) + ')';
         lines.push(this.padBetween(label + ':', '-' + discAmt, w));
       }
     } else if (billData.discount) {
@@ -1520,18 +1584,17 @@ const printerService = {
       lines.push(cmd.BOLD_ON + this.padBetween('NO CHARGE (NC):', '-' + parseFloat(billData.ncAmount).toFixed(2), w) + cmd.BOLD_OFF);
     }
 
-    // ── 6. GRAND TOTAL (center, bold, double width + double height — max size)
+    // ── 6. GRAND TOTAL
     const eqDash = '='.repeat(w);
     lines.push(eqDash);
-    lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HW + 'GRAND TOTAL');
-    lines.push((billData.currencySymbol || 'Rs. ') + billData.grandTotal);
-    // Restore FONT_A + zero char spacing + body spacing after DOUBLE_HW resets print mode
+    lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + SIZE_LG + 'GRAND TOTAL');
+    lines.push(this.formatCurrency(billData.currencySymbol, billData.grandTotal));
     lines.push(cmd.NORMAL + cmd.BOLD_OFF + FONT_A + CHAR_SPACE_0 + LS_BODY + cmd.ALIGN_LEFT + eqDash);
 
     // ── 7. PAYMENT (full width) ─────────────────
     if (billData.dueAmount && parseFloat(billData.dueAmount) > 0) {
-      lines.push(this.padBetween('PAID:', (billData.currencySymbol || 'Rs. ') + parseFloat(billData.paidAmount || 0).toFixed(2), w));
-      lines.push(this.padBetween('DUE:', (billData.currencySymbol || 'Rs. ') + parseFloat(billData.dueAmount).toFixed(2), w));
+      lines.push(this.padBetween('PAID:', this.formatCurrency(billData.currencySymbol, parseFloat(billData.paidAmount || 0).toFixed(2)), w));
+      lines.push(this.padBetween('DUE:', this.formatCurrency(billData.currencySymbol, parseFloat(billData.dueAmount).toFixed(2)), w));
       lines.push(dash);
     }
 
@@ -1542,7 +1605,7 @@ const printerService = {
         for (const sp of billData.splitBreakdown) {
           lines.push(this.padBetween(
             (sp.paymentMode || '').toUpperCase(),
-            (billData.currencySymbol || 'Rs. ') + parseFloat(sp.amount || 0).toFixed(2),
+            this.formatCurrency(billData.currencySymbol, parseFloat(sp.amount || 0).toFixed(2)),
             w
           ));
         }
@@ -1675,7 +1738,20 @@ const printerService = {
 
     // ── 6. SUMMARY (right-aligned values) ───────
     lines.push(cmd.BOLD_ON + this.padBetween('Total Qty: ' + totalQty, '', w) + cmd.BOLD_OFF);
+
     lines.push(this.padBetween('Subtotal:', billData.subtotal, w));
+
+    if (billData.discounts && billData.discounts.length > 0) {
+      for (const disc of billData.discounts) {
+        const discAmt = parseFloat(disc.amount).toFixed(2);
+        let label = 'Discount';
+        if (disc.type === 'percentage') label += ' (' + disc.value + '%)';
+        else if (disc.value > 0) label += ' (Flat ' + this.formatCurrency(billData.currencySymbol, parseFloat(disc.value).toFixed(0)) + ')';
+        lines.push(this.padBetween(label + ':', '-' + discAmt, w));
+      }
+    } else if (billData.discount) {
+      lines.push(this.padBetween('Discount:', '-' + billData.discount, w));
+    }
 
     for (const tax of billData.taxes || []) {
       const baseName = (tax.name || 'Tax').replace(/\s*[\d.]+%?/g, '').trim().toUpperCase();
@@ -1686,17 +1762,17 @@ const printerService = {
       lines.push(this.padBetween('Service Charge:', billData.serviceCharge, w));
     }
 
-    if (billData.discounts && billData.discounts.length > 0) {
-      for (const disc of billData.discounts) {
-        const discAmt = parseFloat(disc.amount).toFixed(2);
-        let label = 'Discount';
-        if (disc.type === 'percentage') label += ' (' + disc.value + '%)';
-        else if (disc.value > 0) label += ' (Flat ' + (billData.currencySymbol || 'Rs. ') + parseFloat(disc.value).toFixed(0) + ')';
-        lines.push(this.padBetween(label + ':', '-' + discAmt, w));
-      }
-    } else if (billData.discount) {
-      lines.push(this.padBetween('Discount:', '-' + billData.discount, w));
-    }
+    // if (billData.discounts && billData.discounts.length > 0) {
+    //   for (const disc of billData.discounts) {
+    //     const discAmt = parseFloat(disc.amount).toFixed(2);
+    //     let label = 'Discount';
+    //     if (disc.type === 'percentage') label += ' (' + disc.value + '%)';
+    //     else if (disc.value > 0) label += ' (Flat ' + (billData.currencySymbol || 'Rs. ') + parseFloat(disc.value).toFixed(0) + ')';
+    //     lines.push(this.padBetween(label + ':', '-' + discAmt, w));
+    //   }
+    // } else if (billData.discount) {
+    //   lines.push(this.padBetween('Discount:', '-' + billData.discount, w));
+    // }
 
     if (billData.roundOff && parseFloat(billData.roundOff) !== 0) {
       lines.push(this.padBetween('Round Off:', billData.roundOff, w));
@@ -1709,13 +1785,13 @@ const printerService = {
     // ── 7. GRAND TOTAL — [MPOS tweak 3] single bold line, no double-HW ──
     const eqDash = '='.repeat(w);
     lines.push(eqDash);
-    lines.push(cmd.BOLD_ON + this.padBetween('GRAND TOTAL:', (billData.currencySymbol || 'Rs. ') + billData.grandTotal, w) + cmd.BOLD_OFF);
+    lines.push(cmd.BOLD_ON + this.padBetween('GRAND TOTAL:', this.formatCurrency(billData.currencySymbol, billData.grandTotal), w) + cmd.BOLD_OFF);
     lines.push(eqDash);
 
     // ── 8. PAYMENT (full width) ─────────────────
     if (billData.dueAmount && parseFloat(billData.dueAmount) > 0) {
-      lines.push(this.padBetween('PAID:', (billData.currencySymbol || 'Rs. ') + parseFloat(billData.paidAmount || 0).toFixed(2), w));
-      lines.push(this.padBetween('DUE:', (billData.currencySymbol || 'Rs. ') + parseFloat(billData.dueAmount).toFixed(2), w));
+      lines.push(this.padBetween('PAID:', this.formatCurrency(billData.currencySymbol, parseFloat(billData.paidAmount || 0).toFixed(2)), w));
+      lines.push(this.padBetween('DUE:', this.formatCurrency(billData.currencySymbol, parseFloat(billData.dueAmount).toFixed(2)), w));
       lines.push(dash);
     }
 
@@ -1726,7 +1802,7 @@ const printerService = {
         for (const sp of billData.splitBreakdown) {
           lines.push(this.padBetween(
             (sp.paymentMode || '').toUpperCase(),
-            (billData.currencySymbol || 'Rs. ') + parseFloat(sp.amount || 0).toFixed(2),
+            this.formatCurrency(billData.currencySymbol, parseFloat(sp.amount || 0).toFixed(2)),
             w
           ));
         }
@@ -1774,6 +1850,18 @@ const printerService = {
     }
     if (line) result.push(line);
     return result.length ? result : [''];
+  },
+
+  /**
+   * Currency display helper — always inserts a space between symbol and amount.
+   *   formatCurrency('Rs', '356.00')   → 'Rs. 356.00'
+   *   formatCurrency('Rs.', '356.00')  → 'Rs. 356.00'
+   *   formatCurrency(null, '356.00')   → 'Rs. 356.00'
+   */
+  formatCurrency(symbol, amount) {
+    const s = (symbol || 'Rs').trim();
+    const prefix = s.endsWith('.') ? s : s + '.';
+    return prefix + ' ' + amount;
   },
 
   // ========================
@@ -1870,6 +1958,34 @@ const printerService = {
     }
     // ───────────────────────────────────────────────────────────────────────
 
+    // ── Global Bluetooth intercept ───────────────────────────────────────────
+    // If the user has an active BT socket room, route ALL KOTs there.
+    // No DB record required — works like MPOS intercept.
+    // DB is queried only to get paper_width / characters_per_line config.
+    if (userId) {
+      // Socket paper width takes priority over DB config (device knows its own paper size)
+      const [socketPW, btDbPrinters] = await Promise.all([
+        this.getBtPaperWidthForUser(kotData.outletId, userId),
+        this.getBluetoothPrintersForOutlet(kotData.outletId),
+      ]);
+      const btCfg = btDbPrinters[0] || { id: null, name: 'BT', outlet_id: kotData.outletId, device_id: null };
+      const paperWidth = socketPW || btCfg.paper_width || '80mm';
+      const is58mm    = paperWidth === '58mm';
+      const charWidth = is58mm ? 32 : (btCfg.characters_per_line || 42);
+      const btContent = this.formatKotContent(kotData, charWidth);
+      const btEscpos  = this.wrapWithEscPos(btContent, { beep: true });
+      const btResult  = await this.sendToBluetoothDevice(
+        { ...btCfg, paper_width: paperWidth, characters_per_line: charWidth },
+        btEscpos, btContent,
+        { jobType, ref: kotData.kotNumber, outletId: kotData.outletId, station, userId, beep: true }
+      );
+      if (btResult) {
+        logger.info(`printKot: intercepted by Bluetooth (${btResult.mode}) paper=${paperWidth} ref=${kotData.kotNumber}`);
+        return btResult;
+      }
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     // Regular printers — use standard wrapping (full cut, 5-line feed)
     const wrappedContent = this.wrapWithEscPos(content, { beep: true });
 
@@ -1903,7 +2019,8 @@ const printerService = {
     const mposPrinters = printers.filter(p => p.connection_type === 'mobile_pos');
     const usbPrinters = printers.filter(p => p.connection_type === 'usb');
     const winPrinters = printers.filter(p => p.connection_type === 'windows_printer');
-    const regularPrinters = printers.filter(p => !['mobile_pos','usb','windows_printer'].includes(p.connection_type));
+    const bluetoothPrinters = printers.filter(p => p.connection_type === 'bluetooth');
+    const regularPrinters = printers.filter(p => !['mobile_pos','usb','windows_printer','bluetooth'].includes(p.connection_type));
     const results = [];
 
     for (const printer of mposPrinters) {
@@ -1984,6 +2101,34 @@ const printerService = {
       }
     }
 
+    // Step 1d: Bluetooth printers — try Socket.IO direct to Flutter app first, fallback to bridge
+    for (const printer of bluetoothPrinters) {
+      const is58mm = (printer.paper_width || '80mm') === '58mm';
+      const charWidth = printer.characters_per_line || (is58mm ? 32 : 42);
+      const btContent = this.formatKotContent(kotData, charWidth);
+      const btEscpos = this.wrapWithEscPos(btContent, { beep: true });
+      const btResult = await this.sendToBluetoothDevice(printer, btEscpos, btContent, {
+        jobType, ref: kotData.kotNumber, outletId: kotData.outletId, station, userId, beep: true
+      });
+      if (btResult) {
+        results.push(btResult);
+        continue;
+      }
+      // Device offline — fall back to bridge job
+      try {
+        const bridgeResult = await this.createPrintJob({
+          outletId: kotData.outletId, printerId: printer.id, jobType, station,
+          stationId: kotData.stationId || null, isCounter: kotData.isCounter || false,
+          kotId: kotData.kotId, orderId: kotData.orderId, content: btEscpos,
+          contentType: 'escpos', referenceNumber: kotData.kotNumber,
+          tableNumber: kotData.tableNumber, priority: 10, createdBy: userId
+        });
+        results.push({ ...bridgeResult, printerId: printer.id, method: 'bridge' });
+      } catch (err) {
+        logger.error(`printKot: Bluetooth bridge fallback failed for printer ${printer.id} (${printer.name}):`, err.message);
+      }
+    }
+
     // Step 2: Try direct TCP in PARALLEL for regular printers with healthy IPs
     // Only when server is on same network as printers (DIRECT_PRINT_ENABLED=true)
     const directResults = new Map(); // printerId → true/false
@@ -2041,9 +2186,10 @@ const printerService = {
     const directCount = results.filter(r => r.method === 'direct').length;
     const directUsbCount = results.filter(r => r.method === 'direct_usb').length;
     const directWinCount = results.filter(r => r.method === 'direct_windows').length;
+    const btSocketCount = results.filter(r => r.method === 'bt_socket').length;
     const bridgeCount = results.filter(r => r.method === 'bridge').length;
-    if (printers.length > 1 || bridgeCount > 0 || mposCount > 0 || directUsbCount > 0 || directWinCount > 0) {
-      logger.info(`printKot: ${kotData.kotNumber} → ${results.length} prints (${mposCount} mpos, ${directCount} direct_tcp, ${directUsbCount} direct_usb, ${directWinCount} direct_windows, ${bridgeCount} bridge)`);
+    if (printers.length > 1 || bridgeCount > 0 || mposCount > 0 || directUsbCount > 0 || directWinCount > 0 || btSocketCount > 0) {
+      logger.info(`printKot: ${kotData.kotNumber} → ${results.length} prints (${mposCount} mpos, ${directCount} direct_tcp, ${directUsbCount} direct_usb, ${directWinCount} direct_windows, ${btSocketCount} bt_socket, ${bridgeCount} bridge)`);
     }
     return results[0] || null;
   },
@@ -2081,6 +2227,40 @@ const printerService = {
       }
     }
     // ─────────────────────────────────────────────────────────────────────────
+
+    // ── Global Bluetooth intercept ───────────────────────────────────────────
+    // If the user has an active BT socket room, route ALL bills there.
+    // No DB record required — works like MPOS intercept.
+    // DB is queried only to get paper_width / characters_per_line config.
+    if (userId) {
+      const [socketPW, btDbPrinters] = await Promise.all([
+        this.getBtPaperWidthForUser(billData.outletId, userId),
+        this.getBluetoothPrintersForOutlet(billData.outletId),
+      ]);
+      const btCfg = (resolvedPrinter?.connection_type === 'bluetooth' ? resolvedPrinter : null)
+        || btDbPrinters[0]
+        || { id: null, name: 'BT', outlet_id: billData.outletId, device_id: null };
+      const paperWidth = socketPW || btCfg.paper_width || '80mm';
+      const is58mm  = paperWidth === '58mm';
+      const charWidth = is58mm ? 32 : (btCfg.characters_per_line || 48);
+      const btContent = this.formatBillContent(billData, charWidth);
+      const btEscpos  = this.wrapWithEscPos(btContent, { openDrawer: billData.openDrawer, logo });
+      const btResult  = await this.sendToBluetoothDevice(
+        { ...btCfg, paper_width: paperWidth, characters_per_line: charWidth },
+        btEscpos, btContent, {
+          jobType: billData.isDuplicate ? 'duplicate_bill' : 'bill',
+          ref: billData.invoiceNumber,
+          outletId: billData.outletId,
+          station, userId,
+          openDrawer: billData.openDrawer
+        }
+      );
+      if (btResult) {
+        logger.info(`[BILL-PRINT] Bill ${billData.invoiceNumber || 'N/A'} intercepted by Bluetooth (${btResult.mode}) paper=${paperWidth}`);
+        return btResult;
+      }
+    }
+    // ────────────────────────────────────────────────────────────────────────
 
     // Regular printers (IP/bridge) — use full 80mm formatter + standard wrapping
     const content = this.formatBillContent(billData);
@@ -2128,6 +2308,35 @@ const printerService = {
         jobType: billData.isDuplicate ? 'duplicate_bill' : 'bill',
         station, printerId, orderId: billData.orderId, invoiceId: billData.invoiceId,
         content: wrappedContent, contentType: 'escpos',
+        referenceNumber: billData.invoiceNumber, tableNumber: billData.tableNumber,
+        priority: 5, createdBy: userId
+      });
+    }
+
+    // Bluetooth printer: try Socket.IO direct to Flutter app first, fallback to bridge
+    if (resolvedPrinter?.connection_type === 'bluetooth') {
+      const is58mm = (resolvedPrinter.paper_width || '80mm') === '58mm';
+      const charWidth = resolvedPrinter.characters_per_line || (is58mm ? 32 : 48);
+      const btContent = this.formatBillContent(billData, charWidth);
+      const btEscpos = this.wrapWithEscPos(btContent, { openDrawer: billData.openDrawer });
+      const btResult = await this.sendToBluetoothDevice(resolvedPrinter, btEscpos, btContent, {
+        jobType: billData.isDuplicate ? 'duplicate_bill' : 'bill',
+        ref: billData.invoiceNumber,
+        outletId: billData.outletId,
+        station,
+        userId,
+        openDrawer: billData.openDrawer
+      });
+      if (btResult) {
+        logger.info(`[BILL-PRINT] Bill ${billData.invoiceNumber || 'N/A'} sent via Bluetooth to device for "${resolvedPrinter.name}"`);
+        return btResult;
+      }
+      logger.warn(`[BILL-PRINT] Bluetooth device offline for bill ${billData.invoiceNumber}, falling back to bridge`);
+      return this.createPrintJob({
+        outletId: billData.outletId,
+        jobType: billData.isDuplicate ? 'duplicate_bill' : 'bill',
+        station, printerId, orderId: billData.orderId, invoiceId: billData.invoiceId,
+        content: btEscpos, contentType: 'escpos',
         referenceNumber: billData.invoiceNumber, tableNumber: billData.tableNumber,
         priority: 5, createdBy: userId
       });
@@ -2383,6 +2592,26 @@ Write-Output "OK"
   },
 
   /**
+   * Returns the paper width ('58mm' | '80mm') of the BT device currently connected
+   * for a given user. Reads btPaperWidth stored on the socket when Flutter calls join:bt_print.
+   * Falls back to null if no BT socket is found (caller should use '80mm' as default).
+   */
+  async getBtPaperWidthForUser(outletId, userId) {
+    if (!userId || !outletId) return null;
+    const io = getSocketIO();
+    if (!io) return null;
+    const rooms = [`bt:${outletId}:user:${userId}`, `bt:user:${userId}`];
+    for (const room of rooms) {
+      const sids = await io.in(room).allSockets();
+      for (const sid of sids) {
+        const s = io.sockets.sockets.get(sid);
+        if (s?.btPaperWidth) return s.btPaperWidth;
+      }
+    }
+    return null;
+  },
+
+  /**
    * Routing priority (highest → lowest):
    *  1. User room   mpos:{outletId}:user:{userId}    — cashier's specific device
    *                 Use for bills: routes to the cashier who created it
@@ -2422,23 +2651,32 @@ Write-Output "OK"
     };
 
     // Build room names up front
-    const userRoom = userId ? `mpos:${effectiveOutletId}:user:${userId}` : null;
-    const deviceRoom = printer.device_id ? `mpos:${effectiveOutletId}:device:${printer.device_id}` : null;
-    const stationKey = (station || printer.station || 'cashier').toLowerCase().trim();
-    const stationRoom = `mpos:${effectiveOutletId}:station:${stationKey}`;
+    const userRoom       = userId ? `mpos:${effectiveOutletId}:user:${userId}` : null;
+    const globalUserRoom = userId ? `mpos:user:${userId}` : null;   // outlet-agnostic fallback
+    const deviceRoom     = printer.device_id ? `mpos:${effectiveOutletId}:device:${printer.device_id}` : null;
+    const stationKey     = (station || printer.station || 'cashier').toLowerCase().trim();
+    const stationRoom    = `mpos:${effectiveOutletId}:station:${stationKey}`;
 
-    // ── Check all rooms in parallel (single Redis round-trip instead of 3 sequential) ──
-    const [userSockets, deviceSockets, stationSockets] = await Promise.all([
-      userRoom   ? io.in(userRoom).allSockets()   : Promise.resolve(new Set()),
-      deviceRoom ? io.in(deviceRoom).allSockets() : Promise.resolve(new Set()),
+    // ── Check all rooms in parallel ──
+    const [userSockets, globalUserSockets, deviceSockets, stationSockets] = await Promise.all([
+      userRoom       ? io.in(userRoom).allSockets()       : Promise.resolve(new Set()),
+      globalUserRoom ? io.in(globalUserRoom).allSockets() : Promise.resolve(new Set()),
+      deviceRoom     ? io.in(deviceRoom).allSockets()     : Promise.resolve(new Set()),
       io.in(stationRoom).allSockets(),
     ]);
 
-    // ── Priority 1: User room (cashier-specific) ────────────────────────────
+    // ── Priority 1: Outlet-specific user room ───────────────────────────────
     if (userSockets.size > 0) {
       io.to(userRoom).emit('mpos:print', payload);
       logger.info(`MPOS[${printer.name}]: job → user room ${userRoom} (userId=${userId}) ref=${ref}`);
       return { method: 'mobile_pos', sent: true, jobId, printerId: printer.id, mode: 'user', room: userRoom };
+    }
+
+    // ── Priority 1b: Global user room (outlet-id mismatch fallback) ─────────
+    if (globalUserSockets.size > 0) {
+      io.to(globalUserRoom).emit('mpos:print', payload);
+      logger.info(`MPOS[${printer.name}]: job → global user room ${globalUserRoom} (userId=${userId}) ref=${ref}`);
+      return { method: 'mobile_pos', sent: true, jobId, printerId: printer.id, mode: 'user', room: globalUserRoom };
     }
     if (userId) logger.warn(`MPOS[${printer.name}]: user ${userId} offline — trying device/station`);
 
@@ -2466,6 +2704,96 @@ Write-Output "OK"
     }
 
     return { method: 'mobile_pos', sent: true, jobId, printerId: printer.id, mode: 'station', room: stationRoom };
+  },
+
+  /**
+   * Send ESC/POS print data to a Flutter device that has a local Bluetooth printer.
+   * Identical routing to Mobile POS but uses bt: rooms and bt:print event.
+   * The Flutter app joins bt: rooms via join:bt_print and prints via its BT SDK.
+   */
+  async sendToBluetoothDevice(printer, escpos, text, {
+    jobType = 'print', ref = '', outletId, station, userId,
+    beep = false, openDrawer = false
+  } = {}) {
+    const io = getSocketIO();
+    const effectiveOutletId = outletId || printer.outlet_id;
+
+    if (!io) {
+      logger.warn(`BT[${printer.name}]: Socket.IO not ready — bridge fallback`);
+      return null;
+    }
+
+    const jobId = uuidv4();
+    const escposBase64 = Buffer.isBuffer(escpos)
+      ? escpos.toString('base64')
+      : Buffer.from(escpos, 'binary').toString('base64');
+
+    const payload = {
+      jobId, jobType,
+      referenceNumber: ref,
+      printerId: printer.id,
+      printerName: printer.name,
+      paperWidth: printer.paper_width || '80mm',
+      charactersPerLine: printer.characters_per_line || (printer.paper_width === '58mm' ? 32 : 48),
+      supportsCutter: printer.supports_cutter !== undefined ? printer.supports_cutter : true,
+      supportsCashDrawer: printer.supports_cash_drawer || false,
+      escpos: escposBase64,      // Pre-formatted ESC/POS bytes (fallback)
+      text: text || null,        // Plain text formatted at correct width (for bluetooth_print_plus)
+      shouldCut: true,
+      openDrawer: openDrawer || false,
+      beep: beep || false,
+      timestamp: Date.now(),
+    };
+
+    const userRoom       = userId ? `bt:${effectiveOutletId}:user:${userId}` : null;
+    const globalUserRoom = userId ? `bt:user:${userId}` : null;   // outlet-agnostic fallback
+    const deviceRoom     = printer.device_id ? `bt:${effectiveOutletId}:device:${printer.device_id}` : null;
+    const stationKey     = (station || printer.station || 'cashier').toLowerCase().trim();
+    const stationRoom    = `bt:${effectiveOutletId}:station:${stationKey}`;
+
+    const [userSockets, globalUserSockets, deviceSockets, stationSockets] = await Promise.all([
+      userRoom       ? io.in(userRoom).allSockets()       : Promise.resolve(new Set()),
+      globalUserRoom ? io.in(globalUserRoom).allSockets() : Promise.resolve(new Set()),
+      deviceRoom     ? io.in(deviceRoom).allSockets()     : Promise.resolve(new Set()),
+      io.in(stationRoom).allSockets(),
+    ]);
+
+    // ── Priority 1: Outlet-specific user room ──
+    if (userSockets.size > 0) {
+      io.to(userRoom).emit('bt:print', payload);
+      logger.info(`BT[${printer.name}]: job → user room ${userRoom} (userId=${userId}) ref=${ref}`);
+      return { method: 'bt_socket', sent: true, jobId, printerId: printer.id, mode: 'user', room: userRoom };
+    }
+
+    // ── Priority 1b: Global user room (outlet-id mismatch fallback) ──
+    if (globalUserSockets.size > 0) {
+      io.to(globalUserRoom).emit('bt:print', payload);
+      logger.info(`BT[${printer.name}]: job → global user room ${globalUserRoom} (userId=${userId}) ref=${ref}`);
+      return { method: 'bt_socket', sent: true, jobId, printerId: printer.id, mode: 'user', room: globalUserRoom };
+    }
+    if (userId) logger.warn(`BT[${printer.name}]: user ${userId} offline — trying device/station`);
+
+    if (deviceSockets.size > 0) {
+      io.to(deviceRoom).emit('bt:print', payload);
+      logger.info(`BT[${printer.name}]: job → device room ${deviceRoom} ref=${ref}`);
+      return { method: 'bt_socket', sent: true, jobId, printerId: printer.id, mode: 'device', room: deviceRoom };
+    }
+
+    if (stationSockets.size === 0) {
+      logger.warn(`BT[${printer.name}]: no device in any room — bridge fallback`);
+      return null;
+    }
+
+    if (stationSockets.size > 1) {
+      const [firstSocketId] = stationSockets;
+      io.to(firstSocketId).emit('bt:print', payload);
+      logger.info(`BT[${printer.name}]: job → first socket on station ${stationRoom} (${stationSockets.size} devices) ref=${ref}`);
+    } else {
+      io.to(stationRoom).emit('bt:print', payload);
+      logger.info(`BT[${printer.name}]: job → station room ${stationRoom} ref=${ref}`);
+    }
+
+    return { method: 'bt_socket', sent: true, jobId, printerId: printer.id, mode: 'station', room: stationRoom };
   },
 
   /**
