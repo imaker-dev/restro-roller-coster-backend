@@ -163,7 +163,7 @@ const menuController = {
 
   async getItemById(req, res) {
     try {
-      const item = await itemService.getById(req.params.id);
+      const item = await itemService.getFullDetails(req.params.id);
       if (!item) {
         return res.status(404).json({ success: false, message: 'Item not found' });
       }
