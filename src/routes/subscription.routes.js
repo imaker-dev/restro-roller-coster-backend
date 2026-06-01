@@ -54,4 +54,7 @@ router.post('/sync-offline', subscriptionController.syncOfflineSubscription);
 // ─── Offline POS first-time activation (no JWT — validates + activates outlet) ───
 router.post('/activate-offline', subscriptionController.activateOfflineOutlet);
 
+// ─── Offline POS lifetime free activation (no JWT — validates free token + marks used) ───
+router.post('/activate-offline-free', subscriptionController.activateOfflineFreeOutlet);
+
 module.exports = router;
