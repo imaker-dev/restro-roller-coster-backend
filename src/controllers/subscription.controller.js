@@ -971,7 +971,7 @@ const activateOfflineFreeOutlet = async (req, res) => {
       `SELECT id, license_id, outlet_id, token_type, plan, restaurant_name, email,
               subscription_expiry, device_hash, used_at, created_at
        FROM token_generation_log
-       WHERE license_id = ? AND token_hash = ? AND token_type = 'activation' AND plan = 'free'
+       WHERE license_id = ? AND token_hash = ? AND token_type = 'offline_activation' AND plan = 'free'
        ORDER BY created_at DESC LIMIT 1`,
       [String(licenseId).trim(), activationHash]
     );
@@ -985,7 +985,7 @@ const activateOfflineFreeOutlet = async (req, res) => {
         `SELECT id, license_id, outlet_id, token_type, plan, restaurant_name, email,
                 subscription_expiry, device_hash, used_at, created_at
          FROM token_generation_log
-         WHERE license_id = ? AND token_hash = ? AND token_type = 'activation' AND plan = 'free'
+         WHERE license_id = ? AND token_hash = ? AND token_type = 'offline_activation' AND plan = 'free'
          ORDER BY created_at DESC LIMIT 1`,
         [String(licenseId).trim(), String(activationKey).trim()]
       );
