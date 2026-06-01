@@ -365,8 +365,8 @@ const updateRegistrationStatus = async (req, res) => {
     // Normalize stored plan_interest (handle empty strings from old records)
     const storedPlan = (reg.plan_interest || 'free').trim().toLowerCase();
 
-    // ─── Auto-create outlet for offline_annual on approval ────────────────────
-    if (status === 'approved' && storedPlan === 'offline_annual' && !reg.outlet_id) {
+    // ─── Auto-create outlet for ALL approved plans on approval ────────────────
+    if (status === 'approved' && !reg.outlet_id) {
       const conn = await pool.getConnection();
       try {
         await conn.beginTransaction();
@@ -397,25 +397,27 @@ const updateRegistrationStatus = async (req, res) => {
         );
         createdOutletId = outletResult.insertId;
 
-        // 3. Create 1-year subscription (active)
-        const subStart = new Date();
-        const subEnd = new Date();
-        subEnd.setFullYear(subEnd.getFullYear() + 1);
-        const graceEnd = new Date(subEnd);
-        graceEnd.setDate(graceEnd.getDate() + 7);
+        // 3. Create subscription for pro / offline_annual (skip for lifetime free)
+        if (storedPlan !== 'free') {
+          const subStart = new Date();
+          const subEnd = new Date();
+          subEnd.setFullYear(subEnd.getFullYear() + 1);
+          const graceEnd = new Date(subEnd);
+          graceEnd.setDate(graceEnd.getDate() + 7);
 
-        await conn.execute(
-          `INSERT INTO outlet_subscriptions (
-            outlet_id, status, subscription_start, subscription_end, grace_period_end,
-            auto_renew, notes, created_at
-          ) VALUES (?, 'active', ?, ?, ?, FALSE, 'Auto-created on offline POS registration approval.', NOW())`,
-          [
-            createdOutletId,
-            subStart.toISOString().split('T')[0],
-            subEnd.toISOString().split('T')[0],
-            graceEnd.toISOString().split('T')[0],
-          ]
-        );
+          await conn.execute(
+            `INSERT INTO outlet_subscriptions (
+              outlet_id, status, subscription_start, subscription_end, grace_period_end,
+              auto_renew, notes, created_at
+            ) VALUES (?, 'active', ?, ?, ?, FALSE, 'Auto-created on registration approval.', NOW())`,
+            [
+              createdOutletId,
+              subStart.toISOString().split('T')[0],
+              subEnd.toISOString().split('T')[0],
+              graceEnd.toISOString().split('T')[0],
+            ]
+          );
+        }
 
         // 4. Link registration to outlet
         await conn.execute(
@@ -427,7 +429,7 @@ const updateRegistrationStatus = async (req, res) => {
 
         logger.info(
           `[Registration] Auto-created outlet ${createdOutletId} (code: ${code}) ` +
-          `for offline_annual registration #${id} — ${reg.restaurant_name} by user #${req.user?.userId}`
+          `for ${storedPlan} registration #${id} — ${reg.restaurant_name} by user #${req.user?.userId}`
         );
       } catch (txErr) {
         await conn.rollback();

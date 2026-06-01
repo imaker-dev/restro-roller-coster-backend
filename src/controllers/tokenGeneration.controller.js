@@ -533,14 +533,16 @@ const internalGenerateUpgradeToken = async ({ licenseId, restaurant = '', email 
 
 /**
  * POST /api/v1/token-generation/offline-activation
- * Admin/Master — generate an offline annual-subscription activation token
- * for a specific outlet. The token is signed with the production private key
- * and includes subscription expiry + grace period from outlet_subscriptions.
+ * Admin/Master — generate an offline activation token for a specific outlet.
+ * Supports both subscription-based (pro/offline_annual) and lifetime free plans.
  *
- * The offline POS validates this token locally (signature + expiry) and
- * blocks usage when the subscription expires.
+ * For pro/offline_annual: token includes subscription expiry + grace period.
+ *   The offline POS validates this token locally (signature + expiry).
+ *
+ * For free: skips subscription checks, generates a lifetime token with no expiry.
  *
  * Body: { outletId, password, deviceHash?, restaurant?, email?, phone?, maxOutlets?,
+ *          plan?: 'free'|'pro'|'offline_annual' (default 'pro'),
  *          notify_whatsapp?: true|false, notify_email?: true|false }
  */
 const generateOfflineActivationToken = async (req, res) => {
@@ -553,6 +555,7 @@ const generateOfflineActivationToken = async (req, res) => {
       email: bodyEmail,
       phone: bodyPhone,
       maxOutlets = -1,
+      plan = 'pro',
       notify_whatsapp = true,
       notify_email = true,
     } = req.body;
@@ -568,6 +571,14 @@ const generateOfflineActivationToken = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Missing or invalid field: password (minimum 6 characters)',
+      });
+    }
+
+    const normalizedPlan = String(plan).trim().toLowerCase();
+    if (!['free', 'pro', 'offline_annual'].includes(normalizedPlan)) {
+      return res.status(400).json({
+        success: false,
+        message: 'plan must be "free", "pro", or "offline_annual"',
       });
     }
 
@@ -587,52 +598,57 @@ const generateOfflineActivationToken = async (req, res) => {
       });
     }
 
-    // ─── 2. Check subscription status (Redis-first, 5-min TTL) ────────────────
-    const subStatus = await getSubscriptionStatus(parsedOutletId);
+    let subscriptionExpiry = null;
+    let gracePeriodEnd = null;
 
-    const isMaster = req.user?.roles?.includes('master');
-    const allowedStatuses = [
-      SUBSCRIPTION_STATUS.TRIAL,
-      SUBSCRIPTION_STATUS.ACTIVE,
-      SUBSCRIPTION_STATUS.GRACE_PERIOD,
-    ];
+    // ─── 2. Check subscription status (skip for lifetime free) ────────────────
+    if (normalizedPlan !== 'free') {
+      const subStatus = await getSubscriptionStatus(parsedOutletId);
 
-    if (!allowedStatuses.includes(subStatus.status) && !isMaster) {
-      return res.status(403).json({
-        success: false,
-        code: 'SUBSCRIPTION_NOT_ACTIVE',
-        message: `Cannot generate offline token: subscription status is '${subStatus.status}'. Please renew or activate the subscription first.`,
-        status: subStatus.status,
-        graceDaysRemaining: subStatus.graceDaysRemaining,
-        subscriptionEnd: subStatus.subscriptionEnd,
-      });
-    }
+      const isMaster = req.user?.roles?.includes('master');
+      const allowedStatuses = [
+        SUBSCRIPTION_STATUS.TRIAL,
+        SUBSCRIPTION_STATUS.ACTIVE,
+        SUBSCRIPTION_STATUS.GRACE_PERIOD,
+      ];
 
-    if (isMaster && !allowedStatuses.includes(subStatus.status)) {
-      logger.warn(
-        `[TokenGen] MASTER OVERRIDE: generating offline token for outlet ${parsedOutletId} ` +
-        `despite subscription status '${subStatus.status}' by user #${req.user?.userId}`
+      if (!allowedStatuses.includes(subStatus.status) && !isMaster) {
+        return res.status(403).json({
+          success: false,
+          code: 'SUBSCRIPTION_NOT_ACTIVE',
+          message: `Cannot generate offline token: subscription status is '${subStatus.status}'. Please renew or activate the subscription first.`,
+          status: subStatus.status,
+          graceDaysRemaining: subStatus.graceDaysRemaining,
+          subscriptionEnd: subStatus.subscriptionEnd,
+        });
+      }
+
+      if (isMaster && !allowedStatuses.includes(subStatus.status)) {
+        logger.warn(
+          `[TokenGen] MASTER OVERRIDE: generating offline token for outlet ${parsedOutletId} ` +
+          `despite subscription status '${subStatus.status}' by user #${req.user?.userId}`
+        );
+      }
+
+      // ─── 3. Fetch subscription dates directly from DB ─────────────────────
+      const [[subRow]] = await pool.query(
+        `SELECT subscription_end, grace_period_end
+         FROM outlet_subscriptions WHERE outlet_id = ?`,
+        [parsedOutletId]
       );
+
+      subscriptionExpiry = subRow?.subscription_end
+        ? (subRow.subscription_end.toISOString
+            ? subRow.subscription_end.toISOString().split('T')[0]
+            : String(subRow.subscription_end).split('T')[0])
+        : null;
+
+      gracePeriodEnd = subRow?.grace_period_end
+        ? (subRow.grace_period_end.toISOString
+            ? subRow.grace_period_end.toISOString().split('T')[0]
+            : String(subRow.grace_period_end).split('T')[0])
+        : null;
     }
-
-    // ─── 3. Fetch subscription dates directly from DB ─────────────────────────
-    const [[subRow]] = await pool.query(
-      `SELECT subscription_end, grace_period_end
-       FROM outlet_subscriptions WHERE outlet_id = ?`,
-      [parsedOutletId]
-    );
-
-    const subscriptionExpiry = subRow?.subscription_end
-      ? (subRow.subscription_end.toISOString
-          ? subRow.subscription_end.toISOString().split('T')[0]
-          : String(subRow.subscription_end).split('T')[0])
-      : null;
-
-    const gracePeriodEnd = subRow?.grace_period_end
-      ? (subRow.grace_period_end.toISOString
-          ? subRow.grace_period_end.toISOString().split('T')[0]
-          : String(subRow.grace_period_end).split('T')[0])
-      : null;
 
     // ─── 4. Resolve display fields (override > outlet DB > empty) ─────────────
     const restaurant = bodyRestaurant?.trim() || outlet.name || '';
@@ -646,15 +662,15 @@ const generateOfflineActivationToken = async (req, res) => {
     const payload = {
       v: 1,
       lid: licenseId,
-      plan: 'pro',               // offline POS always gets full Pro features
-      type: 'offline_annual',    // discriminator for offline backend
+      plan: normalizedPlan === 'free' ? 'free' : 'pro',
+      type: normalizedPlan === 'free' ? 'lifetime_free' : 'offline_annual',
       outletId: parsedOutletId,
       restaurant,
       email: email || null,
       phone: phone || null,
-      password: password.trim(), // for admin user creation on offline POS
-      subscriptionExpiry,       // from outlet_subscriptions
-      gracePeriodEnd,           // from outlet_subscriptions
+      password: password.trim(),
+      subscriptionExpiry,       // null for free
+      gracePeriodEnd,           // null for free
       issuedAt,
       deviceHash: deviceHash || null,
       modules: {
@@ -662,8 +678,8 @@ const generateOfflineActivationToken = async (req, res) => {
         inventory: true,
         advancedReports: true,
       },
-      maxOutlets: parseInt(maxOutlets, 10) || 1,  // offline POS: 1 outlet by default
-      maxUsers: -1,  // -1 = unlimited users
+      maxOutlets: parseInt(maxOutlets, 10) || 1,
+      maxUsers: -1,
     };
 
     const token = signPayload(payload);
@@ -675,9 +691,10 @@ const generateOfflineActivationToken = async (req, res) => {
       `INSERT INTO token_generation_log
         (license_id, token_type, plan, restaurant_name, email,
          outlet_id, subscription_expiry, device_hash, generated_by_user_id, token_hash)
-       VALUES (?, 'offline_activation', 'pro', ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, 'offline_activation', ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         licenseId,
+        normalizedPlan === 'free' ? 'free' : 'pro',
         restaurant,
         email || null,
         parsedOutletId,
@@ -705,7 +722,7 @@ const generateOfflineActivationToken = async (req, res) => {
 
     logger.info(
       `[TokenGen] Offline activation token: lid=${licenseId} outlet=${parsedOutletId} ` +
-      `subExpiry=${subscriptionExpiry || 'none'} device=${deviceHash ? 'yes' : 'no'} ` +
+      `plan=${normalizedPlan} subExpiry=${subscriptionExpiry || 'none'} device=${deviceHash ? 'yes' : 'no'} ` +
       `wa=${_notifStatus(notification.whatsapp)} em=${_notifStatus(notification.email)} ` +
       `by user #${req.user?.userId}`
     );
@@ -717,8 +734,8 @@ const generateOfflineActivationToken = async (req, res) => {
         licenseId,
         token,
         outletId: parsedOutletId,
-        plan: 'pro',
-        type: 'offline_annual',
+        plan: normalizedPlan === 'free' ? 'free' : 'pro',
+        type: normalizedPlan === 'free' ? 'lifetime_free' : 'offline_annual',
         restaurant,
         email: email || null,
         phone: phone || null,

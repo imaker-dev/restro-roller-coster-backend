@@ -938,6 +938,128 @@ const activateOfflineOutlet = async (req, res) => {
   }
 };
 
+// ─── OFFLINE POS LIFETIME FREE ACTIVATION ─────────────────────────────────
+
+/**
+ * POST /api/v1/subscriptions/activate-offline-free
+ * Offline POS — first-time activation for LIFETIME FREE plan via licenseId + activationKey (no JWT).
+ * Validates free activation token, marks it used, returns embedded config.
+ * One-time use: after successful activation the token is marked used and cannot replay.
+ * No outlet/subscription checks — this is lifetime free with no expiry.
+ */
+const activateOfflineFreeOutlet = async (req, res) => {
+  try {
+    const { licenseId, activationKey } = req.body;
+
+    if (!licenseId || !activationKey) {
+      return res.status(400).json({
+        success: false,
+        code: 'MISSING_CREDENTIALS',
+        message: 'licenseId and activationKey are required',
+      });
+    }
+
+    const pool = getPool();
+
+    // ─── 1. Validate free activation token against token_generation_log ───────
+    const activationHash = crypto
+      .createHash('sha256')
+      .update(String(activationKey))
+      .digest('hex');
+
+    const [tokenRows] = await pool.query(
+      `SELECT id, license_id, outlet_id, token_type, plan, restaurant_name, email,
+              subscription_expiry, device_hash, used_at, created_at
+       FROM token_generation_log
+       WHERE license_id = ? AND token_hash = ? AND token_type = 'activation' AND plan = 'free'
+       ORDER BY created_at DESC LIMIT 1`,
+      [String(licenseId).trim(), activationHash]
+    );
+
+    let tokenRecord = null;
+    if (tokenRows.length) {
+      tokenRecord = tokenRows[0];
+    } else {
+      // Fallback: activationKey might be the hash itself
+      const [hashRows] = await pool.query(
+        `SELECT id, license_id, outlet_id, token_type, plan, restaurant_name, email,
+                subscription_expiry, device_hash, used_at, created_at
+         FROM token_generation_log
+         WHERE license_id = ? AND token_hash = ? AND token_type = 'activation' AND plan = 'free'
+         ORDER BY created_at DESC LIMIT 1`,
+        [String(licenseId).trim(), String(activationKey).trim()]
+      );
+      if (hashRows.length) tokenRecord = hashRows[0];
+    }
+
+    if (!tokenRecord) {
+      logger.warn(`[ActivateOfflineFree] Invalid credentials: license ${licenseId}`);
+      return res.status(401).json({
+        success: false,
+        code: 'INVALID_CREDENTIALS',
+        message: 'Invalid licenseId or activationKey',
+      });
+    }
+
+    // ─── 2. Replay protection: one-time activation ───────────────────────────
+    if (tokenRecord.used_at) {
+      logger.warn(`[ActivateOfflineFree] Replay blocked: token already used at ${tokenRecord.used_at}`);
+      return res.status(409).json({
+        success: false,
+        code: 'ALREADY_ACTIVATED',
+        message: 'This activation key has already been used',
+        activatedAt: tokenRecord.used_at,
+      });
+    }
+
+    // ─── 3. Decode token payload for embedded config ─────────────────────────
+    let tokenPayload = null;
+    try {
+      const [payloadB64] = String(activationKey).split('.');
+      if (payloadB64) {
+        tokenPayload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
+      }
+    } catch (_) { /* ignore decode errors */ }
+
+    // ─── 4. Mark token as used (replay protection) ──────────────────────────
+    await pool.query(
+      `UPDATE token_generation_log SET used_at = NOW() WHERE id = ?`,
+      [tokenRecord.id]
+    );
+
+    // ─── 5. Build response ──────────────────────────────────────────────────
+    return res.status(200).json({
+      success: true,
+      code: 'ACTIVATION_SUCCESS',
+      message: 'Offline outlet activated successfully (Lifetime Free)',
+      license: {
+        licenseId: tokenRecord.license_id,
+        plan: 'free',
+        type: 'lifetime_free',
+        maxOutlets: tokenPayload?.maxOutlets || 1,
+        expiresAt: null,
+      },
+      admin: {
+        email: tokenRecord.email || tokenPayload?.email || null,
+        password: tokenPayload?.password || null,
+        phone: tokenPayload?.phone || null,
+        restaurant: tokenRecord.restaurant_name || tokenPayload?.restaurant || null,
+      },
+      tokenMeta: {
+        generatedAt: tokenRecord.created_at,
+        activatedAt: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    logger.error('activateOfflineFreeOutlet error:', error);
+    return res.status(500).json({
+      success: false,
+      code: 'SERVER_ERROR',
+      message: 'Failed to activate offline outlet: ' + error.message,
+    });
+  }
+};
+
 // ─── SUBSCRIPTION TRANSACTION APIs ──────────────────────────────────────────
 
 /**
@@ -1118,4 +1240,6 @@ module.exports = {
   syncOfflineSubscription,
   // Offline POS first-time activation
   activateOfflineOutlet,
+  // Offline POS lifetime free activation
+  activateOfflineFreeOutlet,
 };
