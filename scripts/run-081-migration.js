@@ -11,12 +11,14 @@ require('dotenv').config();
 const sqlFile = path.join(__dirname, '..', 'src', 'database', 'migrations', '081_franchise_module.sql');
 
 async function run() {
+  const isProduction = process.env.NODE_ENV === 'production';
+
   const connection = await mysql.createConnection({
-    host: process.env.DB_HOST || 'localhost',
-    port: parseInt(process.env.DB_PORT || '3306'),
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'restropos',
+    host: isProduction ? (process.env.PROD_DB_HOST || '127.0.0.1') : (process.env.DB_HOST || 'localhost'),
+    port: parseInt(process.env.DB_PORT || '3306', 10),
+    user: isProduction ? (process.env.PROD_DB_USER || 'restro') : (process.env.DB_USER || 'root'),
+    password: isProduction ? (process.env.PROD_DB_PASSWORD || '') : (process.env.DB_PASSWORD || ''),
+    database: isProduction ? (process.env.PROD_DB_NAME || 'restro') : (process.env.DB_NAME || 'restropos'),
     multipleStatements: true,
   });
 
