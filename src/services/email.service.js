@@ -310,4 +310,60 @@ const sendActivationTokenEmail = async (to, data) => {
   return sendMail(to, subject, html, text);
 };
 
-module.exports = { sendMail, sendMailWithAttachment, sendUpgradeTokenEmail, sendPaymentInvoiceEmail, sendSubscriptionReceiptEmail, sendActivationTokenEmail };
+/**
+ * Send franchise enquiry notification email to the franchise owner/admin.
+ */
+const sendFranchiseEnquiryEmail = async (to, enquiryData) => {
+  if (!to) return;
+
+  const { franchiseName, fullName, phone, email, city, state, investmentBudget, businessExperience, message } = enquiryData;
+  const subject = `New Franchise Enquiry — ${franchiseName || 'Your Franchise'}`;
+
+  const html = `
+<div style="font-family:Arial,sans-serif;background:#f8fafc;padding:32px;border-radius:12px;max-width:560px;margin:0 auto;color:#334155">
+  <div style="text-align:center;margin-bottom:24px">
+    <h2 style="color:#1e293b;margin:0;font-size:22px">New Franchise Enquiry</h2>
+    <p style="color:#64748b;margin:8px 0 0;font-size:14px">${franchiseName || 'Your Franchise'}</p>
+  </div>
+  <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:14px">
+    <tr><td style="color:#64748b;padding:6px 0;width:140px">Name</td><td style="color:#1e293b;font-weight:500">${fullName || '—'}</td></tr>
+    <tr><td style="color:#64748b;padding:6px 0">Phone</td><td style="color:#1e293b;font-weight:500">${phone || '—'}</td></tr>
+    <tr><td style="color:#64748b;padding:6px 0">Email</td><td style="color:#1e293b;font-weight:500">${email || '—'}</td></tr>
+    <tr><td style="color:#64748b;padding:6px 0">City</td><td style="color:#1e293b">${city || '—'}</td></tr>
+    <tr><td style="color:#64748b;padding:6px 0">State</td><td style="color:#1e293b">${state || '—'}</td></tr>
+    <tr><td style="color:#64748b;padding:6px 0">Investment Budget</td><td style="color:#1e293b">${investmentBudget || '—'}</td></tr>
+    <tr><td style="color:#64748b;padding:6px 0">Experience</td><td style="color:#1e293b">${businessExperience || '—'}</td></tr>
+  </table>
+  <div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:8px;padding:16px;margin:16px 0">
+    <p style="color:#64748b;margin:0 0 8px;font-size:12px;letter-spacing:1px">MESSAGE</p>
+    <p style="color:#1e293b;margin:0;font-size:14px;line-height:1.6">${message || 'No message provided.'}</p>
+  </div>
+  <p style="color:#94a3b8;font-size:12px;margin-top:24px;text-align:center">
+    iMakerRestro Franchise Portal • Do not reply to this email
+  </p>
+</div>`;
+
+  const text =
+    `New Franchise Enquiry — ${franchiseName || 'Your Franchise'}\n\n` +
+    `Name:               ${fullName || '—'}\n` +
+    `Phone:              ${phone || '—'}\n` +
+    `Email:              ${email || '—'}\n` +
+    `City:               ${city || '—'}\n` +
+    `State:              ${state || '—'}\n` +
+    `Investment Budget:  ${investmentBudget || '—'}\n` +
+    `Experience:         ${businessExperience || '—'}\n\n` +
+    `Message:\n${message || 'No message provided.'}\n\n` +
+    `iMakerRestro Franchise Portal`;
+
+  return sendMail(to, subject, html, text);
+};
+
+module.exports = {
+  sendMail,
+  sendMailWithAttachment,
+  sendUpgradeTokenEmail,
+  sendPaymentInvoiceEmail,
+  sendSubscriptionReceiptEmail,
+  sendActivationTokenEmail,
+  sendFranchiseEnquiryEmail,
+};

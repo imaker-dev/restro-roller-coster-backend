@@ -76,6 +76,7 @@ router.use('/token-generation', require('./tokenGeneration.routes'));
 router.use('/upgrade-payment', require('./upgradePayment.routes'));
 router.use('/self-order', require('./selfOrder.routes'));
 router.use('/subscriptions', require('./subscription.routes'));
+router.use('/franchises', require('./franchise.routes'));
 
 // Future routes (uncomment as modules are developed)
 // router.use('/categories', require('./category.routes'));
