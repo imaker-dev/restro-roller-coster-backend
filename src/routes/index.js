@@ -77,6 +77,7 @@ router.use('/upgrade-payment', require('./upgradePayment.routes'));
 router.use('/self-order', require('./selfOrder.routes'));
 router.use('/subscriptions', require('./subscription.routes'));
 router.use('/franchises', require('./franchise.routes'));
+router.use('/expenses', require('./expense.routes'));
 
 // Future routes (uncomment as modules are developed)
 // router.use('/categories', require('./category.routes'));
