@@ -33,6 +33,8 @@ const { initializeDatabase, getPool } = require('../index');
     }
   }
 
+  
+
   console.log('\nMigration 083 complete');
   process.exit(0);
 })();
