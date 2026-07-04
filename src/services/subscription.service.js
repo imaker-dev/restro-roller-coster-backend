@@ -1250,7 +1250,7 @@ const getSuperAdminOutletsWithSubscriptions = async (saUserId, filters = {}, pag
     WHERE ur.user_id = ? AND ur.is_active = 1 AND ur.outlet_id IS NOT NULL
     UNION
     SELECT DISTINCT o.id FROM outlets o WHERE o.created_by = ?
-  )`;
+  ) AND os.outlet_id != 82`;
   const params = [saUserId, saUserId];
 
   if (status) {

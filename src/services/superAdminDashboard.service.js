@@ -112,7 +112,7 @@ const superAdminDashboardService = {
       // Master sees all active outlets
       [outletsRes] = await pool.query(
         `SELECT id, name, phone, city, state, is_active
-         FROM outlets WHERE is_active = 1
+         FROM outlets WHERE is_active = 1 AND id != 82
          ORDER BY id ASC`
       );
     } else {
@@ -120,7 +120,7 @@ const superAdminDashboardService = {
       [outletsRes] = await pool.query(
         `SELECT DISTINCT o.id, o.name, o.phone, o.city, o.state, o.is_active
          FROM outlets o
-         WHERE o.is_active = 1
+         WHERE o.is_active = 1 AND o.id != 82
            AND (o.created_by = ? OR o.id IN (
              SELECT ur.outlet_id FROM user_roles ur
              WHERE ur.user_id = ? AND ur.is_active = 1 AND ur.outlet_id IS NOT NULL

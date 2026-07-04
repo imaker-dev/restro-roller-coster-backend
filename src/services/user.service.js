@@ -1018,7 +1018,7 @@ class UserService {
     const order = sortOrder.toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
 
     let where = `
-      WHERE o.deleted_at IS NULL
+      WHERE o.deleted_at IS NULL AND o.id != 82
         AND (o.created_by = ? OR o.id IN (
           SELECT ur.outlet_id FROM user_roles ur
           INNER JOIN roles r ON r.id = ur.role_id

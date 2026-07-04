@@ -9,6 +9,8 @@
 ALTER TABLE printers
     ADD COLUMN IF NOT EXISTS device_id VARCHAR(100) NULL AFTER connection_type;
 
+
+
 -- 2. USB device path
 ALTER TABLE printers
     ADD COLUMN IF NOT EXISTS usb_path VARCHAR(100) NULL AFTER port;

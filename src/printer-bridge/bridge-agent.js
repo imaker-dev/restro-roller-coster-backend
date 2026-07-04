@@ -32,10 +32,10 @@ const BINARY_CONTENT_PREFIX = 'b64:';
 const CONFIG = {
   // Cloud server URL (your backend API)
   // CLOUD_URL: process.env.CLOUD_URL || 'http://localhost:3005',
-  CLOUD_URL: process.env.CLOUD_URL || 'https://bryant-shakira-boston-belly.trycloudflare.com',
+  CLOUD_URL: process.env.CLOUD_URL || 'https://backend.imakerrestro.com',
   
   // Outlet ID from your system
-  OUTLET_ID: process.env.OUTLET_ID || '54',
+  OUTLET_ID: process.env.OUTLET_ID || '58',
   
   // Bridge code (created via API: POST /api/v1/printers/bridges)
   BRIDGE_CODE: process.env.BRIDGE_CODE || 'KITCHEN-BRIDGE-1',
