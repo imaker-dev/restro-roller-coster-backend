@@ -406,7 +406,7 @@ const getAllSubscriptions = async (filters = {}, pagination = { page: 1, limit: 
   const { page, limit } = pagination;
   const offset = (page - 1) * limit;
 
-  let where = 'WHERE 1=1';
+  let where = 'WHERE 1=1 AND os.outlet_id != 82';
   const params = [];
 
   if (status) {
@@ -1162,7 +1162,7 @@ const getSuperAdminDashboardSubscriptions = async (saUserId, filters = {}, pagin
     WHERE ur.user_id = ? AND ur.is_active = 1 AND ur.outlet_id IS NOT NULL
     UNION
     SELECT DISTINCT o2.id FROM outlets o2 WHERE o2.created_by = ?
-  )`;
+  ) AND os.outlet_id != 82`;
   const params = [saUserId, saUserId];
 
   if (status) {
