@@ -696,7 +696,7 @@ class AuthService {
     if (isMaster) {
       // Master gets all active outlets (global access)
       const [allOutlets] = await pool.query(
-        `SELECT id, name FROM outlets WHERE is_active = 1 ORDER BY id`
+        `SELECT id, name FROM outlets WHERE is_active = 1 AND id != 82 ORDER BY id`
       );
       outlets = allOutlets;
     } else if (isSuperAdmin) {
@@ -704,7 +704,7 @@ class AuthService {
       const [superAdminOutlets] = await pool.query(
         `SELECT DISTINCT o.id, o.name
          FROM outlets o
-         WHERE o.is_active = 1
+         WHERE o.is_active = 1 AND o.id != 82
            AND (o.created_by = ? OR o.id IN (
              SELECT ur.outlet_id FROM user_roles ur
              WHERE ur.user_id = ? AND ur.is_active = 1 AND ur.outlet_id IS NOT NULL

@@ -109,7 +109,7 @@ const outletService = {
       ) t ON t.outlet_id = o.id
       LEFT JOIN outlet_subscriptions os ON os.outlet_id = o.id
       LEFT JOIN subscription_pricing sp ON sp.id = os.current_pricing_id
-      WHERE o.deleted_at IS NULL AND o.is_active = 1
+      WHERE o.deleted_at IS NULL AND o.is_active = 1 AND o.id != 82
     `;
     const params = [];
 
@@ -223,7 +223,7 @@ const outletService = {
     const offset = (page - 1) * limit;
 
     // Build WHERE clause
-    let where = 'WHERE o.deleted_at IS NULL';
+    let where = 'WHERE o.deleted_at IS NULL AND o.id != 82';
     const params = [];
 
     if (isActive !== undefined) {
