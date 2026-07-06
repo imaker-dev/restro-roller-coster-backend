@@ -1454,6 +1454,7 @@ const printerService = {
     if (billData.outletAddress) lines.push(billData.outletAddress);
     if (billData.outletPhone) lines.push('Ph: ' + billData.outletPhone);
     if (billData.outletGstin) lines.push('GSTIN: ' + billData.outletGstin);
+    if (billData.outletFssai) lines.push('FSSAI: ' + billData.outletFssai);
 
     // ── 2. TOKEN NUMBER (prominent, centered, large) ────
     if (billData.tokenNumber) {
@@ -1645,6 +1646,7 @@ const printerService = {
     if (billData.outletAddress) lines.push(billData.outletAddress);
     if (billData.outletPhone) lines.push('Ph: ' + billData.outletPhone);
     if (billData.outletGstin) lines.push('GSTIN: ' + billData.outletGstin);
+    if (billData.outletFssai) lines.push('FSSAI: ' + billData.outletFssai);
 
     // ── 2. TOKEN NUMBER ─────────────────────────
     if (billData.tokenNumber) {
