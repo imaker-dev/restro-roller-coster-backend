@@ -424,8 +424,8 @@ const billingService = {
 
     // Get outlet info for bill header (including logo settings)
     const [outletInfo] = await pool.query(
-      `SELECT name, CONCAT_WS(', ', NULLIF(address_line1,''), NULLIF(city,''), NULLIF(state,'')) as address, 
-              gstin, phone, logo_url, print_logo_url, print_logo_enabled
+      `SELECT name, CONCAT_WS(', ', NULLIF(address_line1,''), NULLIF(city,''), NULLIF(state,'')) as address,
+              gstin, fssai_number, phone, logo_url, print_logo_url, print_logo_enabled
        FROM outlets WHERE id = ?`,
       [invoice.outletId || order.outlet_id]
     );
@@ -455,6 +455,7 @@ const billingService = {
       outletAddress: outletData.address || null,
       outletPhone: outletData.phone || null,
       outletGstin: outletData.gstin || null,
+      outletFssai: outletData.fssai_number || null,
       outletLogoUrl: printLogoUrl,
       tableNumber: invoice.tableNumber || order.table_number,
       cashierName: invoice.generatedByName || order.created_by_name || null,
