@@ -406,7 +406,7 @@ const getAllSubscriptions = async (filters = {}, pagination = { page: 1, limit: 
   const { page, limit } = pagination;
   const offset = (page - 1) * limit;
 
-  let where = 'WHERE 1=1 AND os.outlet_id != 82';
+  let where = 'WHERE 1=1';
   const params = [];
 
   if (status) {
