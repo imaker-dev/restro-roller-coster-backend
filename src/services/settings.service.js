@@ -239,6 +239,33 @@ class SettingsService {
   }
 
   /**
+   * Get multiple settings strictly for the given outlet (no global fallback).
+   * If the outlet has no specific value, falls back to the default setting.
+   * Use this for features like UPI QR that must be configured per-outlet.
+   */
+  async getMultipleStrictOutlet(keys, outletId) {
+    const pool = getPool();
+    const result = {};
+
+    for (const key of keys) {
+      const [rows] = await pool.query(
+        'SELECT * FROM system_settings WHERE setting_key = ? AND outlet_id = ? LIMIT 1',
+        [key, outletId]
+      );
+
+      if (rows.length) {
+        const row = rows[0];
+        result[key] = this.parseValue(row.setting_value, row.setting_type);
+      } else {
+        const defaultSetting = SettingsService.DEFAULT_SETTINGS.find(s => s.key === key);
+        result[key] = defaultSetting ? this.parseValue(defaultSetting.value, defaultSetting.type) : null;
+      }
+    }
+
+    return result;
+  }
+
+  /**
    * Update a single setting
    */
   async update(key, value, outletId = null, updatedBy = null) {

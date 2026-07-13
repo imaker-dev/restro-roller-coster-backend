@@ -438,8 +438,8 @@ const billingService = {
       printLogoUrl = outletData.print_logo_url || outletData.logo_url || null;
     }
 
-    // Load UPI QR payment settings for this outlet
-    const upiSettings = await settingsService.getMultiple([
+    // Load UPI QR payment settings for this outlet (strictly per-outlet, no global fallback)
+    const upiSettings = await settingsService.getMultipleStrictOutlet([
       'upi_qr_enabled',
       'upi_merchant_name',
       'upi_merchant_id',
