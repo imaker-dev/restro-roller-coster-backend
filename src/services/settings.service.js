@@ -44,7 +44,7 @@ class SettingsService {
     { key: 'upi_qr_enabled', value: 'false', type: 'boolean', category: 'billing', description: 'Enable UPI QR code on bill' },
     { key: 'upi_merchant_name', value: '', type: 'string', category: 'billing', description: 'Merchant name printed on UPI QR' },
     { key: 'upi_merchant_id', value: '', type: 'string', category: 'billing', description: 'Merchant UPI ID (e.g. merchant@okaxis)' },
-    { key: 'upi_qr_size', value: '180', type: 'number', category: 'billing', description: 'UPI QR code size in pixels (default 180)' },
+    { key: 'upi_qr_size', value: '150', type: 'number', category: 'billing', description: 'UPI QR code size in pixels (default 180)' },
     { key: 'upi_print_merchant_name', value: 'true', type: 'boolean', category: 'billing', description: 'Print merchant name below UPI QR' },
     { key: 'upi_print_merchant_id', value: 'true', type: 'boolean', category: 'billing', description: 'Print UPI ID below UPI QR' },
     
