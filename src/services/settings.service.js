@@ -39,6 +39,14 @@ class SettingsService {
     { key: 'show_hsn_on_bill', value: 'true', type: 'boolean', category: 'billing', description: 'Show HSN/SAC code on bill' },
     { key: 'bill_footer_text', value: 'Thank you for visiting!', type: 'string', category: 'billing', description: 'Footer text on bills' },
     { key: 'terms_and_conditions', value: '', type: 'string', category: 'billing', description: 'Terms and conditions on invoice' },
+
+    // UPI QR Payment Settings
+    { key: 'upi_qr_enabled', value: 'false', type: 'boolean', category: 'billing', description: 'Enable UPI QR code on bill' },
+    { key: 'upi_merchant_name', value: '', type: 'string', category: 'billing', description: 'Merchant name printed on UPI QR' },
+    { key: 'upi_merchant_id', value: '', type: 'string', category: 'billing', description: 'Merchant UPI ID (e.g. merchant@okaxis)' },
+    { key: 'upi_qr_size', value: '150', type: 'number', category: 'billing', description: 'UPI QR code size in pixels (default 180)' },
+    { key: 'upi_print_merchant_name', value: 'true', type: 'boolean', category: 'billing', description: 'Print merchant name below UPI QR' },
+    { key: 'upi_print_merchant_id', value: 'true', type: 'boolean', category: 'billing', description: 'Print UPI ID below UPI QR' },
     
     // Tax Settings
     { key: 'gst_enabled', value: 'true', type: 'boolean', category: 'tax', description: 'Enable GST' },

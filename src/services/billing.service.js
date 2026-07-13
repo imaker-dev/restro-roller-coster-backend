@@ -437,6 +437,17 @@ const billingService = {
       // Prefer print_logo_url, fallback to logo_url
       printLogoUrl = outletData.print_logo_url || outletData.logo_url || null;
     }
+
+    // Load UPI QR payment settings for this outlet
+    const upiSettings = await settingsService.getMultiple([
+      'upi_qr_enabled',
+      'upi_merchant_name',
+      'upi_merchant_id',
+      'upi_qr_size',
+      'upi_print_merchant_name',
+      'upi_print_merchant_id'
+    ], invoice.outletId || order.outlet_id);
+
     const now = new Date();
     const dd = String(now.getDate()).padStart(2, '0');
     const mm = String(now.getMonth() + 1).padStart(2, '0');
@@ -524,6 +535,15 @@ const billingService = {
       splitBreakdown: invoice.payments?.[0]?.splitBreakdown || null,
       isDuplicate: invoice.isDuplicate || false,
       duplicateNumber: invoice.duplicateNumber || null,
+      isCancelled: invoice.isCancelled || false,
+      paymentStatus: invoice.paymentStatus || 'pending',
+      // UPI QR settings
+      upiQrEnabled: !!upiSettings.upi_qr_enabled,
+      upiMerchantName: String(upiSettings.upi_merchant_name || '').trim(),
+      upiMerchantId: String(upiSettings.upi_merchant_id || '').trim(),
+      upiQrSize: parseInt(upiSettings.upi_qr_size, 10) || 180,
+      upiPrintMerchantName: !!upiSettings.upi_print_merchant_name,
+      upiPrintMerchantId: !!upiSettings.upi_print_merchant_id,
       openDrawer: false
     };
 

@@ -1449,6 +1449,10 @@ const printerService = {
       if (billData.duplicateNumber) lines.push('Copy #' + billData.duplicateNumber);
     }
 
+    if (billData.isCancelled) {
+      lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + '*** CANCELLED ***' + cmd.BOLD_OFF);
+    }
+
     // Restaurant name — BOLD+DOUBLE_HEIGHT on both widths for visibility
     lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + cmd.DOUBLE_HEIGHT + (billData.outletName || 'Restaurant') + cmd.NORMAL + cmd.BOLD_OFF + FONT_A + CHAR_SPACE_0 + LS_BODY);
     if (billData.outletAddress) lines.push(billData.outletAddress);
@@ -1616,7 +1620,10 @@ const printerService = {
       }
     }
 
-    // ── 8. FOOTER ───────────────────────────────
+    // ── 8. UPI QR SECTION ───────────────────────
+    lines.push(...this.buildUpiQrLines(billData, w));
+
+    // ── 9. FOOTER ───────────────────────────────
     lines.push(cmd.ALIGN_CENTER + 'THANK YOU! VISIT AGAIN');
 
     return lines.join('\n');
@@ -1639,6 +1646,10 @@ const printerService = {
     if (billData.isDuplicate) {
       lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + '*** DUPLICATE ***' + cmd.BOLD_OFF);
       if (billData.duplicateNumber) lines.push('Copy #' + billData.duplicateNumber);
+    }
+
+    if (billData.isCancelled) {
+      lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + '*** CANCELLED ***' + cmd.BOLD_OFF);
     }
 
     // Restaurant name — reset appended inline, avoids blank line after name
@@ -1814,7 +1825,10 @@ const printerService = {
       }
     }
 
-    // ── 9. FOOTER ───────────────────────────────
+    // ── 9. UPI QR SECTION ───────────────────────
+    lines.push(...this.buildUpiQrLines(billData, w));
+
+    // ── 10. FOOTER ──────────────────────────────
     lines.push(cmd.ALIGN_CENTER + 'THANK YOU! VISIT AGAIN');
 
     return lines.join('\n');
@@ -1866,6 +1880,141 @@ const printerService = {
     return prefix + ' ' + amount;
   },
 
+  /**
+   * Generate a standard UPI payment URI from bill data.
+   * Format: upi://pay?pa={upiId}&pn={merchantName}&am={amount}&cu=INR&tn=Bill-{billNumber}
+   */
+  generateUpiUri({ upiId, merchantName, amount, billNumber }) {
+    if (!upiId) return null;
+    const am = parseFloat(amount || 0).toFixed(2);
+    const pn = encodeURIComponent(merchantName || '');
+    const tn = encodeURIComponent(`Bill-${billNumber || ''}`);
+    return `upi://pay?pa=${upiId}&pn=${pn}&am=${am}&cu=INR&tn=${tn}`;
+  },
+
+  /**
+   * Build ESC/POS QR code command buffer from a UTF-8 data string.
+   * Uses GS ( k commands with model 2 and high error correction (level H).
+   */
+  generateEscPosQrBuffer(data, pixelSize = 180) {
+    if (!data) return null;
+    const dataBytes = Buffer.from(data, 'utf8');
+    // Map pixel size (e.g. 180) to ESC/POS module size 1-16 (~30 dots per step)
+    const moduleSize = Math.max(1, Math.min(16, Math.round(parseInt(pixelSize, 10) / 30) || 6));
+    const len = dataBytes.length + 3;
+    const pL = len & 0xFF;
+    const pH = (len >> 8) & 0xFF;
+
+    const header = Buffer.from([0x1D, 0x28, 0x6B, 0x04, 0x00, 0x31, 0x41, 0x32, 0x00]); // model 2
+    const sizeCmd = Buffer.from([0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x43, moduleSize]);
+    const errorCmd = Buffer.from([0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x45, 0x33]); // H = 51
+    const storeCmd = Buffer.concat([
+      Buffer.from([0x1D, 0x28, 0x6B, pL, pH, 0x31, 0x50, 0x30]),
+      dataBytes
+    ]);
+    const printCmd = Buffer.from([0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x51, 0x30]);
+
+    return Buffer.concat([header, sizeCmd, errorCmd, storeCmd, printCmd]);
+  },
+
+  /**
+   * Determine the amount to encode in the UPI QR.
+   * Prefer dueAmount for split/partial payments. If dueAmount is zero and the
+   * bill is not actually paid/refunded, fall back to grandTotal to handle data
+   * inconsistencies and reprints of unpaid bills.
+   */
+  getUpiQrAmount(billData) {
+    let amount = parseFloat(billData.dueAmount || 0);
+    const isPaid = billData.paymentStatus === 'paid' || billData.paymentStatus === 'refunded';
+    if ((amount <= 0 || !isFinite(amount)) && !isPaid && !billData.isCancelled) {
+      amount = parseFloat(billData.grandTotal || 0);
+    }
+    return isFinite(amount) && amount > 0 ? amount : 0;
+  },
+
+  /**
+   * Build the UPI QR ESC/POS buffer for a bill when all conditions are met.
+   * Returns null if the bill is cancelled/refunded, amount <= 0, or UPI ID missing.
+   */
+  buildUpiQrSegment(billData) {
+    if (!billData.upiQrEnabled) {
+      logger.info(`[UPI-QR] Not generating QR for ${billData.invoiceNumber || 'N/A'}: feature disabled`);
+      return null;
+    }
+    if (billData.isCancelled) {
+      logger.info(`[UPI-QR] Not generating QR for ${billData.invoiceNumber || 'N/A'}: bill cancelled`);
+      return null;
+    }
+    if (billData.paymentStatus === 'refunded') {
+      logger.info(`[UPI-QR] Not generating QR for ${billData.invoiceNumber || 'N/A'}: payment refunded`);
+      return null;
+    }
+
+    const upiId = String(billData.upiMerchantId || '').trim();
+    if (!upiId) {
+      logger.info(`[UPI-QR] Not generating QR for ${billData.invoiceNumber || 'N/A'}: UPI ID missing`);
+      return null;
+    }
+
+    const amount = this.getUpiQrAmount(billData);
+    if (amount <= 0) {
+      logger.info(`[UPI-QR] Not generating QR for ${billData.invoiceNumber || 'N/A'}: amount=${amount}`);
+      return null;
+    }
+
+    const uri = this.generateUpiUri({
+      upiId,
+      merchantName: billData.upiMerchantName,
+      amount,
+      billNumber: billData.invoiceNumber || billData.orderNumber || billData.billNumber
+    });
+    if (!uri) {
+      logger.info(`[UPI-QR] Not generating QR for ${billData.invoiceNumber || 'N/A'}: URI generation failed`);
+      return null;
+    }
+
+    logger.info(`[UPI-QR] Generating QR for ${billData.invoiceNumber || 'N/A'}: upiId=${upiId}, amount=${amount.toFixed(2)}, uri=${uri}`);
+    return this.generateEscPosQrBuffer(uri, billData.upiQrSize);
+  },
+
+  /**
+   * Build the UPI QR text lines that appear around the QR marker.
+   * Shared by formatBillContent and formatBillContentForMobilePOS.
+   */
+  buildUpiQrLines(billData, width) {
+    const w = width;
+    const cmd = this.getEscPosCommands();
+    const dash = '-'.repeat(w);
+    const lines = [];
+
+    const upiQrAmount = this.getUpiQrAmount(billData);
+    if (billData.isCancelled || upiQrAmount <= 0 || !billData.upiQrEnabled) {
+      return lines;
+    }
+
+    const upiId = String(billData.upiMerchantId || '').trim();
+
+    if (!upiId) {
+      lines.push(dash);
+      lines.push(cmd.ALIGN_CENTER + 'UPI Payment Not Configured');
+      lines.push(dash);
+    } else {
+      lines.push(cmd.ALIGN_CENTER + cmd.BOLD_ON + 'SCAN & PAY' + cmd.BOLD_OFF);
+      lines.push(''); // spacing
+      lines.push(cmd.ALIGN_CENTER + '{{UPI_QR}}');
+      // if (billData.upiPrintMerchantName && billData.upiMerchantName) {
+      //   lines.push(cmd.ALIGN_CENTER + billData.upiMerchantName);
+      // }
+      if (billData.upiPrintMerchantId && upiId) {
+        lines.push(cmd.ALIGN_CENTER + upiId);
+      }
+      // lines.push(cmd.ALIGN_CENTER + 'Amount ' + this.formatCurrency(billData.currencySymbol, upiQrAmount.toFixed(2)));
+      lines.push(dash);
+    }
+
+    return lines;
+  },
+
   // ========================
   // ESC/POS COMMANDS
   // ========================
@@ -1902,7 +2051,8 @@ const printerService = {
     // mobilePOS option: uses Sunmi-safe commands (minimal feed, correct cut byte)
     const cmd = options.mobilePOS ? this.getMobilePosCommands() : this.getEscPosCommands();
     const parts = [];
-    
+    const QR_MARKER = '{{UPI_QR}}';
+
     parts.push(Buffer.from(cmd.INIT, 'binary'));
 
     if (options.beep) {
@@ -1917,8 +2067,28 @@ const printerService = {
       parts.push(Buffer.from('\x1B\x32', 'binary')); // Reset to default spacing after logo
     }
 
-    // Add text content
-    parts.push(Buffer.from(content, 'binary'));
+    // Handle UPI QR marker: split content and insert ESC/POS QR buffer at marker position
+    let beforeContent = content;
+    let afterContent = '';
+    const hasMarker = typeof content === 'string' && content.includes(QR_MARKER);
+    logger.info(`[BILL-PRINT] wrapWithEscPos: hasMarker=${hasMarker}, qrBuffer=${Buffer.isBuffer(options.qrCodeBuffer) ? options.qrCodeBuffer.length : 'none'}, mobilePOS=${!!options.mobilePOS}`);
+    if (hasMarker) {
+      const idx = content.indexOf(QR_MARKER);
+      beforeContent = content.substring(0, idx);
+      afterContent = content.substring(idx + QR_MARKER.length);
+    }
+
+    // Add text content before marker
+    parts.push(Buffer.from(beforeContent, 'binary'));
+
+    // Insert QR code buffer at marker position (if provided)
+    if (hasMarker && options.qrCodeBuffer && Buffer.isBuffer(options.qrCodeBuffer)) {
+      parts.push(options.qrCodeBuffer);
+      logger.info(`[BILL-PRINT] wrapWithEscPos: inserted QR buffer of ${options.qrCodeBuffer.length} bytes`);
+    }
+
+    // Add remaining text content after marker
+    parts.push(Buffer.from(afterContent, 'binary'));
     parts.push(Buffer.from(cmd.FEED_LINES, 'binary'));
 
     if (options.cut !== false) {
@@ -2212,11 +2382,20 @@ const printerService = {
     const station = resolvedPrinter?.station || 'bill';
     logger.info(`[BILL-PRINT] printBill: resolvedPrinter=${resolvedPrinter ? `id=${resolvedPrinter.id} name=${resolvedPrinter.name} type=${resolvedPrinter.connection_type}` : 'NULL'}, printerId=${printerId}, station=${station}`);
 
+    // Generate UPI QR ESC/POS buffer once (shared by all print paths)
+    logger.info(`[BILL-PRINT] UPI QR settings for bill ${billData.invoiceNumber || 'N/A'}: enabled=${billData.upiQrEnabled}, merchantId=${billData.upiMerchantId || ''}, merchantName=${billData.upiMerchantName || ''}, size=${billData.upiQrSize}, dueAmount=${billData.dueAmount}, grandTotal=${billData.grandTotal}, paymentStatus=${billData.paymentStatus}, isCancelled=${billData.isCancelled}`);
+    const upiQrBuffer = this.buildUpiQrSegment(billData);
+    if (upiQrBuffer) {
+      logger.info(`[BILL-PRINT] UPI QR buffer generated for bill ${billData.invoiceNumber || 'N/A'}: length=${upiQrBuffer.length}`);
+    } else {
+      logger.info(`[BILL-PRINT] UPI QR buffer NOT generated for bill ${billData.invoiceNumber || 'N/A'}`);
+    }
+
     // ── Mobile POS intercept ─────────────────────────────────────────────────
     // Uses Mobile POS-specific formatter (32-char, compact) + mobilePOS:true wrap.
     // Grand Total on one line, no extra Token space, minimal feed then cut.
     const mposContent = this.formatBillContentForMobilePOS(billData);
-    const mposWrapped = this.wrapWithEscPos(mposContent, { openDrawer: billData.openDrawer, mobilePOS: true, logo });
+    const mposWrapped = this.wrapWithEscPos(mposContent, { openDrawer: billData.openDrawer, mobilePOS: true, logo, qrCodeBuffer: upiQrBuffer });
     if (userId) {
       const mposResult = await this.sendToMobilePOS(
         { id: printerId, name: 'MobilePOS', outlet_id: billData.outletId, device_id: null, station },
@@ -2246,7 +2425,7 @@ const printerService = {
       const is58mm  = paperWidth === '58mm';
       const charWidth = is58mm ? 32 : (btCfg.characters_per_line || 48);
       const btContent = this.formatBillContent(billData, charWidth);
-      const btEscpos  = this.wrapWithEscPos(btContent, { openDrawer: billData.openDrawer, logo });
+      const btEscpos  = this.wrapWithEscPos(btContent, { openDrawer: billData.openDrawer, logo, qrCodeBuffer: upiQrBuffer });
       const btResult  = await this.sendToBluetoothDevice(
         { ...btCfg, paper_width: paperWidth, characters_per_line: charWidth },
         btEscpos, btContent, {
@@ -2266,7 +2445,7 @@ const printerService = {
 
     // Regular printers (IP/bridge) — use full 80mm formatter + standard wrapping
     const content = this.formatBillContent(billData);
-    const wrappedContent = this.wrapWithEscPos(content, { openDrawer: billData.openDrawer, logo });
+    const wrappedContent = this.wrapWithEscPos(content, { openDrawer: billData.openDrawer, logo, qrCodeBuffer: upiQrBuffer });
 
     // Windows Printer (spooler): try direct via PowerShell first, fallback to bridge
     if (resolvedPrinter?.connection_type === 'windows_printer') {
@@ -2320,7 +2499,7 @@ const printerService = {
       const is58mm = (resolvedPrinter.paper_width || '80mm') === '58mm';
       const charWidth = resolvedPrinter.characters_per_line || (is58mm ? 32 : 48);
       const btContent = this.formatBillContent(billData, charWidth);
-      const btEscpos = this.wrapWithEscPos(btContent, { openDrawer: billData.openDrawer });
+      const btEscpos = this.wrapWithEscPos(btContent, { openDrawer: billData.openDrawer, qrCodeBuffer: upiQrBuffer });
       const btResult = await this.sendToBluetoothDevice(resolvedPrinter, btEscpos, btContent, {
         jobType: billData.isDuplicate ? 'duplicate_bill' : 'bill',
         ref: billData.invoiceNumber,
@@ -2821,7 +3000,10 @@ Write-Output "OK"
    */
   async printBillDirect(billData, printerIp, printerPort = 9100) {
     const content = this.formatBillContent(billData);
-    
+
+    // Generate UPI QR ESC/POS buffer
+    const upiQrBuffer = this.buildUpiQrSegment(billData);
+
     // Load logo if outlet has logo_url
     let logo = null;
     const logoSource = resolveLogoSource(billData.outletLogoUrl);
@@ -2832,8 +3014,8 @@ Write-Output "OK"
         logger.warn('Failed to load logo for direct bill print:', err.message);
       }
     }
-    
-    const escposData = this.wrapWithEscPos(content, { openDrawer: billData.openDrawer, logo });
+
+    const escposData = this.wrapWithEscPos(content, { openDrawer: billData.openDrawer, logo, qrCodeBuffer: upiQrBuffer });
     
     try {
       // Use shorter timeout (2s) for faster response - print usually completes in <1s
